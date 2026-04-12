@@ -73,7 +73,6 @@ proc syncWindowLayout(layout: var ScreenLayout) =
   layout.scaleY = max(1, int(contentScale + 0.5))
   discard setRenderLogicalPresentation(
     ren, logicalW, logicalH, LOGICAL_PRESENTATION_STRETCH)
-
 proc sdlCreateWindow(layout: var ScreenLayout) =
   discard createWindowAndRenderer(cstring"NimEdit",
     layout.width.cint, layout.height.cint,
