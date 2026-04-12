@@ -6,14 +6,23 @@ support. Write UI apps as easily as terminal apps!
 
 ## Getting started
 
-See the [examples](examples/) directory:
+`import uirelays` is all you need -- it re-exports everything and
+automatically initializes the native backend for the current platform
+(WinAPI on Windows, Cocoa on macOS, X11 on Linux/BSD). Override with
+`-d:sdl3`, `-d:sdl2`, or `-d:gtk4`.
 
-- [hello.nim](examples/hello.nim) -- Window, text, shapes, input handling
-- [paint.nim](examples/paint.nim) -- Click-and-drag drawing app with palette
+For finer control, import the submodules directly and call `initBackend()`
+yourself:
 
-Compile with `nim c examples/hello.nim`. The native backend is chosen
-automatically (WinAPI on Windows, Cocoa on macOS, X11 on Linux). Override
-with `-d:sdl3`, `-d:sdl2`, or `-d:gtk4`.
+```nim
+import uirelays/[coords, screen, input, backend]
+initBackend()
+```
+
+## Examples
+
+- [hello.nim](examples/hello.nim) -- Uses `import uirelays` for maximum convenience
+- [paint.nim](examples/paint.nim) -- Uses explicit submodule imports with manual `initBackend()`
 
 ## Architecture
 

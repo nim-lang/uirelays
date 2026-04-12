@@ -7,11 +7,9 @@
 ## The native backend is selected automatically.
 ## Override with: -d:sdl3, -d:sdl2, -d:gtk4
 
-import uirelays/[coords, screen, input, backend]
+import uirelays
 
 proc main =
-  initBackend()
-
   let layout = createWindow(640, 480)
   var width = layout.width
   var height = layout.height
