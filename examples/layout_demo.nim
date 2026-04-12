@@ -10,9 +10,9 @@ import uirelays/layout
 import std/tables
 
 const LayoutSpec = """
-  | toolbar, 30px                                       |
-  | sidebar, 200px | divider, 4px | editor, *             |
-  | status, 1 line                                      |
+  | toolbar, 30px                               |
+  | sidebar, 200px | divider, 4px | editor, *   |
+  | status, 1 line                              |
 """
 
 const
@@ -21,7 +21,6 @@ const
   hoverBg  = color(69, 71, 90)
   divColor = color(88, 91, 112)
   fg       = color(205, 214, 244)
-  dimFg    = color(128, 128, 148)
   accent   = color(137, 180, 250)
 
 proc main =
