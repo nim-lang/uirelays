@@ -255,6 +255,7 @@ const
   XK_space = 0x20'u
   XK_Escape = 0xff1b'u
   XK_Tab = 0xff09'u
+  XK_ISO_Left_Tab = 0xfe20'u
   XK_BackSpace = 0xff08'u
   XK_Delete = 0xffff'u
   XK_Insert = 0xff63'u
@@ -469,7 +470,7 @@ proc translateKeySym(ks: XKeySym): input.KeyCode =
   of XK_Return: KeyEnter
   of XK_space: KeySpace
   of XK_Escape: KeyEsc
-  of XK_Tab: KeyTab
+  of XK_Tab, XK_ISO_Left_Tab: KeyTab
   of XK_BackSpace: KeyBackspace
   of XK_Delete: KeyDelete
   of XK_Insert: KeyInsert
