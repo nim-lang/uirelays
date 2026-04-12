@@ -2,6 +2,7 @@
 
 import sdl3
 import sdl3_ttf
+import std/os
 import ../coords, ../input, ../screen
 
 # --- Font handle management ---
@@ -29,16 +30,55 @@ var
 
 # --- Screen hook implementations ---
 
+proc resolveFontPath(path: string): string =
+  if path.len > 0:
+    return path
+
+  when defined(windows):
+    let candidates = [
+      r"C:\Windows\Fonts\segoeui.ttf",
+      r"C:\Windows\Fonts\arial.ttf"
+    ]
+  elif defined(macosx):
+    let candidates = [
+      "/System/Library/Fonts/SFNS.ttf",
+      "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+      "/System/Library/Fonts/Supplemental/Arial.ttf"
+    ]
+  else:
+    let candidates = [
+      "/usr/share/fonts/google-noto-vf/NotoSans[wght].ttf",
+      "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
+      "/usr/share/fonts/abattis-cantarell-vf-fonts/Cantarell-VF.otf",
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+      "/usr/share/fonts/TTF/DejaVuSans.ttf"
+    ]
+
+  for candidate in candidates:
+    if fileExists(candidate):
+      return candidate
+
+  ""
+
+proc syncWindowLayout(layout: var ScreenLayout) =
+  var logicalW: cint = 0
+  var logicalH: cint = 0
+  discard getWindowSize(win, logicalW, logicalH)
+  layout.width = logicalW
+  layout.height = logicalH
+
+  let windowScale = getWindowDisplayScale(win)
+  let contentScale = if windowScale > 0: windowScale else: 1.0
+  layout.scaleX = max(1, int(contentScale + 0.5))
+  layout.scaleY = max(1, int(contentScale + 0.5))
+  discard setRenderLogicalPresentation(
+    ren, logicalW, logicalH, LOGICAL_PRESENTATION_STRETCH)
+
 proc sdlCreateWindow(layout: var ScreenLayout) =
   discard createWindowAndRenderer(cstring"NimEdit",
-    layout.width.cint, layout.height.cint, WINDOW_RESIZABLE, win, ren)
-  discard startTextInput(win)
-  var w, h: cint
-  discard getWindowSize(win, w, h)
-  layout.width = w
-  layout.height = h
-  layout.scaleX = 1
-  layout.scaleY = 1
+    layout.width.cint, layout.height.cint,
+    WINDOW_RESIZABLE or WINDOW_HIGH_PIXEL_DENSITY, win, ren)
+  syncWindowLayout(layout)
 
 proc sdlRefresh() =
   discard renderPresent(ren)
@@ -52,7 +92,10 @@ proc sdlSetClipRect(r: coords.Rect) =
 
 proc sdlOpenFont(path: string; size: int;
                  metrics: var FontMetrics): screen.Font =
-  let f = sdl3_ttf.openFont(cstring(path), size.cfloat)
+  let resolvedPath = resolveFontPath(path)
+  if resolvedPath.len == 0:
+    return screen.Font(0)
+  let f = sdl3_ttf.openFont(cstring(resolvedPath), size.cfloat)
   if f == nil: return screen.Font(0)
   sdl3_ttf.setFontHinting(f, sdl3_ttf.hintingLightSubpixel)
   metrics.ascent = sdl3_ttf.getFontAscent(f)
@@ -222,9 +265,12 @@ proc translateMods(m: Keymod): set[Modifier] =
   if (m and KMOD_ALT) != 0: result.incl AltPressed
   if (m and KMOD_GUI) != 0: result.incl GuiPressed
 
-proc translateEvent(sdlEvent: sdl3.Event; e: var input.Event) =
+proc translateEvent(sdlEvent: var sdl3.Event; e: var input.Event) =
   e = input.Event(kind: NoEvent)
   let evType = uint32(sdlEvent.common.`type`)
+  if evType in [uint32(EVENT_MOUSE_BUTTON_DOWN), uint32(EVENT_MOUSE_BUTTON_UP),
+                uint32(EVENT_MOUSE_MOTION), uint32(EVENT_MOUSE_WHEEL)]:
+    discard convertEventToRenderCoordinates(ren, sdlEvent)
   if evType == uint32(EVENT_QUIT):
     e.kind = QuitEvent
   elif evType == uint32(EVENT_WINDOW_RESIZED):
@@ -282,7 +328,14 @@ proc translateEvent(sdlEvent: sdl3.Event; e: var input.Event) =
     e.y = sdlEvent.wheel.y.int
 
 proc sdlPollEvent(e: var input.Event; flags: set[InputFlag]): bool =
-  var sdlEvent: sdl3.Event
+  if win != nil:
+    if WantTextInput in flags:
+      if not textInputActive(win):
+        discard startTextInput(win)
+    elif textInputActive(win):
+      discard stopTextInput(win)
+
+  var sdlEvent = default sdl3.Event
   if not pollEvent(sdlEvent):
     return false
   translateEvent(sdlEvent, e)
@@ -290,7 +343,14 @@ proc sdlPollEvent(e: var input.Event; flags: set[InputFlag]): bool =
 
 proc sdlWaitEvent(e: var input.Event; timeoutMs: int;
                   flags: set[InputFlag]): bool =
-  var sdlEvent: sdl3.Event
+  if win != nil:
+    if WantTextInput in flags:
+      if not textInputActive(win):
+        discard startTextInput(win)
+    elif textInputActive(win):
+      discard stopTextInput(win)
+
+  var sdlEvent = default sdl3.Event
   let ok = if timeoutMs < 0: waitEvent(sdlEvent)
            else: waitEventTimeout(sdlEvent, timeoutMs.int32)
   if not ok: return false
