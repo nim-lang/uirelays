@@ -274,7 +274,7 @@ proc initCocoaDriver*() =
     drawPoint: cocoaDrawPoint)
   inputRelays = InputRelays(
     pollEvent: cocoaPollEvent, waitEvent: cocoaWaitEvent,
-    getTicks: cocoaGetTicks, delay: cocoaDelay,
+    getTicks: cocoaGetTicks, sleep: cocoaDelay,
     quitRequest: cocoaQuitRequest)
   clipboardRelays = ClipboardRelays(
     getText: cocoaGetClipboardText, putText: cocoaPutClipboardText)

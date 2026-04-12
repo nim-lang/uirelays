@@ -932,7 +932,7 @@ proc initX11Driver*() =
     fillRect: x11FillRect, drawLine: x11DrawLine, drawPoint: x11DrawPoint)
   inputRelays = InputRelays(
     pollEvent: x11PollEvent, waitEvent: x11WaitEvent,
-    getTicks: x11GetTicks, delay: x11Delay,
+    getTicks: x11GetTicks, sleep: x11Delay,
     quitRequest: x11QuitRequest)
   clipboardRelays = ClipboardRelays(
     getText: x11GetClipboardText, putText: x11PutClipboardText)

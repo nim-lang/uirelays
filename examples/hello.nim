@@ -82,7 +82,7 @@ proc main =
       "Press ESC or Ctrl+Q to quit", color(128, 128, 148), bg)
 
     refresh()
-    delay(16)  # ~60fps
+    sleep(16)  # ~60fps
 
   closeFont(font)
   quitRequest()

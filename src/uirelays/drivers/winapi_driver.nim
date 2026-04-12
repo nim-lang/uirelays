@@ -915,7 +915,7 @@ proc initWinapiDriver*() =
     fillRect: winFillRect, drawLine: winDrawLine, drawPoint: winDrawPoint)
   inputRelays = InputRelays(
     pollEvent: winPollEvent, waitEvent: winWaitEvent,
-    getTicks: winGetTicks, delay: winDelay,
+    getTicks: winGetTicks, sleep: winDelay,
     quitRequest: winQuitRequest)
   clipboardRelays = ClipboardRelays(
     getText: winGetClipboardText, putText: winPutClipboardText)

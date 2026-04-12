@@ -51,7 +51,7 @@ type
     waitEvent*: proc (e: var Event; timeoutMs: int;
                       flags: set[InputFlag]): bool {.nimcall.}
     getTicks*: proc (): int {.nimcall.}
-    delay*: proc (ms: int) {.nimcall.}
+    sleep*: proc (ms: int) {.nimcall.}
     quitRequest*: proc () {.nimcall.}
 
 var clipboardRelays* = ClipboardRelays(
@@ -63,7 +63,7 @@ var inputRelays* = InputRelays(
   waitEvent: proc (e: var Event; timeoutMs: int;
                    flags: set[InputFlag]): bool = false,
   getTicks: proc (): int = 0,
-  delay: proc (ms: int) = discard,
+  sleep: proc (ms: int) = discard,
   quitRequest: proc () = discard)
 
 proc pollEvent*(e: var Event; flags: set[InputFlag] = {}): bool =
@@ -74,5 +74,5 @@ proc waitEvent*(e: var Event; timeoutMs: int = -1;
 proc getClipboardText*(): string = clipboardRelays.getText()
 proc putClipboardText*(text: string) = clipboardRelays.putText(text)
 proc getTicks*(): int = inputRelays.getTicks()
-proc delay*(ms: int) = inputRelays.delay(ms)
+proc sleep*(ms: int) = inputRelays.sleep(ms)
 proc quitRequest*() = inputRelays.quitRequest()

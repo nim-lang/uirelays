@@ -95,7 +95,7 @@ proc main =
     fillRect(rect(width - 50, 8, 22, 22), brushColor)
 
     refresh()
-    delay(16)
+    sleep(16)
 
   quitRequest()
 

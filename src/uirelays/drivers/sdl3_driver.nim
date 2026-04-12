@@ -321,7 +321,7 @@ proc initSdl3Driver*() =
     fillRect: sdlFillRect, drawLine: sdlDrawLine, drawPoint: sdlDrawPoint)
   inputRelays = InputRelays(
     pollEvent: sdlPollEvent, waitEvent: sdlWaitEvent,
-    getTicks: sdlGetTicks, delay: sdlDelay,
+    getTicks: sdlGetTicks, sleep: sdlDelay,
     quitRequest: sdlQuitRequest)
   clipboardRelays = ClipboardRelays(
     getText: sdlGetClipboardText, putText: sdlPutClipboardText)
