@@ -52,7 +52,7 @@ allocation -- just plain proc pointers.
 | `sdl3_driver` | Cross-platform | SDL3, SDL3_ttf |
 | `sdl2_driver` | Cross-platform | SDL2, SDL2_ttf |
 
-See [Writing a custom driver](doc/writing_a_driver.md) for a guide on
+See [Writing a custom driver](doc/drivers.md) for a guide on
 adding support for a new platform or graphics toolkit.
 
 ## License
