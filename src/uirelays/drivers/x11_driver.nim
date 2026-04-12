@@ -25,7 +25,7 @@ type
     x, y: cshort
     width, height: cushort
 
-  XColor {.pure.} = object
+  XColor {.pure, used.} = object
     pixel: culong
     red, green, blue: cushort
     flags: uint8
@@ -231,9 +231,9 @@ const
   Button3 = 3'u32
   Button4 = 4'u32  # scroll up
   Button5 = 5'u32  # scroll down
-  Button1Mask = 1'u32 shl 8
-  Button2Mask = 1'u32 shl 9
-  Button3Mask = 1'u32 shl 10
+  Button1Mask {.used.} = 1'u32 shl 8
+  Button2Mask {.used.} = 1'u32 shl 9
+  Button3Mask {.used.} = 1'u32 shl 10
 
   # Cursor shapes
   XC_left_ptr = 68'u32
@@ -288,7 +288,7 @@ proc XDefaultDepth(dpy: pointer; screen: cint): cint
 proc XBlackPixel(dpy: pointer; screen: cint): culong
   {.cdecl, dynlib: libX11, importc.}
 proc XWhitePixel(dpy: pointer; screen: cint): culong
-  {.cdecl, dynlib: libX11, importc.}
+  {.cdecl, dynlib: libX11, importc, used.}
 proc XCreateSimpleWindow(dpy: pointer; parent: XID;
   x, y: cint; w, h, border: cuint; borderColor, bgColor: culong): XID
   {.cdecl, dynlib: libX11, importc.}
@@ -305,7 +305,7 @@ proc XFreePixmap(dpy: pointer; p: XID): cint
 proc XCreateGC(dpy: pointer; d: XID; mask: culong; values: pointer): pointer
   {.cdecl, dynlib: libX11, importc.}
 proc XFreeGC(dpy: pointer; gc: pointer): cint
-  {.cdecl, dynlib: libX11, importc.}
+  {.cdecl, dynlib: libX11, importc, used.}
 proc XSetForeground(dpy: pointer; gc: pointer; pixel: culong): cint
   {.cdecl, dynlib: libX11, importc.}
 proc XFillRectangle(dpy: pointer; d: XID; gc: pointer;
@@ -375,7 +375,7 @@ proc XftDrawCreate(dpy: pointer; d: XID; visual: pointer; cmap: XID): pointer
 proc XftDrawDestroy(draw: pointer): void
   {.cdecl, dynlib: libXft, importc.}
 proc XftDrawChange(draw: pointer; d: XID): void
-  {.cdecl, dynlib: libXft, importc.}
+  {.cdecl, dynlib: libXft, importc, used.}
 proc XftDrawStringUtf8(draw: pointer; color: ptr XftColor; font: ptr XftFont;
   x, y: cint; text: cstring; len: cint): void
   {.cdecl, dynlib: libXft, importc.}
