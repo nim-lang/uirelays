@@ -14,20 +14,19 @@ import std/[strutils, tables]
 import coords
 
 type
-  SizeKind* = enum
+  SizeKind = enum
     skPixels,     ## fixed pixel count
     skLines,      ## N * lineHeight
     skStretch     ## weighted share of remaining space
 
-  CellSize* = object
-    kind*: SizeKind
-    value*: int   ## pixels, line count, or stretch weight
+  CellSize = object
+    kind: SizeKind
+    value: int   ## pixels, line count, or stretch weight
 
-  Cell* = object
-    name*: string
-    width*: CellSize   ## horizontal size (for multi-column rows)
-    height*: CellSize  ## vertical size (row height)
-    scrollable*: bool
+  Cell = object
+    name: string
+    width: CellSize   ## horizontal size (for multi-column rows)
+    height: CellSize  ## vertical size (row height)
 
   Row = object
     cells: seq[Cell]
@@ -68,20 +67,15 @@ proc parseCell(s: string): Cell =
   result.name = parts[0].strip()
   result.width = CellSize(kind: skStretch, value: 1)  # default
   result.height = CellSize(kind: skStretch, value: 1) # default
-  result.scrollable = false
 
   for i in 1 ..< parts.len:
-    let p = parts[i].strip()
-    if p == "scroll":
-      result.scrollable = true
-    else:
-      let sz = parseSize(p)
-      # In a multi-column row, this is the width.
-      # The row height comes from whichever cell specifies a height-like size.
-      # For single-column rows, it's the height.
-      # We store it as both and resolve during layout.
-      result.width = sz
-      result.height = sz
+    let sz = parseSize(parts[i].strip())
+    # In a multi-column row, this is the width.
+    # The row height comes from whichever cell specifies a height-like size.
+    # For single-column rows, it's the height.
+    # We store it as both and resolve during layout.
+    result.width = sz
+    result.height = sz
 
 proc parseLayout*(s: string): Layout =
   ## Parse a markdown table string into a Layout.
@@ -185,13 +179,6 @@ proc cell*(layout: Layout; name: string): bool =
   for row in layout.rows:
     for c in row.cells:
       if c.name == name: return true
-  return false
-
-proc isScrollable*(layout: Layout; name: string): bool =
-  ## Check if a cell is marked as scrollable.
-  for row in layout.rows:
-    for c in row.cells:
-      if c.name == name: return c.scrollable
   return false
 
 proc hitTest*(cells: Table[string, Rect]; x, y: int): CellHit =

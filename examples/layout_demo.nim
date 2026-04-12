@@ -11,7 +11,7 @@ import std/tables
 
 const LayoutSpec = """
   | toolbar, 30px                                       |
-  | sidebar, 200px, scroll | divider, 4px | editor, * |
+  | sidebar, 200px | divider, 4px | editor, *             |
   | status, 1 line                                      |
 """
 
@@ -80,11 +80,6 @@ proc main =
                     name
       let labelFg = if isHover: accent else: fg
       discard drawText(font, r.x + 8, r.y + 6, label, labelFg, cellBg)
-
-      # scrollable indicator
-      if parsed.isScrollable(name):
-        discard drawText(font, r.x + 8, r.y + 6 + fm.lineHeight,
-                         "[scroll]", dimFg, cellBg)
 
     # outline separators between cells
     for name, r in cells:
