@@ -87,24 +87,33 @@ proc removeLastRune(s: var string) =
   s.setLen(s.len - runeBytes)
 
 proc truncateText(font: Font; text: string; maxWidth: int): string =
-  result = ""
   if maxWidth <= 0:
     return ""
   if measureText(font, text).w <= maxWidth:
     return text
 
   let ellipsis = "..."
-  if measureText(font, ellipsis).w > maxWidth:
+  let ellipsisWidth = measureText(font, ellipsis).w
+  if ellipsisWidth > maxWidth:
     return ""
 
-  for rune in text.toRunes:
-    let next = result & $rune
-    if measureText(font, next & ellipsis).w > maxWidth:
-      break
-    result = next
+  let runes = text.toRunes
+  var prefixes = newSeq[string](runes.len + 1)
+  for i, rune in runes:
+    prefixes[i + 1] = prefixes[i] & $rune
 
-  if result.len == 0:
+  var low = 0
+  var high = runes.len
+  while low < high:
+    let mid = (low + high + 1) shr 1
+    if measureText(font, prefixes[mid] & ellipsis).w <= maxWidth:
+      low = mid
+    else:
+      high = mid - 1
+
+  if low == 0:
     return ellipsis
+  result = prefixes[low]
   result.add ellipsis
 
 proc rowHeightFor(fm: FontMetrics): int =
