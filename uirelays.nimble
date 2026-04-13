@@ -10,3 +10,7 @@ srcDir        = "src"
 # Dependencies
 
 requires "nim >= 2.0.0"
+requires "sdl3"
+
+requires "https://github.com/nim-lang/sdl3"
+
