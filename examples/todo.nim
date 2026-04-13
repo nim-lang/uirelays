@@ -107,26 +107,6 @@ proc truncateText(font: Font; text: string; maxWidth: int): string =
     return ellipsis
   result.add ellipsis
 
-proc keyToComposerText(key: KeyCode; mods: set[Modifier]): string =
-  if CtrlPressed in mods or AltPressed in mods or GuiPressed in mods:
-    return ""
-
-  let shifted = ShiftPressed in mods
-  case key
-  of KeyA .. KeyZ:
-    let base = ord('a') + (key.ord - KeyA.ord)
-    result = $(if shifted: char(base - 32) else: char(base))
-  of Key0 .. Key9:
-    result = $char(ord('0') + (key.ord - Key0.ord))
-  of KeySpace:
-    result = " "
-  of KeyComma:
-    result = if shifted: "<" else: ","
-  of KeyPeriod:
-    result = if shifted: ">" else: "."
-  else:
-    result = ""
-
 proc rowHeightFor(fm: FontMetrics): int =
   fm.lineHeight + 8
 
@@ -224,7 +204,6 @@ proc main =
   var scrollIndex = 0
   var mouseX = 0
   var mouseY = 0
-  var hasTextInput = false
   var running = true
 
   while running:
@@ -281,7 +260,6 @@ proc main =
         if focus == ComposerFocus:
           let entered = eventText(e.text)
           if entered.len > 0:
-            hasTextInput = true
             inputText.add entered
       of KeyDownEvent:
         case e.key
@@ -332,8 +310,6 @@ proc main =
           if focus == ComposerFocus:
             if e.key == KeyV and CtrlPressed in e.mods:
               inputText.add getClipboardText()
-            elif not hasTextInput:
-              inputText.add keyToComposerText(e.key, e.mods)
       else:
         discard
 
@@ -437,7 +413,6 @@ proc main =
           let strikeY = textY + fm.lineHeight div 2
           drawLine(textX, strikeY, textX + ext.w, strikeY, mutedTextColor)
     restoreState()
-    setClipRect(rect(0, 0, width, height))
 
     fillRect(statusRect, panelColor)
     discard drawText(font, statusRect.x + 14, statusRect.y + 6,
