@@ -24,8 +24,15 @@ type
   TextCacheEntry = object
     texture: sdl3.Texture
     extent: TextExtent
+    lastUsed: int
+
+  ClipState = object
+    enabled: bool
+    rect: sdl3.Rect
 
 var fonts: seq[FontSlot]
+
+const MaxTextCacheEntries = 64
 
 proc `==`(a, b: MeasureCacheKey): bool {.inline.} =
   a.fontId == b.fontId and a.text == b.text
@@ -66,8 +73,13 @@ var
   didResolveDefaultFontPath: bool
   measureCache: Table[MeasureCacheKey, TextExtent]
   textCache: Table[TextCacheKey, TextCacheEntry]
+  textCacheGeneration: int
   cursors: array[CursorKind, sdl3.Cursor]
   currentCursor = curDefault
+  drawColorValid: bool
+  drawColor: screen.Color
+  clipStack: seq[ClipState]
+  currentClip: ClipState
 
 proc clearMeasureCache() =
   measureCache.clear()
@@ -77,6 +89,7 @@ proc clearTextCache() =
     if entry.texture != nil:
       destroyTexture(entry.texture)
   textCache.clear()
+  textCacheGeneration = 0
 
 proc clearCursorCache() =
   for cursor in mitems(cursors):
@@ -97,12 +110,51 @@ proc resetSdlState() =
   clearMeasureCache()
   clearCursorCache()
   closeAllFonts()
+  clipStack.setLen(0)
+  currentClip = ClipState()
+  drawColorValid = false
   if ren != nil:
     destroyRenderer(ren)
     ren = nil
   if win != nil:
     destroyWindow(win)
     win = nil
+
+proc ensureDrawColor(color: screen.Color) =
+  if drawColorValid and drawColor == color:
+    return
+  discard setRenderDrawColor(ren, color.r, color.g, color.b, color.a)
+  drawColor = color
+  drawColorValid = true
+
+proc applyClipState() =
+  if ren == nil:
+    return
+  if currentClip.enabled:
+    discard setRenderClipRect(ren, addr currentClip.rect)
+  else:
+    discard setRenderClipRect(ren, cast[ptr sdl3.Rect](nil))
+
+proc nextTextCacheGeneration(): int =
+  inc textCacheGeneration
+  textCacheGeneration
+
+proc evictTextCacheIfNeeded() =
+  while textCache.len > MaxTextCacheEntries:
+    var oldestKey: TextCacheKey
+    var oldestGen = high(int)
+    var found = false
+    for key, entry in textCache.pairs:
+      if entry.lastUsed < oldestGen:
+        oldestKey = key
+        oldestGen = entry.lastUsed
+        found = true
+    if not found:
+      break
+    let entry = textCache[oldestKey]
+    if entry.texture != nil:
+      destroyTexture(entry.texture)
+    textCache.del(oldestKey)
 
 # --- Screen hook implementations ---
 
@@ -156,16 +208,27 @@ proc sdlCreateWindow(layout: var ScreenLayout) =
   layout.height = h
   layout.scaleX = 1
   layout.scaleY = 1
+  currentClip = ClipState()
+  applyClipState()
 
 proc sdlRefresh() =
   discard renderPresent(ren)
 
-proc sdlSaveState() = discard
-proc sdlRestoreState() = discard
+proc sdlSaveState() =
+  clipStack.add currentClip
+
+proc sdlRestoreState() =
+  if clipStack.len == 0:
+    return
+  currentClip = clipStack[^1]
+  clipStack.setLen(clipStack.len - 1)
+  applyClipState()
 
 proc sdlSetClipRect(r: coords.Rect) =
-  var sr = sdl3.Rect(x: r.x.cint, y: r.y.cint, w: r.w.cint, h: r.h.cint)
-  discard setRenderClipRect(ren, addr sr)
+  currentClip = ClipState(
+    enabled: true,
+    rect: sdl3.Rect(x: r.x.cint, y: r.y.cint, w: r.w.cint, h: r.h.cint))
+  applyClipState()
 
 proc sdlOpenFont(path: string; size: int;
                  metrics: var FontMetrics): screen.Font =
@@ -213,6 +276,7 @@ proc getCachedTextEntry(f: screen.Font; text: string;
     return TextCacheEntry()
   let key = TextCacheKey(fontId: f.int, fg: fg, text: text)
   if key in textCache:
+    textCache[key].lastUsed = nextTextCacheGeneration()
     return textCache[key]
   let surf = sdl3_ttf.renderTextBlended(fp, cstring(text), 0, toColor(fg))
   if surf == nil:
@@ -222,9 +286,13 @@ proc getCachedTextEntry(f: screen.Font; text: string;
     destroySurface(surf)
     return TextCacheEntry()
   discard setTextureBlendMode(tex, BLENDMODE_BLEND)
-  let entry = TextCacheEntry(texture: tex, extent: getCachedExtent(f, text))
+  let entry = TextCacheEntry(
+    texture: tex,
+    extent: getCachedExtent(f, text),
+    lastUsed: nextTextCacheGeneration())
   destroySurface(surf)
   textCache[key] = entry
+  evictTextCacheIfNeeded()
   entry
 
 proc sdlDrawText(f: screen.Font; x, y: int; text: string;
@@ -232,11 +300,11 @@ proc sdlDrawText(f: screen.Font; x, y: int; text: string;
   let entry = getCachedTextEntry(f, text, fg)
   if entry.texture == nil:
     return
-  # Fill background, then draw blended text on top
-  var bgRect = FRect(x: x.cfloat, y: y.cfloat,
-                     w: entry.extent.w.cfloat, h: entry.extent.h.cfloat)
-  discard setRenderDrawColor(ren, bg.r, bg.g, bg.b, bg.a)
-  discard renderFillRect(ren, addr bgRect)
+  if bg.a != 0 and entry.extent.w > 0 and entry.extent.h > 0:
+    var bgRect = FRect(x: x.cfloat, y: y.cfloat,
+                       w: entry.extent.w.cfloat, h: entry.extent.h.cfloat)
+    ensureDrawColor(bg)
+    discard renderFillRect(ren, addr bgRect)
   var src = FRect(x: 0, y: 0, w: entry.extent.w.cfloat, h: entry.extent.h.cfloat)
   var dst = FRect(x: x.cfloat, y: y.cfloat,
                   w: entry.extent.w.cfloat, h: entry.extent.h.cfloat)
@@ -249,17 +317,17 @@ proc sdlGetFontMetrics(f: screen.Font): FontMetrics =
   else: screen.FontMetrics()
 
 proc sdlFillRect(r: coords.Rect; color: screen.Color) =
-  discard setRenderDrawColor(ren, color.r, color.g, color.b, color.a)
+  ensureDrawColor(color)
   var fr = FRect(x: r.x.cfloat, y: r.y.cfloat,
                  w: r.w.cfloat, h: r.h.cfloat)
   discard renderFillRect(ren, addr fr)
 
 proc sdlDrawLine(x1, y1, x2, y2: int; color: screen.Color) =
-  discard setRenderDrawColor(ren, color.r, color.g, color.b, color.a)
+  ensureDrawColor(color)
   discard renderLine(ren, x1.cfloat, y1.cfloat, x2.cfloat, y2.cfloat)
 
 proc sdlDrawPoint(x, y: int; color: screen.Color) =
-  discard setRenderDrawColor(ren, color.r, color.g, color.b, color.a)
+  ensureDrawColor(color)
   discard renderPoint(ren, x.cfloat, y.cfloat)
 
 proc sdlSetCursor(c: CursorKind) =
