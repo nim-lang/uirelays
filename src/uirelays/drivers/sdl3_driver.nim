@@ -2,6 +2,7 @@
 
 import sdl3
 import sdl3_ttf
+import std/os
 import ../coords, ../input, ../screen
 
 # --- Font handle management ---
@@ -29,6 +30,36 @@ var
 
 # --- Screen hook implementations ---
 
+proc resolveFontPath(path: string): string =
+  if path.len > 0:
+    return path
+
+  when defined(windows):
+    let candidates = [
+      r"C:\Windows\Fonts\segoeui.ttf",
+      r"C:\Windows\Fonts\arial.ttf"
+    ]
+  elif defined(macosx):
+    let candidates = [
+      "/System/Library/Fonts/SFNS.ttf",
+      "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+      "/System/Library/Fonts/Supplemental/Arial.ttf"
+    ]
+  else:
+    let candidates = [
+      "/usr/share/fonts/google-noto-vf/NotoSans[wght].ttf",
+      "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
+      "/usr/share/fonts/abattis-cantarell-vf-fonts/Cantarell-VF.otf",
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+      "/usr/share/fonts/TTF/DejaVuSans.ttf"
+    ]
+
+  for candidate in candidates:
+    if fileExists(candidate):
+      return candidate
+
+  ""
+
 proc sdlCreateWindow(layout: var ScreenLayout) =
   discard createWindowAndRenderer(cstring"NimEdit",
     layout.width.cint, layout.height.cint, WINDOW_RESIZABLE, win, ren)
@@ -52,7 +83,10 @@ proc sdlSetClipRect(r: coords.Rect) =
 
 proc sdlOpenFont(path: string; size: int;
                  metrics: var FontMetrics): screen.Font =
-  let f = sdl3_ttf.openFont(cstring(path), size.cfloat)
+  let resolvedPath = resolveFontPath(path)
+  if resolvedPath.len == 0:
+    return screen.Font(0)
+  let f = sdl3_ttf.openFont(cstring(resolvedPath), size.cfloat)
   if f == nil: return screen.Font(0)
   sdl3_ttf.setFontHinting(f, sdl3_ttf.hintingLightSubpixel)
   metrics.ascent = sdl3_ttf.getFontAscent(f)
