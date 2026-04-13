@@ -219,22 +219,31 @@ int cocoa_openFont(const char *path, int size,
                    int *outAscent, int *outDescent, int *outLineHeight) {
   if (fontCount >= MAX_FONTS) return 0;
 
-  /* Create font from file path */
-  CFStringRef cfPath = CFStringCreateWithCString(NULL, path, kCFStringEncodingUTF8);
-  CFURLRef url = CFURLCreateWithFileSystemPath(NULL, cfPath, kCFURLPOSIXPathStyle, false);
-  CGDataProviderRef provider = CGDataProviderCreateWithURL(url);
   CTFontRef ctFont = NULL;
 
-  if (provider) {
-    CGFontRef cgFont = CGFontCreateWithDataProvider(provider);
-    if (cgFont) {
-      ctFont = CTFontCreateWithGraphicsFont(cgFont, (CGFloat)size, NULL, NULL);
-      CGFontRelease(cgFont);
+  if (path[0] == '\0') {
+    /* Empty path = platform default (system) font */
+    ctFont = CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, (CGFloat)size, NULL);
+  } else {
+    /* Create font from file path */
+    CFStringRef cfPath = CFStringCreateWithCString(NULL, path, kCFStringEncodingUTF8);
+    if (cfPath) {
+      CFURLRef url = CFURLCreateWithFileSystemPath(NULL, cfPath, kCFURLPOSIXPathStyle, false);
+      if (url) {
+        CGDataProviderRef provider = CGDataProviderCreateWithURL(url);
+        if (provider) {
+          CGFontRef cgFont = CGFontCreateWithDataProvider(provider);
+          if (cgFont) {
+            ctFont = CTFontCreateWithGraphicsFont(cgFont, (CGFloat)size, NULL, NULL);
+            CGFontRelease(cgFont);
+          }
+          CGDataProviderRelease(provider);
+        }
+        CFRelease(url);
+      }
+      CFRelease(cfPath);
     }
-    CGDataProviderRelease(provider);
   }
-  CFRelease(url);
-  CFRelease(cfPath);
 
   if (!ctFont) return 0;
 
