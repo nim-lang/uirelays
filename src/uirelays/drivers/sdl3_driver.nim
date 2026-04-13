@@ -200,6 +200,9 @@ proc sdlCloseFont(f: screen.Font) =
   if idx >= 0 and idx < fonts.len and fonts[idx].ttfFont != nil:
     sdl3_ttf.closeFont(fonts[idx].ttfFont)
     fonts[idx].ttfFont = nil
+    fonts[idx].path.setLen(0)
+    fonts[idx].logicalSize = 0
+    fonts[idx].metrics = FontMetrics()
 
 proc sdlMeasureText(f: screen.Font; text: string): TextExtent =
   let fp = getFontPtr(f)
