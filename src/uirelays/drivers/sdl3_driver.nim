@@ -73,6 +73,16 @@ proc syncWindowLayout(layout: var ScreenLayout) =
   layout.scaleY = max(1, int(contentScale + 0.5))
   discard setRenderLogicalPresentation(
     ren, logicalW, logicalH, LOGICAL_PRESENTATION_STRETCH)
+
+proc syncWindowEvent(e: var input.Event) =
+  if win == nil or ren == nil:
+    return
+  var layout = ScreenLayout()
+  syncWindowLayout(layout)
+  e.kind = WindowResizeEvent
+  e.x = layout.width
+  e.y = layout.height
+
 proc sdlCreateWindow(layout: var ScreenLayout) =
   discard createWindowAndRenderer(cstring"NimEdit",
     layout.width.cint, layout.height.cint,
@@ -272,10 +282,10 @@ proc translateEvent(sdlEvent: var sdl3.Event; e: var input.Event) =
     discard convertEventToRenderCoordinates(ren, sdlEvent)
   if evType == uint32(EVENT_QUIT):
     e.kind = QuitEvent
-  elif evType == uint32(EVENT_WINDOW_RESIZED):
-    e.kind = WindowResizeEvent
-    e.x = sdlEvent.window.data1
-    e.y = sdlEvent.window.data2
+  elif evType == uint32(EVENT_WINDOW_RESIZED) or
+       evType == uint32(EVENT_WINDOW_PIXEL_SIZE_CHANGED) or
+       evType == uint32(EVENT_WINDOW_DISPLAY_SCALE_CHANGED):
+    syncWindowEvent(e)
   elif evType == uint32(EVENT_WINDOW_CLOSE_REQUESTED):
     e.kind = WindowCloseEvent
   elif evType == uint32(EVENT_WINDOW_FOCUS_GAINED):
