@@ -2,13 +2,15 @@
 
 import sdl3
 import sdl3_ttf
-import std/os
+import std/[math, os]
 import ../coords, ../input, ../screen
 
 # --- Font handle management ---
 
 type
   FontSlot = object
+    path: string
+    logicalSize: int
     ttfFont: sdl3_ttf.Font
     metrics: FontMetrics
 
@@ -27,6 +29,72 @@ proc getFontPtr(f: screen.Font): sdl3_ttf.Font {.inline.} =
 var
   win: sdl3.Window
   ren: sdl3.Renderer
+  pixelScaleX: cfloat = 1.0
+  pixelScaleY: cfloat = 1.0
+
+proc fontScale(): cfloat {.inline.} =
+  max(pixelScaleX, pixelScaleY)
+
+proc logicalToPixel(value: int; scale: cfloat): cfloat {.inline.} =
+  value.cfloat * scale
+
+proc logicalToPixelRect(r: coords.Rect): FRect {.inline.} =
+  FRect(
+    x: logicalToPixel(r.x, pixelScaleX),
+    y: logicalToPixel(r.y, pixelScaleY),
+    w: logicalToPixel(r.w, pixelScaleX),
+    h: logicalToPixel(r.h, pixelScaleY))
+
+proc logicalToPixelClipRect(r: coords.Rect): sdl3.Rect {.inline.} =
+  sdl3.Rect(
+    x: floor(logicalToPixel(r.x, pixelScaleX).float64).cint,
+    y: floor(logicalToPixel(r.y, pixelScaleY).float64).cint,
+    w: ceil(logicalToPixel(r.w, pixelScaleX).float64).cint,
+    h: ceil(logicalToPixel(r.h, pixelScaleY).float64).cint)
+
+proc pixelToLogical(value, scale: cfloat): int {.inline.} =
+  if scale <= 0: value.int
+  else: floor((value / scale).float64).int
+
+proc pixelExtentToLogical(value: int; scale: cfloat): int {.inline.} =
+  if value <= 0:
+    0
+  elif scale <= 0:
+    value
+  else:
+    max(1, ceil(value.float64 / scale.float64).int)
+
+proc scaledFontSize(size: int): cfloat {.inline.} =
+  max(1.0, size.float64 * fontScale().float64).cfloat
+
+proc refreshFontMetrics(slot: var FontSlot) =
+  if slot.ttfFont == nil:
+    slot.metrics = FontMetrics()
+    return
+  let scale = fontScale()
+  slot.metrics = FontMetrics(
+    ascent: pixelExtentToLogical(sdl3_ttf.getFontAscent(slot.ttfFont), scale),
+    descent: pixelExtentToLogical(sdl3_ttf.getFontDescent(slot.ttfFont), scale),
+    lineHeight: pixelExtentToLogical(sdl3_ttf.getFontLineSkip(slot.ttfFont), scale))
+
+proc reopenFontSlot(slot: var FontSlot) =
+  if slot.ttfFont != nil:
+    sdl3_ttf.closeFont(slot.ttfFont)
+    slot.ttfFont = nil
+  if slot.path.len == 0:
+    slot.metrics = FontMetrics()
+    return
+  slot.ttfFont = sdl3_ttf.openFont(cstring(slot.path), scaledFontSize(slot.logicalSize))
+  if slot.ttfFont == nil:
+    slot.metrics = FontMetrics()
+    return
+  sdl3_ttf.setFontHinting(slot.ttfFont, sdl3_ttf.hintingLightSubpixel)
+  refreshFontMetrics(slot)
+
+proc refreshFontsForScaleChange() =
+  for slot in fonts.mitems:
+    if slot.path.len > 0:
+      reopenFontSlot(slot)
 
 # --- Screen hook implementations ---
 
@@ -63,16 +131,29 @@ proc resolveFontPath(path: string): string =
 proc syncWindowLayout(layout: var ScreenLayout) =
   var logicalW: cint = 0
   var logicalH: cint = 0
+  var pixelW: cint = 0
+  var pixelH: cint = 0
   discard getWindowSize(win, logicalW, logicalH)
+  discard getWindowSizeInPixels(win, pixelW, pixelH)
   layout.width = logicalW
   layout.height = logicalH
 
-  let windowScale = getWindowDisplayScale(win)
-  let contentScale = if windowScale > 0: windowScale else: 1.0
-  layout.scaleX = max(1, int(contentScale + 0.5))
-  layout.scaleY = max(1, int(contentScale + 0.5))
-  discard setRenderLogicalPresentation(
-    ren, logicalW, logicalH, LOGICAL_PRESENTATION_STRETCH)
+  let prevScaleX = pixelScaleX
+  let prevScaleY = pixelScaleY
+  let scaleX = if logicalW > 0 and pixelW > 0: pixelW.cfloat / logicalW.cfloat
+               else:
+                 let windowScale = getWindowDisplayScale(win)
+                 if windowScale > 0: windowScale else: 1.0
+  let scaleY = if logicalH > 0 and pixelH > 0: pixelH.cfloat / logicalH.cfloat
+               else:
+                 let windowScale = getWindowDisplayScale(win)
+                 if windowScale > 0: windowScale else: 1.0
+  pixelScaleX = max(1.0, scaleX)
+  pixelScaleY = max(1.0, scaleY)
+  layout.scaleX = max(1, int(pixelScaleX + 0.5))
+  layout.scaleY = max(1, int(pixelScaleY + 0.5))
+  if abs(pixelScaleX - prevScaleX) > 0.001 or abs(pixelScaleY - prevScaleY) > 0.001:
+    refreshFontsForScaleChange()
 
 proc syncWindowEvent(e: var input.Event) =
   if win == nil or ren == nil:
@@ -96,7 +177,7 @@ proc sdlSaveState() = discard
 proc sdlRestoreState() = discard
 
 proc sdlSetClipRect(r: coords.Rect) =
-  var sr = sdl3.Rect(x: r.x.cint, y: r.y.cint, w: r.w.cint, h: r.h.cint)
+  var sr = logicalToPixelClipRect(r)
   discard setRenderClipRect(ren, addr sr)
 
 proc sdlOpenFont(path: string; size: int;
@@ -104,13 +185,18 @@ proc sdlOpenFont(path: string; size: int;
   let resolvedPath = resolveFontPath(path)
   if resolvedPath.len == 0:
     return screen.Font(0)
-  let f = sdl3_ttf.openFont(cstring(resolvedPath), size.cfloat)
+  let f = sdl3_ttf.openFont(cstring(resolvedPath), scaledFontSize(size))
   if f == nil: return screen.Font(0)
   sdl3_ttf.setFontHinting(f, sdl3_ttf.hintingLightSubpixel)
-  metrics.ascent = sdl3_ttf.getFontAscent(f)
-  metrics.descent = sdl3_ttf.getFontDescent(f)
-  metrics.lineHeight = sdl3_ttf.getFontLineSkip(f)
-  fonts.add FontSlot(ttfFont: f, metrics: metrics)
+  let scale = fontScale()
+  metrics.ascent = pixelExtentToLogical(sdl3_ttf.getFontAscent(f), scale)
+  metrics.descent = pixelExtentToLogical(sdl3_ttf.getFontDescent(f), scale)
+  metrics.lineHeight = pixelExtentToLogical(sdl3_ttf.getFontLineSkip(f), scale)
+  fonts.add FontSlot(
+    path: resolvedPath,
+    logicalSize: size,
+    ttfFont: f,
+    metrics: metrics)
   result = screen.Font(fonts.len)
 
 proc sdlCloseFont(f: screen.Font) =
@@ -124,18 +210,15 @@ proc sdlMeasureText(f: screen.Font; text: string): TextExtent =
   if fp != nil and text != "":
     var w, h: cint
     discard sdl3_ttf.getStringSize(fp, cstring(text), 0, w, h)
-    result = TextExtent(w: w, h: h)
+    let scale = fontScale()
+    result = TextExtent(
+      w: pixelExtentToLogical(w, scale),
+      h: pixelExtentToLogical(h, scale))
 
 proc sdlDrawText(f: screen.Font; x, y: int; text: string;
                  fg, bg: screen.Color): TextExtent =
   let fp = getFontPtr(f)
   if fp == nil or text == "": return
-  # Fill background, then draw blended text on top
-  let ext0 = sdlMeasureText(f, text)
-  var bgRect = FRect(x: x.cfloat, y: y.cfloat,
-                     w: ext0.w.cfloat, h: ext0.h.cfloat)
-  discard setRenderDrawColor(ren, bg.r, bg.g, bg.b, bg.a)
-  discard renderFillRect(ren, addr bgRect)
   let surf = sdl3_ttf.renderTextBlended(fp, cstring(text), 0, toColor(fg))
   if surf == nil: return
   let tex = createTextureFromSurface(ren, surf)
@@ -145,10 +228,20 @@ proc sdlDrawText(f: screen.Font; x, y: int; text: string;
   discard setTextureBlendMode(tex, BLENDMODE_BLEND)
   var tw, th: cfloat
   discard getTextureSize(tex, tw, th)
+  var dst = FRect(
+    x: logicalToPixel(x, pixelScaleX),
+    y: logicalToPixel(y, pixelScaleY),
+    w: tw,
+    h: th)
+  if bg.a != 0:
+    discard setRenderDrawColor(ren, bg.r, bg.g, bg.b, bg.a)
+    discard renderFillRect(ren, addr dst)
   var src = FRect(x: 0, y: 0, w: tw, h: th)
-  var dst = FRect(x: x.cfloat, y: y.cfloat, w: tw, h: th)
   discard renderTexture(ren, tex, addr src, addr dst)
-  result = TextExtent(w: tw.int, h: th.int)
+  let scale = fontScale()
+  result = TextExtent(
+    w: pixelExtentToLogical(tw.int, scale),
+    h: pixelExtentToLogical(th.int, scale))
   destroySurface(surf)
   destroyTexture(tex)
 
@@ -159,17 +252,21 @@ proc sdlGetFontMetrics(f: screen.Font): FontMetrics =
 
 proc sdlFillRect(r: coords.Rect; color: screen.Color) =
   discard setRenderDrawColor(ren, color.r, color.g, color.b, color.a)
-  var fr = FRect(x: r.x.cfloat, y: r.y.cfloat,
-                 w: r.w.cfloat, h: r.h.cfloat)
+  var fr = logicalToPixelRect(r)
   discard renderFillRect(ren, addr fr)
 
 proc sdlDrawLine(x1, y1, x2, y2: int; color: screen.Color) =
   discard setRenderDrawColor(ren, color.r, color.g, color.b, color.a)
-  discard renderLine(ren, x1.cfloat, y1.cfloat, x2.cfloat, y2.cfloat)
+  discard renderLine(
+    ren,
+    logicalToPixel(x1, pixelScaleX),
+    logicalToPixel(y1, pixelScaleY),
+    logicalToPixel(x2, pixelScaleX),
+    logicalToPixel(y2, pixelScaleY))
 
 proc sdlDrawPoint(x, y: int; color: screen.Color) =
   discard setRenderDrawColor(ren, color.r, color.g, color.b, color.a)
-  discard renderPoint(ren, x.cfloat, y.cfloat)
+  discard renderPoint(ren, logicalToPixel(x, pixelScaleX), logicalToPixel(y, pixelScaleY))
 
 proc sdlSetCursor(c: CursorKind) =
   let sc = case c
@@ -277,9 +374,6 @@ proc translateMods(m: Keymod): set[Modifier] =
 proc translateEvent(sdlEvent: var sdl3.Event; e: var input.Event) =
   e = input.Event(kind: NoEvent)
   let evType = uint32(sdlEvent.common.`type`)
-  if evType in [uint32(EVENT_MOUSE_BUTTON_DOWN), uint32(EVENT_MOUSE_BUTTON_UP),
-                uint32(EVENT_MOUSE_MOTION), uint32(EVENT_MOUSE_WHEEL)]:
-    discard convertEventToRenderCoordinates(ren, sdlEvent)
   if evType == uint32(EVENT_QUIT):
     e.kind = QuitEvent
   elif evType == uint32(EVENT_WINDOW_RESIZED) or
@@ -310,8 +404,8 @@ proc translateEvent(sdlEvent: var sdl3.Event; e: var input.Event) =
         e.text[i] = sdlEvent.text.text[i]
   elif evType == uint32(EVENT_MOUSE_BUTTON_DOWN):
     e.kind = MouseDownEvent
-    e.x = sdlEvent.button.x.int
-    e.y = sdlEvent.button.y.int
+    e.x = pixelToLogical(sdlEvent.button.x, pixelScaleX)
+    e.y = pixelToLogical(sdlEvent.button.y, pixelScaleY)
     e.clicks = sdlEvent.button.clicks.int
     case sdlEvent.button.button
     of BUTTON_LEFT: e.button = LeftButton
@@ -320,8 +414,8 @@ proc translateEvent(sdlEvent: var sdl3.Event; e: var input.Event) =
     else: e.button = LeftButton
   elif evType == uint32(EVENT_MOUSE_BUTTON_UP):
     e.kind = MouseUpEvent
-    e.x = sdlEvent.button.x.int
-    e.y = sdlEvent.button.y.int
+    e.x = pixelToLogical(sdlEvent.button.x, pixelScaleX)
+    e.y = pixelToLogical(sdlEvent.button.y, pixelScaleY)
     case sdlEvent.button.button
     of BUTTON_LEFT: e.button = LeftButton
     of BUTTON_RIGHT: e.button = RightButton
@@ -329,8 +423,8 @@ proc translateEvent(sdlEvent: var sdl3.Event; e: var input.Event) =
     else: e.button = LeftButton
   elif evType == uint32(EVENT_MOUSE_MOTION):
     e.kind = MouseMoveEvent
-    e.x = sdlEvent.motion.x.int
-    e.y = sdlEvent.motion.y.int
+    e.x = pixelToLogical(sdlEvent.motion.x, pixelScaleX)
+    e.y = pixelToLogical(sdlEvent.motion.y, pixelScaleY)
   elif evType == uint32(EVENT_MOUSE_WHEEL):
     e.kind = MouseWheelEvent
     e.x = sdlEvent.wheel.x.int
