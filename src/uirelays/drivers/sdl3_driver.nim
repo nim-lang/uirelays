@@ -52,10 +52,6 @@ proc logicalToPixelClipRect(r: coords.Rect): sdl3.Rect {.inline.} =
     w: ceil(logicalToPixel(r.w, pixelScaleX).float64).cint,
     h: ceil(logicalToPixel(r.h, pixelScaleY).float64).cint)
 
-proc pixelToLogical(value, scale: cfloat): int {.inline.} =
-  if scale <= 0: value.int
-  else: floor((value / scale).float64).int
-
 proc pixelExtentToLogical(value: int; scale: cfloat): int {.inline.} =
   if value <= 0:
     0
@@ -404,8 +400,8 @@ proc translateEvent(sdlEvent: var sdl3.Event; e: var input.Event) =
         e.text[i] = sdlEvent.text.text[i]
   elif evType == uint32(EVENT_MOUSE_BUTTON_DOWN):
     e.kind = MouseDownEvent
-    e.x = pixelToLogical(sdlEvent.button.x, pixelScaleX)
-    e.y = pixelToLogical(sdlEvent.button.y, pixelScaleY)
+    e.x = sdlEvent.button.x.int
+    e.y = sdlEvent.button.y.int
     e.clicks = sdlEvent.button.clicks.int
     case sdlEvent.button.button
     of BUTTON_LEFT: e.button = LeftButton
@@ -414,8 +410,8 @@ proc translateEvent(sdlEvent: var sdl3.Event; e: var input.Event) =
     else: e.button = LeftButton
   elif evType == uint32(EVENT_MOUSE_BUTTON_UP):
     e.kind = MouseUpEvent
-    e.x = pixelToLogical(sdlEvent.button.x, pixelScaleX)
-    e.y = pixelToLogical(sdlEvent.button.y, pixelScaleY)
+    e.x = sdlEvent.button.x.int
+    e.y = sdlEvent.button.y.int
     case sdlEvent.button.button
     of BUTTON_LEFT: e.button = LeftButton
     of BUTTON_RIGHT: e.button = RightButton
@@ -423,8 +419,8 @@ proc translateEvent(sdlEvent: var sdl3.Event; e: var input.Event) =
     else: e.button = LeftButton
   elif evType == uint32(EVENT_MOUSE_MOTION):
     e.kind = MouseMoveEvent
-    e.x = pixelToLogical(sdlEvent.motion.x, pixelScaleX)
-    e.y = pixelToLogical(sdlEvent.motion.y, pixelScaleY)
+    e.x = sdlEvent.motion.x.int
+    e.y = sdlEvent.motion.y.int
   elif evType == uint32(EVENT_MOUSE_WHEEL):
     e.kind = MouseWheelEvent
     e.x = sdlEvent.wheel.x.int
