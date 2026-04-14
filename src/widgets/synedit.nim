@@ -89,12 +89,20 @@ type
     s*: TokenClass
 
   ActionKind = enum
+    ## Undo grouping: consecutive keystrokes accumulate into a single Action
+    ## as long as the kind stays `ins` or `dele`. When whitespace is typed
+    ## (or deleted), the kind is promoted to `insFinished`/`delFinished`,
+    ## which breaks the chain -- so "hello world" becomes two undo groups:
+    ## "hello" and " world". This gives word-wise undo granularity without
+    ## any explicit word detection.
     ins, insFinished, dele, delFinished
 
   Action = object
     k: ActionKind
-    pos, version: int
-    word: string
+    pos: int      ## buffer position where the action started
+    version: int  ## groups compound ops (e.g. indent = N inserts);
+                  ## undo/redo walks all actions sharing the same version
+    word: string  ## the accumulated text inserted or deleted
 
   Indexer = object
     version: int
@@ -114,32 +122,32 @@ type
 
   SynEdit* = object
     # Gap buffer
-    front*, back*: seq[Cell]
-    cursor*: Natural
+    front, back: seq[Cell]
+    cursor: Natural
     # Line tracking
-    firstLine*, currentLine*, numberOfLines*: Natural
-    firstLineOffset*: Natural
-    span*: int
-    desiredCol*: Natural
+    firstLine, currentLine, numberOfLines: Natural
+    firstLineOffset: Natural
+    span: int
+    desiredCol: Natural
     # Selection
-    selected*: tuple[a, b: int]
+    selected: tuple[a, b: int]
     # Undo
     actions: seq[Action]
     undoIdx: int
-    version*: int
+    version: int
     cacheId: int
     # Rendering
-    font*: Font
+    font: Font
     theme*: Theme
     showLineNumbers*: bool
     focused*: bool                  ## receives keyboard input; set by the app
-    cursorVisible*: bool
-    lastBlinkTick*: int
+    cursorVisible: bool
+    lastBlinkTick: int
     cursorDim: tuple[x, y, h: int]
     # Text
     tabSize*: int
     lang*: SourceLanguage
-    changed*: bool
+    changed: bool
     readOnly*: int                  ## -1 = fully editable;
                                     ## >= 0 = positions <= readOnly are protected
     # Bracket matching
@@ -147,18 +155,26 @@ type
     # Mouse
     mouseX, mouseY, clicks: int
     # Scrollbar
-    scrollGrabbed: bool             ## user is dragging the scrollbar grip
-    scrollGrabOffset: int           ## y offset within grip where drag started
+    scrollGrabbed: bool
+    scrollGrabOffset: int
     # Highlighting
     highlighter: Indexer
     # Cache
     offsetToLineCache: array[20, tuple[version, offset, line: int]]
 
 # ---------------------------------------------------------------------------
+# Public read-only accessors
+# ---------------------------------------------------------------------------
+
+proc currentLine*(s: SynEdit): int {.inline.} = s.currentLine.int
+proc currentCol*(s: SynEdit): int {.inline.} = s.desiredCol.int
+proc changed*(s: SynEdit): bool {.inline.} = s.changed
+
+# ---------------------------------------------------------------------------
 # Gap buffer access
 # ---------------------------------------------------------------------------
 
-proc getCell*(s: SynEdit; i: Natural): Cell {.inline.} =
+proc getCell(s: SynEdit; i: Natural): Cell {.inline.} =
   if i < s.front.len:
     s.front[i]
   else:
@@ -168,7 +184,7 @@ proc getCell*(s: SynEdit; i: Natural): Cell {.inline.} =
     else:
       Cell(c: '\L')
 
-proc setCellStyle*(s: var SynEdit; i: Natural; tc: TokenClass) =
+proc setCellStyle(s: var SynEdit; i: Natural; tc: TokenClass) =
   if i < s.front.len:
     s.front[i].s = tc
   else:
@@ -176,7 +192,7 @@ proc setCellStyle*(s: var SynEdit; i: Natural; tc: TokenClass) =
     if j <= s.back.high:
       s.back[s.back.high - j].s = tc
 
-proc `[]`*(s: SynEdit; i: Natural): char {.inline.} = s.getCell(i).c
+proc `[]`(s: SynEdit; i: Natural): char {.inline.} = s.getCell(i).c
 
 proc len*(s: SynEdit): int {.inline.} = s.front.len + s.back.len
 
@@ -186,7 +202,7 @@ proc len*(s: SynEdit): int {.inline.} = s.front.len + s.back.len
 
 template ones(n: untyped): untyped = ((1 shl n) - 1)
 
-proc graphemeLen*(s: SynEdit; i: Natural): Positive =
+proc graphemeLen(s: SynEdit; i: Natural): Positive =
   result = 1
   if i >= s.len: return
   let ch = s[i]
@@ -216,6 +232,9 @@ type
     pos: int
     state: TokenClass
 
+proc `[]`(p: ptr SynEdit; i: Natural): char {.inline.} = p[][i]
+proc len(p: ptr SynEdit): int {.inline.} = p[].len
+
 const
   nimKeywords = ["addr", "and", "as", "asm", "atomic", "bind", "block",
     "break", "case", "cast", "concept", "const", "continue", "converter",
@@ -241,19 +260,19 @@ proc nimMultilineComment(g: var GeneralTokenizer; pos: int;
                          isDoc: bool): int =
   var pos = pos
   var nesting = 0
-  while pos < g.buf[].len:
-    case g.buf[][pos]
+  while pos < g.buf.len:
+    case g.buf[pos]
     of '#':
       if isDoc:
-        if g.buf[][pos+1] == '#' and g.buf[][pos+2] == '[': inc nesting
-      elif g.buf[][pos+1] == '[': inc nesting
+        if g.buf[pos+1] == '#' and g.buf[pos+2] == '[': inc nesting
+      elif g.buf[pos+1] == '[': inc nesting
       inc pos
     of ']':
       if isDoc:
-        if g.buf[][pos+1] == '#' and g.buf[][pos+2] == '#':
+        if g.buf[pos+1] == '#' and g.buf[pos+2] == '#':
           if nesting == 0: inc(pos, 3); break
           dec nesting
-      elif g.buf[][pos+1] == '#':
+      elif g.buf[pos+1] == '#':
         if nesting == 0: inc(pos, 2); break
         dec nesting
       inc pos
@@ -262,17 +281,17 @@ proc nimMultilineComment(g: var GeneralTokenizer; pos: int;
 
 proc nimNumberPostfix(g: var GeneralTokenizer; position: int): int =
   var pos = position
-  if g.buf[][pos] == '\'': inc(pos)
-  case g.buf[][pos]
+  if g.buf[pos] == '\'': inc(pos)
+  case g.buf[pos]
   of 'd', 'D': g.kind = TokenClass.FloatNumber; inc(pos)
   of 'f', 'F':
     g.kind = TokenClass.FloatNumber; inc(pos)
-    if g.buf[][pos] in {'0'..'9'}: inc(pos)
-    if g.buf[][pos] in {'0'..'9'}: inc(pos)
+    if g.buf[pos] in {'0'..'9'}: inc(pos)
+    if g.buf[pos] in {'0'..'9'}: inc(pos)
   of 'i', 'I', 'u', 'U':
     inc(pos)
-    if g.buf[][pos] in {'0'..'9'}: inc(pos)
-    if g.buf[][pos] in {'0'..'9'}: inc(pos)
+    if g.buf[pos] in {'0'..'9'}: inc(pos)
+    if g.buf[pos] in {'0'..'9'}: inc(pos)
   else: discard
   result = pos
 
@@ -280,15 +299,15 @@ proc nimNumber(g: var GeneralTokenizer; position: int): int =
   const decChars = {'0'..'9', '_'}
   var pos = position
   g.kind = TokenClass.DecNumber
-  while g.buf[][pos] in decChars: inc(pos)
-  if g.buf[][pos] == '.':
-    if g.buf[][pos+1] == '.': return pos
+  while g.buf[pos] in decChars: inc(pos)
+  if g.buf[pos] == '.':
+    if g.buf[pos+1] == '.': return pos
     g.kind = TokenClass.FloatNumber; inc(pos)
-    while g.buf[][pos] in decChars: inc(pos)
-  if g.buf[][pos] in {'e', 'E'}:
+    while g.buf[pos] in decChars: inc(pos)
+  if g.buf[pos] in {'e', 'E'}:
     g.kind = TokenClass.FloatNumber; inc(pos)
-    if g.buf[][pos] in {'+', '-'}: inc(pos)
-    while g.buf[][pos] in decChars: inc(pos)
+    if g.buf[pos] in {'+', '-'}: inc(pos)
+    while g.buf[pos] in decChars: inc(pos)
   result = nimNumberPostfix(g, pos)
 
 proc nimNextToken(g: var GeneralTokenizer) =
@@ -301,13 +320,13 @@ proc nimNextToken(g: var GeneralTokenizer) =
   g.start = g.pos
   if g.state == TokenClass.StringLit:
     g.kind = TokenClass.StringLit
-    while pos < g.buf[].len:
-      case g.buf[][pos]
+    while pos < g.buf.len:
+      case g.buf[pos]
       of '\\':
         g.kind = TokenClass.EscapeSequence; inc(pos)
-        case g.buf[][pos]
-        of 'x', 'X': inc(pos); (if g.buf[][pos] in hexChars: inc(pos)); (if g.buf[][pos] in hexChars: inc(pos))
-        of '0'..'9': (while g.buf[][pos] in {'0'..'9'}: inc(pos))
+        case g.buf[pos]
+        of 'x', 'X': inc(pos); (if g.buf[pos] in hexChars: inc(pos)); (if g.buf[pos] in hexChars: inc(pos))
+        of '0'..'9': (while g.buf[pos] in {'0'..'9'}: inc(pos))
         else: inc(pos)
         break
       of '\L', '\C': g.state = TokenClass.None; break
@@ -315,10 +334,10 @@ proc nimNextToken(g: var GeneralTokenizer) =
       else: inc(pos)
   elif g.state == TokenClass.LongStringLit:
     g.kind = TokenClass.LongStringLit
-    while pos < g.buf[].len:
-      if g.buf[][pos] == '\"':
+    while pos < g.buf.len:
+      if g.buf[pos] == '\"':
         inc(pos)
-        if g.buf[][pos] == '\"' and g.buf[][pos+1] == '\"' and g.buf[][pos+2] != '\"':
+        if g.buf[pos] == '\"' and g.buf[pos+1] == '\"' and g.buf[pos+2] != '\"':
           inc(pos, 2); break
       else: inc(pos)
     g.state = TokenClass.None
@@ -327,92 +346,92 @@ proc nimNextToken(g: var GeneralTokenizer) =
     pos = nimMultilineComment(g, pos, g.kind == TokenClass.LongComment)
     g.state = TokenClass.None
   else:
-    case g.buf[][pos]
+    case g.buf[pos]
     of ' ', '\x09'..'\x0D':
       g.kind = TokenClass.Whitespace
-      while pos < g.buf[].len and g.buf[][pos] in {' ', '\x09'..'\x0D'}: inc(pos)
+      while pos < g.buf.len and g.buf[pos] in {' ', '\x09'..'\x0D'}: inc(pos)
     of '#':
-      if g.buf[][pos+1] == '#':
+      if g.buf[pos+1] == '#':
         g.kind = TokenClass.LongComment; inc pos
       else: g.kind = TokenClass.Comment
-      if g.buf[][pos+1] == '[':
+      if g.buf[pos+1] == '[':
         g.state = g.kind
         pos = nimMultilineComment(g, pos+2, g.kind == TokenClass.LongComment)
         g.state = TokenClass.None
       else:
-        while g.buf[][pos] != '\L': inc(pos)
+        while g.buf[pos] != '\L': inc(pos)
     of 'a'..'z', 'A'..'Z', '_', '\x80'..'\xFF':
       var id = ""
-      while g.buf[][pos] in SymChars + {'_'}:
-        add(id, g.buf[][pos]); inc(pos)
-      if g.buf[][pos] == '\"':
-        if g.buf[][pos+1] == '\"' and g.buf[][pos+2] == '\"':
+      while g.buf[pos] in SymChars + {'_'}:
+        add(id, g.buf[pos]); inc(pos)
+      if g.buf[pos] == '\"':
+        if g.buf[pos+1] == '\"' and g.buf[pos+2] == '\"':
           inc(pos, 3)
           g.kind = TokenClass.LongStringLit
-          while pos < g.buf[].len:
-            if g.buf[][pos] == '\"':
+          while pos < g.buf.len:
+            if g.buf[pos] == '\"':
               inc(pos)
-              if g.buf[][pos] == '\"' and g.buf[][pos+1] == '\"' and g.buf[][pos+2] != '\"':
+              if g.buf[pos] == '\"' and g.buf[pos+1] == '\"' and g.buf[pos+2] != '\"':
                 inc(pos, 2); break
             else: inc(pos)
         else:
           g.kind = TokenClass.RawData; inc(pos)
-          while g.buf[][pos] != '\L':
-            if g.buf[][pos] == '"' and g.buf[][pos+1] != '"': break
+          while g.buf[pos] != '\L':
+            if g.buf[pos] == '"' and g.buf[pos+1] != '"': break
             inc(pos)
-          if g.buf[][pos] == '\"': inc(pos)
+          if g.buf[pos] == '\"': inc(pos)
       else:
         g.kind = nimGetKeyword(id)
     of '0':
       inc(pos)
-      case g.buf[][pos]
-      of 'b', 'B': inc(pos); (while g.buf[][pos] in binChars: inc(pos)); pos = nimNumberPostfix(g, pos)
-      of 'x', 'X': inc(pos); (while g.buf[][pos] in hexChars: inc(pos)); pos = nimNumberPostfix(g, pos)
-      of 'o', 'O': inc(pos); (while g.buf[][pos] in octChars: inc(pos)); pos = nimNumberPostfix(g, pos)
+      case g.buf[pos]
+      of 'b', 'B': inc(pos); (while g.buf[pos] in binChars: inc(pos)); pos = nimNumberPostfix(g, pos)
+      of 'x', 'X': inc(pos); (while g.buf[pos] in hexChars: inc(pos)); pos = nimNumberPostfix(g, pos)
+      of 'o', 'O': inc(pos); (while g.buf[pos] in octChars: inc(pos)); pos = nimNumberPostfix(g, pos)
       else: pos = nimNumber(g, pos)
     of '1'..'9': pos = nimNumber(g, pos)
     of '\'':
       inc(pos); g.kind = TokenClass.CharLit
       while true:
-        case g.buf[][pos]
+        case g.buf[pos]
         of '\L': break
         of '\'': inc(pos); break
         of '\\': inc(pos, 2)
         else: inc(pos)
     of '\"':
       inc(pos)
-      if g.buf[][pos] == '\"' and g.buf[][pos+1] == '\"':
+      if g.buf[pos] == '\"' and g.buf[pos+1] == '\"':
         inc(pos, 2)
         g.kind = TokenClass.LongStringLit
-        while pos < g.buf[].len:
-          if g.buf[][pos] == '\"':
+        while pos < g.buf.len:
+          if g.buf[pos] == '\"':
             inc(pos)
-            if g.buf[][pos] == '\"' and g.buf[][pos+1] == '\"' and g.buf[][pos+2] != '\"':
+            if g.buf[pos] == '\"' and g.buf[pos+1] == '\"' and g.buf[pos+2] != '\"':
               inc(pos, 2); break
           else: inc(pos)
       else:
         g.kind = TokenClass.StringLit
         while true:
-          case g.buf[][pos]
+          case g.buf[pos]
           of '\L': break
           of '\"': inc(pos); break
           of '\\': g.state = g.kind; break
           else: inc(pos)
     of '(', '[', '{':
       inc(pos); g.kind = TokenClass.Punctuation
-      if g.buf[][pos] == '.' and g.buf[][pos+1] != '.': inc pos
+      if g.buf[pos] == '.' and g.buf[pos+1] != '.': inc pos
     of ')', ']', '}', '`', ':', ',', ';':
       inc(pos); g.kind = TokenClass.Punctuation
     of '.':
-      if g.buf[][pos+1] in {')', ']', '}'}:
+      if g.buf[pos+1] in {')', ']', '}'}:
         inc(pos, 2); g.kind = TokenClass.Punctuation
       else: g.kind = TokenClass.Operator; inc pos
     else:
-      if g.buf[][pos] in OpChars:
+      if g.buf[pos] in OpChars:
         g.kind = TokenClass.Operator
-        while g.buf[][pos] in OpChars: inc(pos)
+        while g.buf[pos] in OpChars: inc(pos)
       else:
-        if pos < g.buf[].len: inc(pos)
+        if pos < g.buf.len: inc(pos)
         g.kind = TokenClass.None
   g.length = pos - g.pos
   g.pos = pos
@@ -428,12 +447,12 @@ proc clikeNextToken(g: var GeneralTokenizer; keywords: openArray[string]) =
   if g.state == TokenClass.StringLit:
     g.kind = TokenClass.StringLit
     while true:
-      case g.buf[][pos]
+      case g.buf[pos]
       of '\\':
         g.kind = TokenClass.EscapeSequence; inc(pos)
-        case g.buf[][pos]
-        of 'x', 'X': inc(pos); (if g.buf[][pos] in hexChars: inc(pos)); (if g.buf[][pos] in hexChars: inc(pos))
-        of '0'..'9': (while g.buf[][pos] in {'0'..'9'}: inc(pos))
+        case g.buf[pos]
+        of 'x', 'X': inc(pos); (if g.buf[pos] in hexChars: inc(pos)); (if g.buf[pos] in hexChars: inc(pos))
+        of '0'..'9': (while g.buf[pos] in {'0'..'9'}: inc(pos))
         else: inc(pos)
         break
       of '\L': g.state = TokenClass.None; break
@@ -442,71 +461,71 @@ proc clikeNextToken(g: var GeneralTokenizer; keywords: openArray[string]) =
   elif g.state == TokenClass.LongComment:
     var nested = 0
     g.kind = TokenClass.LongComment
-    while pos < g.buf[].len:
-      case g.buf[][pos]
-      of '*': inc(pos); (if g.buf[][pos] == '/': inc(pos); (if nested == 0: break))
-      of '/': inc(pos); (if g.buf[][pos] == '*': inc(pos))
+    while pos < g.buf.len:
+      case g.buf[pos]
+      of '*': inc(pos); (if g.buf[pos] == '/': inc(pos); (if nested == 0: break))
+      of '/': inc(pos); (if g.buf[pos] == '*': inc(pos))
       else: inc(pos)
     g.state = TokenClass.None
   else:
-    case g.buf[][pos]
+    case g.buf[pos]
     of ' ', '\x09'..'\x0D':
       g.kind = TokenClass.Whitespace
-      while pos < g.buf[].len and g.buf[][pos] in {' ', '\x09'..'\x0D'}: inc(pos)
+      while pos < g.buf.len and g.buf[pos] in {' ', '\x09'..'\x0D'}: inc(pos)
     of '/':
       inc(pos)
-      if g.buf[][pos] == '/':
+      if g.buf[pos] == '/':
         g.kind = TokenClass.Comment
-        while g.buf[][pos] != '\L': inc(pos)
-      elif g.buf[][pos] == '*':
+        while g.buf[pos] != '\L': inc(pos)
+      elif g.buf[pos] == '*':
         g.kind = TokenClass.LongComment; inc(pos)
-        while pos < g.buf[].len:
-          case g.buf[][pos]
-          of '*': inc(pos); (if g.buf[][pos] == '/': inc(pos); break)
+        while pos < g.buf.len:
+          case g.buf[pos]
+          of '*': inc(pos); (if g.buf[pos] == '/': inc(pos); break)
           else: inc(pos)
       else: g.kind = TokenClass.Operator
     of '#':
       inc(pos); g.kind = TokenClass.Preprocessor
-      while g.buf[][pos] in {' ', '\t'}: inc(pos)
-      while g.buf[][pos] in symChars: inc(pos)
+      while g.buf[pos] in {' ', '\t'}: inc(pos)
+      while g.buf[pos] in symChars: inc(pos)
     of 'a'..'z', 'A'..'Z', '_', '\x80'..'\xFF':
       var id = ""
-      while g.buf[][pos] in symChars: add(id, g.buf[][pos]); inc(pos)
+      while g.buf[pos] in symChars: add(id, g.buf[pos]); inc(pos)
       g.kind = TokenClass.Identifier
       for kw in keywords:
         if kw == id: g.kind = TokenClass.Keyword; break
     of '0':
       inc(pos)
-      case g.buf[][pos]
-      of 'b', 'B': inc(pos); (while g.buf[][pos] in binChars: inc(pos))
-      of 'x', 'X': inc(pos); (while g.buf[][pos] in hexChars: inc(pos))
-      of '0'..'7': inc(pos); (while g.buf[][pos] in octChars: inc(pos))
+      case g.buf[pos]
+      of 'b', 'B': inc(pos); (while g.buf[pos] in binChars: inc(pos))
+      of 'x', 'X': inc(pos); (while g.buf[pos] in hexChars: inc(pos))
+      of '0'..'7': inc(pos); (while g.buf[pos] in octChars: inc(pos))
       else:
         g.kind = TokenClass.DecNumber
-        while g.buf[][pos] in {'0'..'9'}: inc(pos)
+        while g.buf[pos] in {'0'..'9'}: inc(pos)
     of '1'..'9':
       g.kind = TokenClass.DecNumber
-      while g.buf[][pos] in {'0'..'9'}: inc(pos)
+      while g.buf[pos] in {'0'..'9'}: inc(pos)
     of '\'':
       g.kind = TokenClass.CharLit
       inc(pos)
-      while g.buf[][pos] notin {'\L', '\''}: inc(pos)
-      if g.buf[][pos] == '\'': inc(pos)
+      while g.buf[pos] notin {'\L', '\''}: inc(pos)
+      if g.buf[pos] == '\'': inc(pos)
     of '\"':
       inc(pos); g.kind = TokenClass.StringLit
-      while pos < g.buf[].len:
-        case g.buf[][pos]
+      while pos < g.buf.len:
+        case g.buf[pos]
         of '\"': inc(pos); break
         of '\\': g.state = g.kind; break
         else: inc(pos)
     of '(', ')', '[', ']', '{', '}', ':', ',', ';', '.':
       inc(pos); g.kind = TokenClass.Punctuation
     else:
-      if g.buf[][pos] in OpChars:
+      if g.buf[pos] in OpChars:
         g.kind = TokenClass.Operator
-        while g.buf[][pos] in OpChars: inc(pos)
+        while g.buf[pos] in OpChars: inc(pos)
       else:
-        if pos < g.buf[].len: inc(pos)
+        if pos < g.buf.len: inc(pos)
         g.kind = TokenClass.None
   g.length = pos - g.pos
   g.pos = pos
@@ -541,7 +560,7 @@ proc getNextToken(g: var GeneralTokenizer; lang: SourceLanguage) =
   of langNone, langConsole:
     # no highlighting, consume one char
     g.start = g.pos
-    if g.pos < g.buf[].len: inc g.pos
+    if g.pos < g.buf.len: inc g.pos
     g.kind = TokenClass.None
     g.length = g.pos - g.start
   of langNim: nimNextToken(g)
@@ -553,7 +572,7 @@ proc getNextToken(g: var GeneralTokenizer; lang: SourceLanguage) =
   of langXml, langHtml:
     # minimal: no highlighting
     g.start = g.pos
-    if g.pos < g.buf[].len: inc g.pos
+    if g.pos < g.buf.len: inc g.pos
     g.kind = TokenClass.None
     g.length = g.pos - g.start
 
@@ -727,7 +746,7 @@ proc downFirstLineOffset(s: var SynEdit) =
   while s[i] != '\L': inc i
   s.firstLineOffset = i + 1
 
-proc scrollLines*(s: var SynEdit; amount: int) =
+proc scrollLines(s: var SynEdit; amount: int) =
   let oldFirstLine = s.firstLine
   s.firstLine = clamp(s.firstLine.int + amount, 0, max(0, s.numberOfLines.int - 1)).Natural
   var a = s.firstLine.int - oldFirstLine.int
@@ -832,6 +851,8 @@ proc backspaceNoSelect(s: var SynEdit; overrideUtf8 = false) =
   s.prepareForEdit()
   s.actions.setLen(clamp(s.undoIdx + 1, 0, s.actions.len))
   var ah = s.actions.high
+  # Accumulate consecutive backspaces into one Action while the cursor
+  # is contiguous and the previous action was also a non-finished delete.
   if ah == -1 or s.actions[ah].k != dele or s.actions[ah].pos != oldCursor.int:
     s.actions.setLen(ah + 2)
     inc ah
@@ -841,6 +862,7 @@ proc backspaceNoSelect(s: var SynEdit; overrideUtf8 = false) =
   s.rawBackspace(overrideUtf8, s.actions[ah].word)
   s.actions[ah].pos = s.cursor
   s.edit()
+  # Deleting whitespace promotes to delFinished, breaking the group.
   if s.actions[ah].word.len == 1 and s.actions[ah].word[0] in Whitespace:
     s.actions[ah].k = delFinished
   s.desiredCol = s.getColumn().Natural
@@ -851,12 +873,17 @@ proc insertNoSelect(s: var SynEdit; text: string; singleUndoOp = false) =
   let oldCursor = s.cursor
   s.prepareForEdit()
   s.actions.setLen(clamp(s.undoIdx + 1, 0, s.actions.len))
+  # Accumulate consecutive inserts into one Action while the cursor is
+  # contiguous (pos matches) and the previous action was `ins` (not yet
+  # finished). Typing "hello" is one Action; the space after it promotes
+  # to `insFinished`, so "hello world" = two undo groups.
   if s.actions.len > 0 and s.actions[^1].k == ins and
      s.actions[^1].pos == oldCursor.int - s.actions[^1].word.len and not singleUndoOp:
     s.actions[^1].word.add text.filterForInsert
   else:
     s.actions.add(Action(k: ins, pos: s.cursor, word: text.filterForInsert,
                          version: s.version))
+  # Whitespace or explicit singleUndoOp breaks the accumulation chain.
   if text[^1] in Whitespace or singleUndoOp: s.actions[^1].k = insFinished
   s.edit()
   s.rawInsert(text)
@@ -907,6 +934,11 @@ template canUndo(s: SynEdit): bool =
   s.undoIdx >= 0 and s.undoIdx < s.actions.len
 
 proc undo*(s: var SynEdit) =
+  ## Undo all actions sharing the same version number in one step.
+  ## Compound operations like indent (which emit N inserts) share a
+  ## version, so they undo atomically. Within a single version,
+  ## each Action's `word` is the accumulated text from the grouping
+  ## logic above -- so one "undo" reverses an entire word of typing.
   if s.canUndo:
     let v = s.actions[s.undoIdx].version
     s.applyUndo(s.actions[s.undoIdx])
@@ -938,7 +970,7 @@ proc rawLeft(s: var SynEdit) =
     s.cursor -= s.lastRuneLen(s.cursor - 1)
     s.desiredCol = s.getColumn().Natural
 
-proc left*(s: var SynEdit; jump: bool) =
+proc left(s: var SynEdit; jump: bool) =
   s.rawLeft()
   if jump and s.cursor > 0:
     s.rawLeft()
@@ -956,7 +988,7 @@ proc rawRight(s: var SynEdit) =
     s.cursor += s.graphemeLen(s.cursor)
     s.desiredCol = s.getColumn().Natural
 
-proc right*(s: var SynEdit; jump: bool) =
+proc right(s: var SynEdit; jump: bool) =
   s.rawRight()
   if jump:
     if s[s.cursor] in Letters:
@@ -967,7 +999,7 @@ proc right*(s: var SynEdit; jump: bool) =
         s.rawRight()
   s.cursorMoved()
 
-proc up*(s: var SynEdit; jump: bool) =
+proc up(s: var SynEdit; jump: bool) =
   var col = s.desiredCol.int
   var i = s.cursor.int
   while i >= 1 and s[i-1] != '\L': dec i
@@ -985,7 +1017,7 @@ proc up*(s: var SynEdit; jump: bool) =
   s.cursor = max(0, i).Natural
   s.cursorMoved()
 
-proc down*(s: var SynEdit; jump: bool) =
+proc down(s: var SynEdit; jump: bool) =
   var col = s.desiredCol.int
   let L = s.len
   while s.cursor < L:
@@ -1002,7 +1034,7 @@ proc down*(s: var SynEdit; jump: bool) =
   if s.cursor > L: s.cursor = L.Natural
   s.cursorMoved()
 
-proc home*(s: var SynEdit) =
+proc home(s: var SynEdit) =
   var i = s.cursor.int
   while i > 0 and s[i-1] != '\L': dec i
   # smart home: first go to first non-whitespace, then to column 0
@@ -1015,17 +1047,17 @@ proc home*(s: var SynEdit) =
   s.desiredCol = s.getColumn().Natural
   s.cursorMoved()
 
-proc `end`*(s: var SynEdit) =
+proc `end`(s: var SynEdit) =
   while s.cursor < s.len and s[s.cursor] != '\L':
     s.cursor += 1
   s.desiredCol = s.getColumn().Natural
   s.cursorMoved()
 
-proc pageUp*(s: var SynEdit) =
+proc pageUp(s: var SynEdit) =
   let lines = max(1, s.span - 2)
   for i in 1..lines: s.up(false)
 
-proc pageDown*(s: var SynEdit) =
+proc pageDown(s: var SynEdit) =
   let lines = max(1, s.span - 2)
   for i in 1..lines: s.down(false)
 
@@ -1033,19 +1065,19 @@ proc pageDown*(s: var SynEdit) =
 # Selection
 # ---------------------------------------------------------------------------
 
-proc selectAll*(s: var SynEdit) =
+proc selectAll(s: var SynEdit) =
   s.selected = (0, s.len - 1)
 
-proc deselect*(s: var SynEdit) {.inline.} =
+proc deselect(s: var SynEdit) {.inline.} =
   s.selected.b = -1
 
-proc getSelectedText*(s: SynEdit): string =
+proc getSelectedText(s: SynEdit): string =
   if s.selected.b < 0: return ""
   result = newStringOfCap(s.selected.b - s.selected.a + 1)
   for i in s.selected.a .. s.selected.b:
     result.add s[i]
 
-proc removeSelectedText*(s: var SynEdit) =
+proc removeSelectedText(s: var SynEdit) =
   if s.selected.b < 0: return
   let a = s.selected.a
   let b = s.selected.b
@@ -1087,25 +1119,25 @@ proc select(s: var SynEdit; oldPos, newPos: int; isLeft: bool) =
         s.selected.b = newPos - s.lastRuneLen(newPos - 1)
   if s.selected.b < s.selected.a: s.deselect()
 
-proc selectLeft*(s: var SynEdit; jump: bool) =
+proc selectLeft(s: var SynEdit; jump: bool) =
   if s.cursor > 0:
     let old = s.cursor.int
     s.left(jump)
     s.select(old, s.cursor, true)
 
-proc selectRight*(s: var SynEdit; jump: bool) =
+proc selectRight(s: var SynEdit; jump: bool) =
   if s.cursor < s.len:
     let old = s.cursor.int
     s.right(jump)
     s.select(old, s.cursor, false)
 
-proc selectUp*(s: var SynEdit; jump: bool) =
+proc selectUp(s: var SynEdit; jump: bool) =
   if s.cursor > 0:
     let old = s.cursor.int
     s.up(jump)
     s.select(old, s.cursor, true)
 
-proc selectDown*(s: var SynEdit; jump: bool) =
+proc selectDown(s: var SynEdit; jump: bool) =
   if s.cursor < s.len:
     let old = s.cursor.int
     s.down(jump)
@@ -1115,7 +1147,11 @@ proc selectDown*(s: var SynEdit; jump: bool) =
 # High-level editing
 # ---------------------------------------------------------------------------
 
-proc insertChar*(s: var SynEdit; c: char) =
+proc insertChar(s: var SynEdit; c: char) =
+  # Each high-level editing operation increments `version`. All Actions
+  # created within the same call share that version number, so undo
+  # reverses them as a unit. For simple typing this is one Action per
+  # call; for indent/dedent it can be many.
   inc s.version
   if s.selected.b >= 0 and c in {'(', '[', '{', '\'', '`', '"'}:
     var x: string
@@ -1134,13 +1170,13 @@ proc insertChar*(s: var SynEdit; c: char) =
     s.insertNoSelect($c)
   s.cursorMoved()
 
-proc insertText*(s: var SynEdit; text: string) =
+proc insertText(s: var SynEdit; text: string) =
   inc s.version
   s.removeSelectedText()
   s.insertNoSelect(text, singleUndoOp = true)
   s.cursorMoved()
 
-proc backspace*(s: var SynEdit; smartIndent: bool) =
+proc backspace(s: var SynEdit; smartIndent: bool) =
   inc s.version
   if s.selected.b < 0:
     if smartIndent:
@@ -1162,7 +1198,7 @@ proc backspace*(s: var SynEdit; smartIndent: bool) =
     s.removeSelectedText()
   s.cursorMoved()
 
-proc deleteKey*(s: var SynEdit) =
+proc deleteKey(s: var SynEdit) =
   if s.selected.b < 0:
     if s.cursor >= s.len: return
     let L = s.lastRuneLen(s.cursor.int + 1)
@@ -1173,7 +1209,7 @@ proc deleteKey*(s: var SynEdit) =
     s.removeSelectedText()
   s.cursorMoved()
 
-proc insertEnter*(s: var SynEdit; smartIndent = true) =
+proc insertEnter(s: var SynEdit; smartIndent = true) =
   var i = s.cursor.int
   var inComment = false
   while i >= 1:
@@ -1198,7 +1234,7 @@ proc insertEnter*(s: var SynEdit; smartIndent = true) =
   s.insertNoSelect(toInsert, singleUndoOp = true)
   s.cursorMoved()
 
-proc indent*(s: var SynEdit) =
+proc indent(s: var SynEdit) =
   inc s.version
   if s.selected.b < 0:
     for j in 1..s.tabSize:
@@ -1216,7 +1252,7 @@ proc indent*(s: var SynEdit) =
       while i < s.len and s[i] != '\L': inc i
       if s[i] == '\L': inc i
 
-proc dedent*(s: var SynEdit) =
+proc dedent(s: var SynEdit) =
   inc s.version
   if s.selected.b < 0:
     var i = s.cursor.int
@@ -1579,7 +1615,7 @@ proc mouseSelectWholeLine(s: var SynEdit) =
   while first > 0 and s[first - 1] != '\L': dec first
   s.selected = (first, s.cursor.int)
 
-proc setCursorFromMouse*(s: var SynEdit; x, y, clickCount: int) =
+proc setCursorFromMouse(s: var SynEdit; x, y, clickCount: int) =
   s.mouseX = x
   s.mouseY = y
   s.clicks = clickCount

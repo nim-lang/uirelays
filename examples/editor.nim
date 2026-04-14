@@ -108,8 +108,8 @@ proc main =
     status.draw(noEvent, cells["status"])
 
     # update status bar with cursor position
-    let line = editor.currentLine.int + 1
-    let col = editor.desiredCol.int + 1
+    let line = editor.currentLine + 1
+    let col = editor.currentCol + 1
     status.readOnly = -1
     status.setText("Ln " & $line & ", Col " & $col &
                    "  |  " & (if editor.changed: "modified" else: "saved"))
