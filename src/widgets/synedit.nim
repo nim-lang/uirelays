@@ -1397,22 +1397,11 @@ proc catppuccinMocha*(): Theme =
   result.scrollBarActiveColor = color(108, 112, 134)
   result.scrollTrackColor = color(36, 36, 54)
 
-proc init*(s: var SynEdit; font: Font; theme = catppuccinMocha()) =
-  s.front = @[]
-  s.back = @[]
-  s.actions = @[]
-  s.cursor = 0
-  s.selected = (-1, -1)
-  s.bracketA = -1
-  s.bracketB = -1
-  s.readOnly = -1
-  s.tabSize = TabWidth
-  s.lang = langNim
-  s.font = font
-  s.theme = theme
-  s.showLineNumbers = false
-  s.cursorVisible = true
-  s.lastBlinkTick = 0
+proc createSynEdit*(font: Font; theme = catppuccinMocha()): SynEdit =
+  result = SynEdit(front: @[], back: @[], actions: @[], cursor: 0,
+    selected: (-1, -1), bracketA: -1, bracketB: -1, readOnly: -1,
+    tabSize: TabWidth, lang: langNim, font: font, theme: theme,
+    showLineNumbers: false, cursorVisible: true, lastBlinkTick: 0)
 
 # ---------------------------------------------------------------------------
 # Drawing

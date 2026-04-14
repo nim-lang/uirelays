@@ -48,9 +48,10 @@ proc main =
   let font = openFont("", 16, fm)
   setWindowTitle("SynEdit Demo")
 
-  var title, editor, terminal, status: SynEdit
-  for w in [addr title, addr editor, addr terminal, addr status]:
-    w[].init(font)
+  var title = createSynEdit(font)
+  var editor = createSynEdit(font)
+  var terminal = createSynEdit(font)
+  var status = createSynEdit(font)
 
   title.setLabel("SynEdit Demo  --  editor (left) | terminal (right)")
 
