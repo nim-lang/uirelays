@@ -24,7 +24,7 @@ jobs:
       - name: install deps
         run: |
           sudo apt update
-          sudo apt install libx11-dev libxft-dev libsdl3-dev libsdl3-ttf-dev libsdl2-dev libsdl2-ttf-dev
+          sudo apt install libx11-dev libxft-dev libsdl2-dev libsdl2-ttf-dev
 
 
       - name: Install SDL3 and SDL2
