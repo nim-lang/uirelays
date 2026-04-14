@@ -8,8 +8,8 @@
 ##
 ## Usage::
 ##
-##   var ed: SynEdit
-##   ed.init(font)             # uses catppuccin mocha theme by default
+##   var ed = createSynEdit(font)
+##   # uses catppuccin mocha theme by default
 ##   ed.setText("hello world")
 ##   # in your main loop:
 ##   ed.draw(e, rect(10, 10, 600, 400))
