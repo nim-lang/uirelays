@@ -1354,6 +1354,12 @@ proc appendOutput*(s: var SynEdit; text: string) =
   s.highlightLine(s.cursor)
   s.readOnly = s.len - 1
 
+proc setLabel*(s: var SynEdit; text: string) =
+  ## Set text and make the entire buffer read-only. For labels and status bars.
+  s.readOnly = -1
+  s.setText(text)
+  s.readOnly = s.len - 1
+
 # ---------------------------------------------------------------------------
 # Initialization
 # ---------------------------------------------------------------------------

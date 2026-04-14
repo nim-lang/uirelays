@@ -10,6 +10,12 @@ import ../src/uirelays
 import ../src/uirelays/layout
 import ../src/widgets/synedit
 
+const appLayout = parseLayout("""
+| title, 1 line                                   |
+| editor, *       | terminal, *                    |
+| status, 1 line                                   |
+""")
+
 const sampleCode = """
 import strutils, os
 
@@ -33,12 +39,6 @@ when isMainModule:
   main()
 """
 
-const appLayout = parseLayout("""
-| title, 1 line                                   |
-| editor, *       | terminal, *                    |
-| status, 1 line                                   |
-""")
-
 proc main =
   let screen = createWindow(1100, 700)
   var width = screen.width
@@ -48,17 +48,12 @@ proc main =
   let font = openFont("", 16, fm)
   setWindowTitle("SynEdit Demo")
 
-  let theme = catppuccinMocha()
+  var title, editor, terminal, status: SynEdit
+  for w in [addr title, addr editor, addr terminal, addr status]:
+    w[].init(font)
 
-  # Title bar -- read-only label
-  var title: SynEdit
-  title.init(font, theme)
-  title.setText("SynEdit Demo  --  editor (left) | terminal (right)")
-  title.readOnly = title.len - 1
+  title.setLabel("SynEdit Demo  --  editor (left) | terminal (right)")
 
-  # Code editor
-  var editor: SynEdit
-  editor.init(font, theme)
   editor.lang = langNim
   editor.showLineNumbers = true
   if paramCount() >= 1:
@@ -66,57 +61,39 @@ proc main =
   else:
     editor.setText(sampleCode)
 
-  # Terminal panel
-  var terminal: SynEdit
-  terminal.init(font, theme)
   terminal.lang = langConsole
   terminal.appendOutput("Welcome to the terminal.\n$ ")
 
-  # Status bar -- read-only label
-  var status: SynEdit
-  status.init(font, theme)
-  status.setText("Ready")
-  status.readOnly = status.len - 1
+  status.setLabel("Ready")
 
-  editor.focused = true  # editor starts with focus
+  editor.focused = true
 
   var running = true
   while running:
     let cells = appLayout.resolve(width, height, fm.lineHeight)
 
-    # process all pending events, routing each through every widget
-    var e: Event
-    while pollEvent(e, {WantTextInput}):
+    var e = default Event
+    if pollEvent(e, {WantTextInput}):
       case e.kind
       of QuitEvent, WindowCloseEvent:
         running = false
       of WindowResizeEvent:
         width = e.x
         height = e.y
-      else:
-        # each widget's draw handles focus via mouse clicks
-        title.draw(e, cells["title"])
-        editor.draw(e, cells["editor"])
-        terminal.draw(e, cells["terminal"])
-        status.draw(e, cells["status"])
+      else: discard
+    else:
+      sleep(16)
 
-    # render frame with a no-event pass
-    var noEvent: Event
-    title.draw(noEvent, cells["title"])
-    editor.draw(noEvent, cells["editor"])
-    terminal.draw(noEvent, cells["terminal"])
-    status.draw(noEvent, cells["status"])
+    title.draw(e, cells["title"])
+    editor.draw(e, cells["editor"])
+    terminal.draw(e, cells["terminal"])
+    status.draw(e, cells["status"])
 
-    # update status bar with cursor position
-    let line = editor.currentLine + 1
-    let col = editor.currentCol + 1
-    status.readOnly = -1
-    status.setText("Ln " & $line & ", Col " & $col &
-                   "  |  " & (if editor.changed: "modified" else: "saved"))
-    status.readOnly = status.len - 1
+    status.setLabel("Ln " & $(editor.currentLine + 1) &
+                    ", Col " & $(editor.currentCol + 1) &
+                    "  |  " & (if editor.changed: "modified" else: "saved"))
 
     refresh()
-    sleep(16)
 
   closeFont(font)
   quitRequest()
