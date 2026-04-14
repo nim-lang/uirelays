@@ -15,5 +15,5 @@ template execBackend(cmd: string) =
 
 execBackend("")
 execBackend("-d:gtk4")
-execBackend("-d:ssl2")
-execBackend("-d:ssl3")
+execBackend("-d:sdl2")
+execBackend("-d:sdl3")
