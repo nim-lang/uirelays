@@ -108,6 +108,9 @@ type
     bracketBg*: Color               ## bracket match background
     cursorColor*: Color             ## cursor bar color
     lineNumColor*: Color            ## line number foreground
+    scrollBarColor*: Color          ## scrollbar grip
+    scrollBarActiveColor*: Color    ## scrollbar grip while dragging
+    scrollTrackColor*: Color        ## scrollbar track background
 
   SynEdit* = object
     # Gap buffer
@@ -143,6 +146,9 @@ type
     bracketA, bracketB: int
     # Mouse
     mouseX, mouseY, clicks: int
+    # Scrollbar
+    scrollGrabbed: bool             ## user is dragging the scrollbar grip
+    scrollGrabOffset: int           ## y offset within grip where drag started
     # Highlighting
     highlighter: Indexer
     # Cache
@@ -1345,6 +1351,9 @@ proc catppuccinMocha*(): Theme =
   result.bracketBg = color(69, 71, 90)
   result.cursorColor = color(205, 214, 244)
   result.lineNumColor = color(108, 112, 134)
+  result.scrollBarColor = color(69, 71, 90)
+  result.scrollBarActiveColor = color(108, 112, 134)
+  result.scrollTrackColor = color(36, 36, 54)
 
 proc init*(s: var SynEdit; font: Font; theme = catppuccinMocha()) =
   s.front = @[]
@@ -1418,11 +1427,20 @@ proc drawSubtoken(db: var DrawBuf; ra, rb: int; fg, bg: Color) =
       for k in ra ..< idx: other.add db.chars[k]
       db.cursorDim = d
       db.cursorDim.x += textWidth(db.font, other)
-  # mouse click handling
+  # mouse click handling: find the character within the token
   if db.s[].clicks > 0:
     let p = point(db.s[].mouseX, db.s[].mouseY)
     if d.contains(p):
-      db.s[].cursor = db.toCursor[ra].Natural
+      # measure incrementally to find which char the click lands on
+      var best = ra
+      var prefix = ""
+      for k in ra .. rb:
+        prefix.add db.chars[k]
+        if d.x + textWidth(db.font, prefix) > db.s[].mouseX:
+          break
+        best = k + 1
+      if best > rb + 1: best = rb + 1
+      db.s[].cursor = db.toCursor[min(best, rb + 1)].Natural
       db.s[].setCurrentLine()
       db.s[].clicks = 0
       db.s[].cursorMoved()
@@ -1572,7 +1590,32 @@ proc setCursorFromMouse*(s: var SynEdit; x, y, clickCount: int) =
 # draw: input handling + rendering (immediate mode)
 # ---------------------------------------------------------------------------
 
+const ScrollBarWidth* = 14
+
+proc scrollEnabled(s: SynEdit): bool {.inline.} =
+  s.span > 0 and s.span.Natural <= s.numberOfLines
+
+proc scrollGrip(s: SynEdit; area: Rect; lineH: int): Rect =
+  ## Compute the scrollbar grip rectangle.
+  if not s.scrollEnabled: return
+  let totalLines = s.numberOfLines.int + s.span
+  let contentH = float(totalLines * lineH)
+  let trackH = float(area.h - 2)
+  let ratio = float(area.h) / contentH
+  let gripH = clamp(int(trackH * ratio), 20, int(trackH))
+  let scrollArea = trackH - float(gripH)
+  let maxScroll = float(totalLines - s.span)
+  let posRatio = if maxScroll > 0: float(s.firstLine) / maxScroll else: 0.0
+  let gripY = clamp(int(scrollArea * posRatio) + area.y + 1,
+                     area.y + 1, area.y + area.h - gripH - 1)
+  result = rect(area.x + area.w - ScrollBarWidth, gripY,
+                ScrollBarWidth - 2, gripH)
+
 proc draw*(s: var SynEdit; e: Event; area: Rect) =
+  let lineH = fontLineSkip(s.font)
+  let grip = s.scrollGrip(area, lineH)
+  let hasScrollBar = s.scrollEnabled
+
   # --- input handling ---
   case e.kind
   of TextInputEvent:
@@ -1657,7 +1700,12 @@ proc draw*(s: var SynEdit; e: Event; area: Rect) =
       else: discard
 
   of MouseDownEvent:
-    if area.contains(point(e.x, e.y)):
+    if hasScrollBar and grip.contains(point(e.x, e.y)):
+      # clicked on the scrollbar grip -- start dragging
+      s.focused = true
+      s.scrollGrabbed = true
+      s.scrollGrabOffset = e.y - grip.y
+    elif area.contains(point(e.x, e.y)):
       s.focused = true
       if e.clicks >= 3:
         s.setCursorFromMouse(e.x, e.y, 1)
@@ -1670,6 +1718,23 @@ proc draw*(s: var SynEdit; e: Event; area: Rect) =
     else:
       s.focused = false
 
+  of MouseUpEvent:
+    s.scrollGrabbed = false
+
+  of MouseMoveEvent:
+    if s.scrollGrabbed and hasScrollBar:
+      let trackH = float(area.h - 2)
+      let totalLines = s.numberOfLines.int + s.span
+      let ratio = float(area.h) / float(totalLines * lineH)
+      let gripH = clamp(trackH * ratio, 20, trackH)
+      let trackScrollArea = trackH - gripH
+      if trackScrollArea > 0:
+        let mouseRel = float(e.y - s.scrollGrabOffset - area.y - 1)
+        let posRatio = clamp(mouseRel / trackScrollArea, 0.0, 1.0)
+        let maxScroll = totalLines - s.span
+        let target = clamp(int(posRatio * float(maxScroll)), 0, maxScroll)
+        s.scrollLines(target - s.firstLine.int)
+
   of MouseWheelEvent:
     if s.focused:
       s.scrollLines(-e.y * 3)
@@ -1681,7 +1746,7 @@ proc draw*(s: var SynEdit; e: Event; area: Rect) =
 
   s.cursorDim.h = 0
   let endY = area.y + area.h - 1
-  let endX = area.x + area.w - 1
+  let endX = area.x + area.w - (if hasScrollBar: ScrollBarWidth else: 0) - 1
   var dim = area
   dim.w = endX
   dim.h = endY
@@ -1696,7 +1761,6 @@ proc draw*(s: var SynEdit; e: Event; area: Rect) =
   var i = s.firstLineOffset.int
   s.span = 0
 
-  let lineH = fontLineSkip(s.font)
   let fontSize = lineH
 
   # cursor: show when focused and cursor is in an editable position
@@ -1729,4 +1793,15 @@ proc draw*(s: var SynEdit; e: Event; area: Rect) =
     s.setCurrentLine()
     s.clicks = 0
     s.cursorMoved()
+
+  # draw scrollbar
+  if hasScrollBar:
+    let trackRect = rect(area.x + area.w - ScrollBarWidth, area.y,
+                         ScrollBarWidth, area.h)
+    fillRect(trackRect, s.theme.scrollTrackColor)
+    # recompute grip after possible scroll changes
+    let finalGrip = s.scrollGrip(area, lineH)
+    let gripColor = if s.scrollGrabbed: s.theme.scrollBarActiveColor
+                    else: s.theme.scrollBarColor
+    fillRect(finalGrip, gripColor)
 
