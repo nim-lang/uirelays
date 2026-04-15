@@ -277,17 +277,17 @@ proc ConnectionNumber(dpy: pointer): cint
   {.cdecl, dynlib: libX11, importc: "XConnectionNumber".}
 
 type
-  FdSet {.importc: "fd_set", header: "<sys/select.h>".} = object
-  Timeval {.importc: "struct timeval", header: "<sys/time.h>".} = object
+  XFdSet {.importc: "fd_set", header: "<sys/select.h>".} = object
+  XTimeval {.importc: "struct timeval", header: "<sys/time.h>".} = object
     tv_sec {.importc.}: clong
     tv_usec {.importc.}: clong
 
-proc FD_ZERO(s: ptr FdSet)
-  {.importc, header: "<sys/select.h>".}
-proc FD_SET(fd: cint; s: ptr FdSet)
-  {.importc, header: "<sys/select.h>".}
-proc c_select(nfds: cint; readfds, writefds, exceptfds: ptr FdSet;
-              timeout: ptr Timeval): cint
+proc xFdZero(s: ptr XFdSet)
+  {.importc: "FD_ZERO", header: "<sys/select.h>".}
+proc xFdSet(fd: cint; s: ptr XFdSet)
+  {.importc: "FD_SET", header: "<sys/select.h>".}
+proc xSelect(nfds: cint; readfds, writefds, exceptfds: ptr XFdSet;
+             timeout: ptr XTimeval): cint
   {.importc: "select", header: "<sys/select.h>".}
 
 # ---- X11 function imports ----
@@ -852,17 +852,16 @@ proc x11WaitEvent(e: var input.Event; timeoutMs: int;
 
   # Block on the X11 connection fd using select() with timeout.
   let xfd = ConnectionNumber(gDisplay)
-  var fds: FdSet
-  FD_ZERO(addr fds)
-  FD_SET(xfd, addr fds)
+  var fds: XFdSet
+  xFdZero(addr fds)
+  xFdSet(xfd, addr fds)
 
   if timeoutMs < 0:
-    # Block indefinitely
-    discard c_select(xfd + 1, addr fds, nil, nil, nil)
+    discard xSelect(xfd + 1, addr fds, nil, nil, nil)
   else:
-    var tv = Timeval(tv_sec: (timeoutMs div 1000).clong,
-                     tv_usec: ((timeoutMs mod 1000) * 1000).clong)
-    discard c_select(xfd + 1, addr fds, nil, nil, addr tv)
+    var tv = XTimeval(tv_sec: (timeoutMs div 1000).clong,
+                      tv_usec: ((timeoutMs mod 1000) * 1000).clong)
+    discard xSelect(xfd + 1, addr fds, nil, nil, addr tv)
 
   # select() returned -- drain whatever arrived
   drainXEvents()
@@ -954,6 +953,6 @@ proc initX11Driver*() =
   inputRelays = InputRelays(
     pollEvent: x11PollEvent, waitEvent: x11WaitEvent,
     getTicks: x11GetTicks, sleep: x11Delay,
-    quitRequest: x11QuitRequest)
+    shutdown: x11QuitRequest)
   clipboardRelays = ClipboardRelays(
     getText: x11GetClipboardText, putText: x11PutClipboardText)

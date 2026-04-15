@@ -95,6 +95,6 @@ proc main =
     refresh()
 
   closeFont(font)
-  quitRequest()
+  shutdown()
 
 main()

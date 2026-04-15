@@ -758,6 +758,6 @@ proc initGtk4Driver*() =
   inputRelays = InputRelays(
     pollEvent: gtkPollEvent, waitEvent: gtkWaitEvent,
     getTicks: gtkGetTicks, sleep: gtkDelay,
-    quitRequest: gtkQuitRequest)
+    shutdown: gtkQuitRequest)
   clipboardRelays = ClipboardRelays(
     getText: gtkGetClipboardText, putText: gtkPutClipboardText)
