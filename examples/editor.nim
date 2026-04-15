@@ -177,7 +177,10 @@ proc main =
 
   var running = true
   while running:
-    let cells = appLayout.resolve(width, height, fm.lineHeight)
+    let cells = appLayout.resolve(width, height, fm.lineHeight, gap = 2)
+
+    # Fill background -- gaps between cells show this color as borders
+    fillRect(rect(0, 0, width, height), color(200, 200, 200))
 
     var e = default Event
     discard waitEvent(e, 500, {WantTextInput})

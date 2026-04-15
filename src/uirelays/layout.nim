@@ -113,11 +113,15 @@ proc resolveSize(sz: CellSize; lineHeight, padding: int): int =
   of skStretch: 0  # resolved later
 
 proc resolve*(layout: Layout; screenW, screenH: int;
-              lineHeight: int = 20; padding: int = 6): Table[string, Rect] =
+              lineHeight: int = 20; padding: int = 6;
+              gap: int = 0): Table[string, Rect] =
   ## Resolve the layout into named Rects given screen dimensions.
   ## lineHeight is used to resolve "N lines" sizes.
   ## padding is added above and below the text area for "N lines" cells.
+  ## gap inserts pixel gaps between adjacent cells (for visible borders).
   result = initTable[string, Rect]()
+
+  let rowGaps = gap * max(0, layout.rows.len - 1)
 
   # Pass 1: resolve row heights
   var rowHeights = newSeq[int](layout.rows.len)
@@ -133,7 +137,7 @@ proc resolve*(layout: Layout; screenW, screenH: int;
     rowHeights[i] = h
 
   # Distribute remaining space to stretch rows
-  let remaining = max(0, screenH - totalFixed)
+  let remaining = max(0, screenH - totalFixed - rowGaps)
   if totalStretchWeight > 0:
     for i, row in layout.rows:
       if row.height.kind == skStretch:
@@ -143,8 +147,8 @@ proc resolve*(layout: Layout; screenW, screenH: int;
   var y = 0
   for i, row in layout.rows:
     let rowH = rowHeights[i]
+    let colGaps = gap * max(0, row.cells.len - 1)
     if row.cells.len == 1:
-      # Single cell spans full width
       let c = row.cells[0]
       result[c.name] = Rect(x: 0, y: y, w: screenW, h: rowH)
     else:
@@ -160,7 +164,7 @@ proc resolve*(layout: Layout; screenW, screenH: int;
           fixedW += w
         cellWidths[j] = w
 
-      let remainW = max(0, screenW - fixedW)
+      let remainW = max(0, screenW - fixedW - colGaps)
       if stretchW > 0:
         for j, c in row.cells:
           if c.width.kind == skStretch:
@@ -170,9 +174,9 @@ proc resolve*(layout: Layout; screenW, screenH: int;
       for j, c in row.cells:
         result[c.name] = Rect(x: x, y: y,
                               w: cellWidths[j], h: rowH)
-        x += cellWidths[j]
+        x += cellWidths[j] + gap
 
-    y += rowH
+    y += rowH + gap
 
 proc cell*(layout: Layout; name: string): bool =
   ## Check if a cell name exists in the layout.
