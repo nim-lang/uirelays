@@ -119,9 +119,9 @@ proc updateFilesPanel(files: var SynEdit; buffers: seq[BufferEntry];
   var text = ""
   for i, b in buffers:
     let name = if b.path.len > 0: b.path.extractFilename else: "[scratch]"
-    let marker = if i == current: "> " else: "  "
     let modified = if b.ed.changed: " *" else: ""
-    text.add marker & name & modified
+    let marker = if i == current: " <" else: ""
+    text.add name & modified & marker
     if i < buffers.high: text.add "\n"
   files.setLabel(text)
 
