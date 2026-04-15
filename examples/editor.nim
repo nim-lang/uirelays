@@ -19,9 +19,9 @@ import uirelays/layout
 import widgets/[synedit, terminal]
 
 const appLayout = parseLayout("""
-| title, 1 line                                        |
-| files, 120px | editor, *       | terminal, *         |
-| status, 1 line                                       |
+| title, 1 line                                                   |
+| files, 120px | editor, 3* | history, 5 lines, 2* ; terminal, * |
+| status, 1 line                                                  |
 """)
 
 const sampleCode = """
@@ -154,6 +154,19 @@ proc updateStatus(status: var Terminal; ed: SynEdit; path: string) =
   status.ed.lang = langConsole
   status.ed.appendOutput(info)
 
+proc updateHistory(history: var SynEdit; term: Terminal) =
+  ## Show the most recent commands from all terminal history.
+  var cmds: seq[string]
+  for process, h in term.hist:
+    for cmd in h.cmds:
+      cmds.add cmd
+  # Show most recent last (bottom of the list, closest to terminal)
+  var text = ""
+  for i, cmd in cmds:
+    if i > 0: text.add "\n"
+    text.add cmd
+  history.setLabel(text)
+
 proc tryOpenFile(arg: string; buffers: var seq[BufferEntry];
                  current: var int; font: Font; focus: var string) =
   let path = if isAbsolute(arg): arg else: os.getCurrentDir() / arg
@@ -177,6 +190,7 @@ proc main =
 
   var title = createSynEdit(font)
   var files = createSynEdit(font)
+  var history = createSynEdit(font)
   var term = createTerminal(font)
   var status = createTerminal(font)
 
@@ -243,6 +257,21 @@ proc main =
       discard # TODO: underline identifier at edAct.pos
     of noAction:
       buffers[current].ed.underline(-1, -1)
+
+    # History panel -- click to re-run a command
+    updateHistory(history, term)
+    discard history.draw(e, cells["history"], focus == "history")
+    if e.kind == MouseDownEvent and focus == "history":
+      let idx = history.currentLine
+      let cmds = block:
+        var r: seq[string]
+        for _, h in term.hist:
+          for cmd in h.cmds: r.add cmd
+        r
+      if idx < cmds.len:
+        var cmd = cmds[idx]
+        discard term.runCommand(cmd)
+        focus = "terminal"
 
     # Terminal
     let termAct = term.draw(e, cells["terminal"], focus == "terminal")
