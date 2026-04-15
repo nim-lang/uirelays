@@ -103,14 +103,14 @@ type
 
   EditActionKind* = enum
     noAction,
-    gotoDefinition      ## request to jump to a definition (file, line, col)
+    ctrlHover,          ## ctrl+mouse move over text
+    ctrlClick           ## ctrl+click on text
 
   EditAction* = object
     case kind*: EditActionKind
     of noAction: discard
-    of gotoDefinition:
-      file*: string
-      line*, col*: int
+    of ctrlHover, ctrlClick:
+      pos*: int         ## buffer offset
 
   SynEdit* = object
     # Gap buffer
@@ -143,6 +143,13 @@ type
                                     ## >= 0 = positions <= readOnly are protected
     # Bracket matching
     bracketA, bracketB: int
+    # Underline (set by the app via underline())
+    hotLink*: tuple[a, b: int]      ## buffer range to draw underlined
+                                    ## (-1, -1) = no underline
+    # Ctrl+hover probe
+    probeX, probeY: int             ## screen coords for hover probe
+    probeActive: bool               ## a probe is pending
+    probeResult*: int               ## resolved buffer offset after render; -1 if none
     # Mouse
     mouseX, mouseY, clicks: int
     # Scrollbar
@@ -1332,8 +1339,14 @@ proc setText*(s: var SynEdit; text: string) =
   s.highlightEverything()
   s.changed = false
 
+proc isBinary(text: string): bool =
+  let check = min(text.len, 8192)
+  for i in 0 ..< check:
+    if text[i] == '\0': return true
+
 proc loadFromFile*(s: var SynEdit; filename: string) =
   let text = readFile(filename)
+  if text.isBinary: return
   s.setText(text)
 
 proc appendOutput*(s: var SynEdit; text: string) =
@@ -1358,8 +1371,9 @@ proc setLabel*(s: var SynEdit; text: string) =
 
 proc createSynEdit*(font: Font; theme = catppuccinMocha()): SynEdit =
   result = SynEdit(front: @[], back: @[], actions: @[], cursor: 0,
-    selected: (-1, -1), bracketA: -1, bracketB: -1, readOnly: -1,
-    tabSize: TabWidth, lang: langNim, font: font, theme: theme,
+    selected: (-1, -1), bracketA: -1, bracketB: -1, hotLink: (-1, -1),
+    readOnly: -1, tabSize: TabWidth, lang: langNim,
+    font: font, theme: theme,
     showLineNumbers: false, cursorVisible: true, lastBlinkTick: 0)
 
 # ---------------------------------------------------------------------------
@@ -1382,6 +1396,11 @@ proc getBg(s: SynEdit; i: int): Color =
   if i <= s.selected.b and s.selected.a <= i: return s.theme.selBg
   if i == s.bracketA or i == s.bracketB: return s.theme.bracketBg
   return s.theme.bg
+
+proc underline*(s: var SynEdit; a, b: int) =
+  ## Set the underline range. Call before the draw/render that should show it.
+  ## Pass (-1, -1) to clear.
+  s.hotLink = (a, b)
 
 const
   CharBufSize = 80
@@ -1434,7 +1453,27 @@ proc drawSubtoken(db: var DrawBuf; ra, rb: int; fg, bg: Color) =
       db.s[].setCurrentLine()
       db.s[].clicks = 0
       db.s[].cursorMoved()
-  discard drawText(db.font, d.x, d.y, db.tempStr, fg, bg)
+  # Ctrl+hover probe: resolve screen coords to buffer position
+  if db.s[].probeActive and db.s[].probeResult < 0:
+    let p = point(db.s[].probeX, db.s[].probeY)
+    if d.contains(p):
+      var best = ra
+      var prefix = ""
+      for k in ra .. rb:
+        prefix.add db.chars[k]
+        if d.x + textWidth(db.font, prefix) > db.s[].probeX:
+          break
+        best = k + 1
+      if best > rb + 1: best = rb + 1
+      db.s[].probeResult = db.toCursor[min(best, rb)]
+  # Underline range (set externally via underline())
+  let hl = db.s[].hotLink
+  let isLink = hl.a >= 0 and db.toCursor[ra] <= hl.b and db.toCursor[rb] >= hl.a
+  let fgColor = if isLink: db.s[].theme.cursorColor else: fg
+  discard drawText(db.font, d.x, d.y, db.tempStr, fgColor, bg)
+  if isLink:
+    let ulY = d.y + db.lineH - 1
+    drawLine(d.x, ulY, d.x + textWidth(db.font, db.tempStr), ulY, fgColor)
 
 proc drawToken(db: var DrawBuf; fg, bg: Color) =
   if db.dim.y + db.lineH > db.maxY: return
@@ -1760,7 +1799,9 @@ proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
       s.scrollGrabbed = true
       s.scrollGrabOffset = e.y - grip.y
     elif area.contains(point(e.x, e.y)):
-      if e.clicks >= 3:
+      if CtrlPressed in e.mods:
+        s.setCursorFromMouse(e.x, e.y, 1)
+      elif e.clicks >= 3:
         s.setCursorFromMouse(e.x, e.y, 1)
         s.mouseSelectWholeLine()
       elif e.clicks == 2:
@@ -1773,6 +1814,14 @@ proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
     s.scrollGrabbed = false
 
   of MouseMoveEvent:
+    if (CtrlPressed in e.mods) and area.contains(point(e.x, e.y)):
+      s.probeX = e.x
+      s.probeY = e.y
+      s.probeActive = true
+      s.probeResult = -1
+    else:
+      s.probeActive = false
+      s.probeResult = -1
     if s.scrollGrabbed and hasScrollBar:
       let trackH = float(area.h - 2)
       let totalLines = s.numberOfLines.int + s.span
@@ -1798,4 +1847,11 @@ proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
     s.lastBlinkTick = getTicks()
 
   s.render(area, showCursor = focused)
+
+  # After rendering, probe and click positions have been resolved.
+  if e.kind == MouseDownEvent and (CtrlPressed in e.mods) and
+     area.contains(point(e.x, e.y)):
+    result = EditAction(kind: ctrlClick, pos: s.cursor.int)
+  elif s.probeActive and s.probeResult >= 0:
+    result = EditAction(kind: ctrlHover, pos: s.probeResult)
 

@@ -238,16 +238,16 @@ type
   TermActionKind* = enum
     noAction,
     openFile,           ## user typed `o <file>`
-    gotoSource          ## user clicked on an error message (file, line, col)
+    ctrlHover,          ## ctrl+mouse move over text
+    ctrlClick           ## ctrl+click on text
 
   TermAction* = object
     case kind*: TermActionKind
     of noAction: discard
     of openFile:
       file*: string
-    of gotoSource:
-      sourceFile*: string
-      line*, col*: int
+    of ctrlHover, ctrlClick:
+      pos*: int         ## buffer offset
 
   Terminal* = object
     ed*: SynEdit
@@ -269,7 +269,7 @@ proc emptyCmd(t: var Terminal) =
     if t.ed.len - 1 <= t.ed.readOnly: break
     t.ed.backspace(smartIndent = false)
 
-proc insertPrompt(t: var Terminal) =
+proc insertPrompt*(t: var Terminal) =
   t.ed.appendOutput(os.getCurrentDir() & ">")
 
 # ---------------------------------------------------------------------------
@@ -442,49 +442,6 @@ proc sendBreak*(t: var Terminal) =
     requests.send EndToken
 
 # ---------------------------------------------------------------------------
-# File position extraction (for clicking on error messages)
-# ---------------------------------------------------------------------------
-
-proc extractFilePosition*(t: Terminal): tuple[file: string, line, col: int] =
-  result = ("", -1, -1)
-  let text = t.ed.fullText()
-  # Find start of current line from cursor position
-  var i = min(t.ed.cursor, text.len - 1)
-  while i > 0 and text[i-1] != '\L': dec i
-  while i < text.len and text[i] == ' ': inc i
-  var file = ""
-  while i < text.len and text[i] != ' ':
-    if text[i] == '(' or (text[i] == ':' and i+1 < text.len and text[i+1] != '\\'): break
-    file.add text[i]
-    inc i
-
-  template parseNumber(num: var int) =
-    while i < text.len and text[i] in {'0'..'9'}:
-      num = num * 10 + (ord(text[i]) - ord('0'))
-      inc i
-
-  var line, col: int
-  if i+1 < text.len and text[i] == '(' and text[i+1] in {'0'..'9'}:
-    inc i
-    parseNumber(line)
-    if i < text.len and text[i] == ',':
-      inc i
-      while i < text.len and text[i] == ' ': inc i
-      parseNumber(col)
-    else:
-      col = -1
-    if i < text.len and text[i] == ')':
-      result = (file, line, col)
-  elif i+1 < text.len and text[i] == ':' and text[i+1] in {'0'..'9'}:
-    inc i
-    parseNumber(line)
-    if i < text.len and text[i] == ':':
-      inc i
-      parseNumber(col)
-      if i < text.len and text[i] == ':':
-        result = (file, line, col)
-
-# ---------------------------------------------------------------------------
 # Initialization
 # ---------------------------------------------------------------------------
 
@@ -546,4 +503,10 @@ proc draw*(t: var Terminal; e: Event; area: Rect; focused: bool): TermAction =
           return
       else: discard
 
-  discard t.ed.draw(e, area, focused)
+  let edAct = t.ed.draw(e, area, focused)
+  case edAct.kind
+  of ctrlHover:
+    result = TermAction(kind: ctrlHover, pos: edAct.pos)
+  of ctrlClick:
+    result = TermAction(kind: ctrlClick, pos: edAct.pos)
+  of noAction: discard
