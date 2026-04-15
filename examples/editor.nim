@@ -8,7 +8,7 @@ import std/tables
 from std/cmdline import paramCount, paramStr
 import uirelays
 import uirelays/layout
-import widgets/[synedit, terminal]
+import widgets/[synedit, terminal, label]
 
 const appLayout = parseLayout("""
 | title, 1 line                    |
@@ -48,12 +48,10 @@ proc main =
   let font = openFont("", 16, fm)
   setWindowTitle("SynEdit Demo")
 
-  var title = createSynEdit(font)
+  var title = createLabel(font, "SynEdit Demo  --  editor (left) | terminal (right)")
   var editor = createSynEdit(font)
   var term = createTerminal(font)
-  var status = createSynEdit(font)
-
-  title.setLabel("SynEdit Demo  --  editor (left) | terminal (right)")
+  var status = createLabel(font)
 
   editor.lang = langNim
   editor.showLineNumbers = true
@@ -62,12 +60,7 @@ proc main =
   else:
     editor.setText(sampleCode)
 
-  status.setLabel("Ready")
-
-  type Focus = enum
-    focusEditor, focusTerminal
-
-  var focus = focusEditor
+  var focus = "editor"
 
   var running = true
   while running:
@@ -82,33 +75,25 @@ proc main =
         width = e.x
         height = e.y
       of MouseDownEvent:
-        if cells["editor"].contains(point(e.x, e.y)):
-          focus = focusEditor
-        elif cells["terminal"].contains(point(e.x, e.y)):
-          focus = focusTerminal
+        let hit = cells.hitTest(e.x, e.y)
+        if hit.name.len > 0:
+          focus = hit.name
       else: discard
     else:
       sleep(16)
 
-    # Labels: passive draw, no event overload
     title.draw(cells["title"])
+
+    discard editor.draw(e, cells["editor"], focus == "editor")
+    let termAct = term.draw(e, cells["terminal"], focus == "terminal")
+    if termAct.kind == openFile:
+      editor.loadFromFile(termAct.file)
+      focus = "editor"
+
+    status.text = "Ln " & $(editor.currentLine + 1) &
+                  ", Col " & $(editor.currentCol + 1) &
+                  "  |  " & (if editor.changed: "modified" else: "saved")
     status.draw(cells["status"])
-
-    # Focused widget gets draw(event, area), unfocused gets draw(area)
-    case focus
-    of focusEditor:
-      discard editor.draw(e, cells["editor"])
-      term.draw(cells["terminal"])
-    of focusTerminal:
-      editor.draw(cells["editor"])
-      let termAct = term.draw(e, cells["terminal"])
-      if termAct.kind == openFile:
-        editor.loadFromFile(termAct.file)
-        focus = focusEditor
-
-    status.setLabel("Ln " & $(editor.currentLine + 1) &
-                    ", Col " & $(editor.currentCol + 1) &
-                    "  |  " & (if editor.changed: "modified" else: "saved"))
 
     refresh()
 

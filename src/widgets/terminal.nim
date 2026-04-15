@@ -504,50 +504,46 @@ proc createTerminal*(font: Font; theme = catppuccinMocha()): Terminal =
 # Drawing (immediate-mode: input + render)
 # ---------------------------------------------------------------------------
 
-proc draw*(t: var Terminal; area: Rect) =
-  ## Passive draw -- no focus, just render. Still polls for process output.
-  t.update()
-  t.ed.draw(area)
-
-proc draw*(t: var Terminal; e: Event; area: Rect): TermAction =
-  ## Active draw -- terminal has focus, processes input, shows cursor.
+proc draw*(t: var Terminal; e: Event; area: Rect; focused: bool): TermAction =
+  ## Per-frame entry point. When focused, processes input and shows cursor.
+  ## When not focused, just paints. Always polls for process output.
   result = TermAction(kind: noAction)
   t.update()
 
-  # Intercept terminal-specific keys before passing to SynEdit.
-  if e.kind == KeyDownEvent:
-    let ctrl = CtrlPressed in e.mods
-    case e.key
-    of KeyUp:
-      if not ctrl:
-        let sug = t.hist[t.process].suggest(up = true)
-        if sug.len > 0:
-          t.emptyCmd()
-          t.ed.insertText(sug)
+  if focused:
+    # Intercept terminal-specific keys before passing to SynEdit.
+    if e.kind == KeyDownEvent:
+      let ctrl = CtrlPressed in e.mods
+      case e.key
+      of KeyUp:
+        if not ctrl:
+          let sug = t.hist[t.process].suggest(up = true)
+          if sug.len > 0:
+            t.emptyCmd()
+            t.ed.insertText(sug)
+          t.ed.render(area, showCursor = true)
+          return
+      of KeyDown:
+        if not ctrl:
+          let sug = t.hist[t.process].suggest(up = false)
+          if sug.len > 0:
+            t.emptyCmd()
+            t.ed.insertText(sug)
+          t.ed.render(area, showCursor = true)
+          return
+      of KeyTab:
+        t.tabPressed()
         t.ed.render(area, showCursor = true)
         return
-    of KeyDown:
-      if not ctrl:
-        let sug = t.hist[t.process].suggest(up = false)
-        if sug.len > 0:
-          t.emptyCmd()
-          t.ed.insertText(sug)
+      of KeyEnter:
+        result = t.enterPressed()
         t.ed.render(area, showCursor = true)
         return
-    of KeyTab:
-      t.tabPressed()
-      t.ed.render(area, showCursor = true)
-      return
-    of KeyEnter:
-      result = t.enterPressed()
-      t.ed.render(area, showCursor = true)
-      return
-    of KeyC:
-      if ctrl and t.processRunning:
-        t.sendBreak()
-        t.ed.render(area, showCursor = true)
-        return
-    else: discard
+      of KeyC:
+        if ctrl and t.processRunning:
+          t.sendBreak()
+          t.ed.render(area, showCursor = true)
+          return
+      else: discard
 
-  # Default: let SynEdit handle the event
-  discard t.ed.draw(e, area)
+  discard t.ed.draw(e, area, focused)

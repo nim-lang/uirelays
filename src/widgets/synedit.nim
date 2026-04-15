@@ -1654,7 +1654,7 @@ proc scrollGrip(s: SynEdit; area: Rect; lineH: int): Rect =
                 ScrollBarWidth - 2, gripH)
 
 proc render*(s: var SynEdit; area: Rect; showCursor: bool) =
-  ## Shared rendering logic. Called by both draw overloads.
+  ## Core rendering. Paints the buffer, optionally with a blinking cursor.
   let lineH = fontLineSkip(s.font)
   let hasScrollBar = s.scrollEnabled
 
@@ -1718,131 +1718,129 @@ proc render*(s: var SynEdit; area: Rect; showCursor: bool) =
                     else: s.theme.scrollBarColor
     fillRect(finalGrip, gripColor)
 
-proc draw*(s: var SynEdit; area: Rect) =
-  ## Passive draw -- no focus, no input, no cursor blink.
-  s.render(area, showCursor = false)
+proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
+  ## Per-frame entry point. When focused, processes input and shows cursor.
+  ## When not focused, just paints. Always returns an action (noAction if unfocused).
+  if focused:
+    let lineH = fontLineSkip(s.font)
+    let grip = s.scrollGrip(area, lineH)
+    let hasScrollBar = s.scrollEnabled
 
-proc draw*(s: var SynEdit; e: Event; area: Rect): EditAction =
-  ## Active draw -- widget has focus, processes input, shows cursor.
-  let lineH = fontLineSkip(s.font)
-  let grip = s.scrollGrip(area, lineH)
-  let hasScrollBar = s.scrollEnabled
+    case e.kind
+    of TextInputEvent:
+      var text = ""
+      for c in e.text:
+        if c == '\0': break
+        text.add c
+      if text.len > 0:
+        for c in text:
+          s.insertChar(c)
 
-  case e.kind
-  of TextInputEvent:
-    var text = ""
-    for c in e.text:
-      if c == '\0': break
-      text.add c
-    if text.len > 0:
-      for c in text:
-        s.insertChar(c)
+    of KeyDownEvent:
+      let ctrl = CtrlPressed in e.mods
+      let shift = ShiftPressed in e.mods
 
-  of KeyDownEvent:
-    let ctrl = CtrlPressed in e.mods
-    let shift = ShiftPressed in e.mods
+      case e.key
+      of KeyLeft:
+        if shift: s.selectLeft(ctrl)
+        else: s.deselect(); s.left(ctrl)
+      of KeyRight:
+        if shift: s.selectRight(ctrl)
+        else: s.deselect(); s.right(ctrl)
+      of KeyUp:
+        if shift: s.selectUp(false)
+        elif ctrl: s.scrollLines(-3)
+        else: s.deselect(); s.up(false)
+      of KeyDown:
+        if shift: s.selectDown(false)
+        elif ctrl: s.scrollLines(3)
+        else: s.deselect(); s.down(false)
+      of KeyHome:
+        if shift:
+          let old = s.cursor.int
+          s.home()
+          s.select(old, s.cursor.int, true)
+        else:
+          s.deselect(); s.home()
+      of KeyEnd:
+        if shift:
+          let old = s.cursor.int
+          s.`end`()
+          s.select(old, s.cursor.int, false)
+        else:
+          s.deselect(); s.`end`()
+      of KeyPageUp:
+        s.deselect(); s.pageUp()
+      of KeyPageDown:
+        s.deselect(); s.pageDown()
+      of KeyBackspace:
+        s.backspace(smartIndent = not ctrl)
+      of KeyDelete:
+        s.deleteKey()
+      of KeyEnter:
+        s.insertEnter(smartIndent = true)
+      of KeyTab:
+        if shift: s.dedent()
+        else: s.indent()
+      of KeyA:
+        if ctrl: s.selectAll()
+      of KeyZ:
+        if ctrl:
+          if shift: s.redo()
+          else: s.undo()
+      of KeyY:
+        if ctrl: s.redo()
+      of KeyC:
+        if ctrl:
+          let text = s.getSelectedText()
+          if text.len > 0: putClipboardText(text)
+      of KeyX:
+        if ctrl:
+          let text = s.getSelectedText()
+          if text.len > 0:
+            putClipboardText(text)
+            s.removeSelectedText()
+      of KeyV:
+        if ctrl:
+          let text = getClipboardText()
+          if text.len > 0: s.insertText(text)
+      else: discard
 
-    case e.key
-    of KeyLeft:
-      if shift: s.selectLeft(ctrl)
-      else: s.deselect(); s.left(ctrl)
-    of KeyRight:
-      if shift: s.selectRight(ctrl)
-      else: s.deselect(); s.right(ctrl)
-    of KeyUp:
-      if shift: s.selectUp(false)
-      elif ctrl: s.scrollLines(-3)
-      else: s.deselect(); s.up(false)
-    of KeyDown:
-      if shift: s.selectDown(false)
-      elif ctrl: s.scrollLines(3)
-      else: s.deselect(); s.down(false)
-    of KeyHome:
-      if shift:
-        let old = s.cursor.int
-        s.home()
-        s.select(old, s.cursor.int, true)
-      else:
-        s.deselect(); s.home()
-    of KeyEnd:
-      if shift:
-        let old = s.cursor.int
-        s.`end`()
-        s.select(old, s.cursor.int, false)
-      else:
-        s.deselect(); s.`end`()
-    of KeyPageUp:
-      s.deselect(); s.pageUp()
-    of KeyPageDown:
-      s.deselect(); s.pageDown()
-    of KeyBackspace:
-      s.backspace(smartIndent = not ctrl)
-    of KeyDelete:
-      s.deleteKey()
-    of KeyEnter:
-      s.insertEnter(smartIndent = true)
-    of KeyTab:
-      if shift: s.dedent()
-      else: s.indent()
-    of KeyA:
-      if ctrl: s.selectAll()
-    of KeyZ:
-      if ctrl:
-        if shift: s.redo()
-        else: s.undo()
-    of KeyY:
-      if ctrl: s.redo()
-    of KeyC:
-      if ctrl:
-        let text = s.getSelectedText()
-        if text.len > 0: putClipboardText(text)
-    of KeyX:
-      if ctrl:
-        let text = s.getSelectedText()
-        if text.len > 0:
-          putClipboardText(text)
-          s.removeSelectedText()
-    of KeyV:
-      if ctrl:
-        let text = getClipboardText()
-        if text.len > 0: s.insertText(text)
+    of MouseDownEvent:
+      if hasScrollBar and grip.contains(point(e.x, e.y)):
+        s.scrollGrabbed = true
+        s.scrollGrabOffset = e.y - grip.y
+      elif area.contains(point(e.x, e.y)):
+        if e.clicks >= 3:
+          s.setCursorFromMouse(e.x, e.y, 1)
+          s.mouseSelectWholeLine()
+        elif e.clicks == 2:
+          s.setCursorFromMouse(e.x, e.y, 1)
+          s.mouseSelectCurrentToken()
+        else:
+          s.setCursorFromMouse(e.x, e.y, e.clicks)
+
+    of MouseUpEvent:
+      s.scrollGrabbed = false
+
+    of MouseMoveEvent:
+      if s.scrollGrabbed and hasScrollBar:
+        let trackH = float(area.h - 2)
+        let totalLines = s.numberOfLines.int + s.span
+        let ratio = float(area.h) / float(totalLines * lineH)
+        let gripH = clamp(trackH * ratio, 20, trackH)
+        let trackScrollArea = trackH - gripH
+        if trackScrollArea > 0:
+          let mouseRel = float(e.y - s.scrollGrabOffset - area.y - 1)
+          let posRatio = clamp(mouseRel / trackScrollArea, 0.0, 1.0)
+          let maxScroll = totalLines - s.span
+          let target = clamp(int(posRatio * float(maxScroll)), 0, maxScroll)
+          s.scrollLines(target - s.firstLine.int)
+
+    of MouseWheelEvent:
+      s.scrollLines(-e.y * 3)
+
     else: discard
 
-  of MouseDownEvent:
-    if hasScrollBar and grip.contains(point(e.x, e.y)):
-      s.scrollGrabbed = true
-      s.scrollGrabOffset = e.y - grip.y
-    elif area.contains(point(e.x, e.y)):
-      if e.clicks >= 3:
-        s.setCursorFromMouse(e.x, e.y, 1)
-        s.mouseSelectWholeLine()
-      elif e.clicks == 2:
-        s.setCursorFromMouse(e.x, e.y, 1)
-        s.mouseSelectCurrentToken()
-      else:
-        s.setCursorFromMouse(e.x, e.y, e.clicks)
-
-  of MouseUpEvent:
-    s.scrollGrabbed = false
-
-  of MouseMoveEvent:
-    if s.scrollGrabbed and hasScrollBar:
-      let trackH = float(area.h - 2)
-      let totalLines = s.numberOfLines.int + s.span
-      let ratio = float(area.h) / float(totalLines * lineH)
-      let gripH = clamp(trackH * ratio, 20, trackH)
-      let trackScrollArea = trackH - gripH
-      if trackScrollArea > 0:
-        let mouseRel = float(e.y - s.scrollGrabOffset - area.y - 1)
-        let posRatio = clamp(mouseRel / trackScrollArea, 0.0, 1.0)
-        let maxScroll = totalLines - s.span
-        let target = clamp(int(posRatio * float(maxScroll)), 0, maxScroll)
-        s.scrollLines(target - s.firstLine.int)
-
-  of MouseWheelEvent:
-    s.scrollLines(-e.y * 3)
-
-  else: discard
-
-  s.render(area, showCursor = true)
+  s.render(area, showCursor = focused)
 
