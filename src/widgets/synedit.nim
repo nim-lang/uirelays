@@ -109,6 +109,17 @@ type
     currentlyIndexing: int
     position: int
 
+  EditActionKind* = enum
+    noAction,
+    gotoDefinition      ## request to jump to a definition (file, line, col)
+
+  EditAction* = object
+    case kind*: EditActionKind
+    of noAction: discard
+    of gotoDefinition:
+      file*: string
+      line*, col*: int
+
   Theme* = object
     fg*: array[TokenClass, Color]   ## per-token foreground colors
     bg*: Color                      ## editor background
@@ -169,6 +180,7 @@ type
 proc currentLine*(s: SynEdit): int {.inline.} = s.currentLine.int
 proc currentCol*(s: SynEdit): int {.inline.} = s.desiredCol.int
 proc changed*(s: SynEdit): bool {.inline.} = s.changed
+proc cursor*(s: SynEdit): int {.inline.} = s.cursor.int
 
 # ---------------------------------------------------------------------------
 # Gap buffer access
@@ -192,7 +204,7 @@ proc setCellStyle(s: var SynEdit; i: Natural; tc: TokenClass) =
     if j <= s.back.high:
       s.back[s.back.high - j].s = tc
 
-proc `[]`(s: SynEdit; i: Natural): char {.inline.} = s.getCell(i).c
+proc `[]`*(s: SynEdit; i: Natural): char {.inline.} = s.getCell(i).c
 
 proc len*(s: SynEdit): int {.inline.} = s.front.len + s.back.len
 
@@ -1147,7 +1159,7 @@ proc selectDown(s: var SynEdit; jump: bool) =
 # High-level editing
 # ---------------------------------------------------------------------------
 
-proc insertChar(s: var SynEdit; c: char) =
+proc insertChar*(s: var SynEdit; c: char) =
   # Each high-level editing operation increments `version`. All Actions
   # created within the same call share that version number, so undo
   # reverses them as a unit. For simple typing this is one Action per
@@ -1170,13 +1182,13 @@ proc insertChar(s: var SynEdit; c: char) =
     s.insertNoSelect($c)
   s.cursorMoved()
 
-proc insertText(s: var SynEdit; text: string) =
+proc insertText*(s: var SynEdit; text: string) =
   inc s.version
   s.removeSelectedText()
   s.insertNoSelect(text, singleUndoOp = true)
   s.cursorMoved()
 
-proc backspace(s: var SynEdit; smartIndent: bool) =
+proc backspace*(s: var SynEdit; smartIndent: bool) =
   inc s.version
   if s.selected.b < 0:
     if smartIndent:
@@ -1642,7 +1654,7 @@ proc scrollGrip(s: SynEdit; area: Rect; lineH: int): Rect =
   result = rect(area.x + area.w - ScrollBarWidth, gripY,
                 ScrollBarWidth - 2, gripH)
 
-proc draw*(s: var SynEdit; e: Event; area: Rect) =
+proc draw*(s: var SynEdit; e: Event; area: Rect): EditAction =
   let lineH = fontLineSkip(s.font)
   let grip = s.scrollGrip(area, lineH)
   let hasScrollBar = s.scrollEnabled

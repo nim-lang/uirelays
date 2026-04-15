@@ -9,11 +9,12 @@ from std/cmdline import paramCount, paramStr
 import ../src/uirelays
 import ../src/uirelays/layout
 import ../src/widgets/synedit
+import ../src/widgets/terminal
 
 const appLayout = parseLayout("""
-| title, 1 line                                   |
-| editor, *       | terminal, *                    |
-| status, 1 line                                   |
+| title, 1 line                    |
+| editor, *       | terminal, *    |
+| status, 1 line                   |
 """)
 
 const sampleCode = """
@@ -50,7 +51,7 @@ proc main =
 
   var title = createSynEdit(font)
   var editor = createSynEdit(font)
-  var terminal = createSynEdit(font)
+  var term = createTerminal(font)
   var status = createSynEdit(font)
 
   title.setLabel("SynEdit Demo  --  editor (left) | terminal (right)")
@@ -61,9 +62,6 @@ proc main =
     editor.loadFromFile(paramStr(1))
   else:
     editor.setText(sampleCode)
-
-  terminal.lang = langConsole
-  terminal.appendOutput("Welcome to the terminal.\n$ ")
 
   status.setLabel("Ready")
 
@@ -85,10 +83,12 @@ proc main =
     else:
       sleep(16)
 
-    title.draw(e, cells["title"])
-    editor.draw(e, cells["editor"])
-    terminal.draw(e, cells["terminal"])
-    status.draw(e, cells["status"])
+    discard title.draw(e, cells["title"])
+    discard editor.draw(e, cells["editor"])
+    let termAct = term.draw(e, cells["terminal"])
+    if termAct.kind == openFile:
+      editor.loadFromFile(termAct.file)
+    discard status.draw(e, cells["status"])
 
     status.setLabel("Ln " & $(editor.currentLine + 1) &
                     ", Col " & $(editor.currentCol + 1) &
