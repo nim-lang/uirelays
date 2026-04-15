@@ -22,6 +22,7 @@ type
     bracketBg*: Color               ## bracket match background
     cursorColor*: Color             ## cursor bar color
     lineNumColor*: Color            ## line number foreground
+    markerBg*: Color                ## default marker highlight background
     scrollBarColor*: Color          ## scrollbar grip
     scrollBarActiveColor*: Color    ## scrollbar grip while dragging
     scrollTrackColor*: Color        ## scrollbar track background
@@ -55,6 +56,7 @@ proc catppuccinMocha*(): Theme =
   result.bracketBg = color(69, 71, 90)
   result.cursorColor = color(205, 214, 244)
   result.lineNumColor = color(108, 112, 134)
+  result.markerBg = color(62, 68, 43)            # muted olive for search hits
   result.scrollBarColor = color(69, 71, 90)
   result.scrollBarActiveColor = color(108, 112, 134)
   result.scrollTrackColor = color(36, 36, 54)
