@@ -6,10 +6,9 @@
 
 import std/tables
 from std/cmdline import paramCount, paramStr
-import ../src/uirelays
-import ../src/uirelays/layout
-import ../src/widgets/synedit
-import ../src/widgets/terminal
+import uirelays
+import uirelays/layout
+import widgets/[synedit, terminal]
 
 const appLayout = parseLayout("""
 | title, 1 line                    |
@@ -65,7 +64,10 @@ proc main =
 
   status.setLabel("Ready")
 
-  editor.focused = true
+  type Focus = enum
+    focusEditor, focusTerminal
+
+  var focus = focusEditor
 
   var running = true
   while running:
@@ -79,16 +81,30 @@ proc main =
       of WindowResizeEvent:
         width = e.x
         height = e.y
+      of MouseDownEvent:
+        if cells["editor"].contains(point(e.x, e.y)):
+          focus = focusEditor
+        elif cells["terminal"].contains(point(e.x, e.y)):
+          focus = focusTerminal
       else: discard
     else:
       sleep(16)
 
-    discard title.draw(e, cells["title"])
-    discard editor.draw(e, cells["editor"])
-    let termAct = term.draw(e, cells["terminal"])
-    if termAct.kind == openFile:
-      editor.loadFromFile(termAct.file)
-    discard status.draw(e, cells["status"])
+    # Labels: passive draw, no event overload
+    title.draw(cells["title"])
+    status.draw(cells["status"])
+
+    # Focused widget gets draw(event, area), unfocused gets draw(area)
+    case focus
+    of focusEditor:
+      discard editor.draw(e, cells["editor"])
+      term.draw(cells["terminal"])
+    of focusTerminal:
+      editor.draw(cells["editor"])
+      let termAct = term.draw(e, cells["terminal"])
+      if termAct.kind == openFile:
+        editor.loadFromFile(termAct.file)
+        focus = focusEditor
 
     status.setLabel("Ln " & $(editor.currentLine + 1) &
                     ", Col " & $(editor.currentCol + 1) &

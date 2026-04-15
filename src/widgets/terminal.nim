@@ -504,13 +504,18 @@ proc createTerminal*(font: Font; theme = catppuccinMocha()): Terminal =
 # Drawing (immediate-mode: input + render)
 # ---------------------------------------------------------------------------
 
+proc draw*(t: var Terminal; area: Rect) =
+  ## Passive draw -- no focus, just render. Still polls for process output.
+  t.update()
+  t.ed.draw(area)
+
 proc draw*(t: var Terminal; e: Event; area: Rect): TermAction =
+  ## Active draw -- terminal has focus, processes input, shows cursor.
   result = TermAction(kind: noAction)
-  # Poll for process output before rendering
   t.update()
 
-  # Intercept certain keys before passing to SynEdit
-  if e.kind == KeyDownEvent and t.ed.focused:
+  # Intercept terminal-specific keys before passing to SynEdit.
+  if e.kind == KeyDownEvent:
     let ctrl = CtrlPressed in e.mods
     case e.key
     of KeyUp:
@@ -519,8 +524,7 @@ proc draw*(t: var Terminal; e: Event; area: Rect): TermAction =
         if sug.len > 0:
           t.emptyCmd()
           t.ed.insertText(sug)
-        var noop = default Event
-        discard t.ed.draw(noop, area)
+        t.ed.render(area, showCursor = true)
         return
     of KeyDown:
       if not ctrl:
@@ -528,26 +532,22 @@ proc draw*(t: var Terminal; e: Event; area: Rect): TermAction =
         if sug.len > 0:
           t.emptyCmd()
           t.ed.insertText(sug)
-        var noop = default Event
-        discard t.ed.draw(noop, area)
+        t.ed.render(area, showCursor = true)
         return
     of KeyTab:
       t.tabPressed()
-      var noop = default Event
-      discard t.ed.draw(noop, area)
+      t.ed.render(area, showCursor = true)
       return
     of KeyEnter:
       result = t.enterPressed()
-      var noop = default Event
-      discard t.ed.draw(noop, area)
+      t.ed.render(area, showCursor = true)
       return
     of KeyC:
       if ctrl and t.processRunning:
         t.sendBreak()
-        var noop = default Event
-        discard t.ed.draw(noop, area)
+        t.ed.render(area, showCursor = true)
         return
     else: discard
 
-  # Default: let SynEdit handle everything
+  # Default: let SynEdit handle the event
   discard t.ed.draw(e, area)
