@@ -252,7 +252,7 @@ type
 
   Terminal* = object
     ed*: SynEdit
-    hist: Table[string, CmdHistory]
+    hist*: Table[string, CmdHistory]
     files: seq[string]
     prefix: string
     processRunning*: bool
