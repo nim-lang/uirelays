@@ -74,7 +74,7 @@ Font handles are `distinct int`, 1-based. Drivers typically maintain a
 | `waitEvent` | `proc (e: var Event; timeoutMs: int; flags: set[InputFlag]): bool` | Block until an event arrives or the timeout expires (timeoutMs < 0 = wait forever). Must keep pumping the platform message queue while waiting to avoid "not responding" states. |
 | `getTicks` | `proc (): int` | Monotonic millisecond counter. |
 | `sleep` | `proc (ms: int)` | Sleep for the given number of milliseconds. Should pump the platform message queue during the sleep if possible. |
-| `quitRequest` | `proc ()` | Tear down the window and release platform resources. |
+| `shutdown` | `proc ()` | Tear down the window and release platform resources. |
 
 The `flags` parameter carries `InputFlag` values. Currently the only
 flag is `WantTextInput`, which tells the driver to show the on-screen

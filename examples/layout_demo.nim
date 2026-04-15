@@ -88,6 +88,6 @@ proc main =
     sleep(16)
 
   closeFont(font)
-  quitRequest()
+  shutdown()
 
 main()

@@ -271,6 +271,25 @@ const
   XK_comma = 0x2c'u
   XK_period = 0x2e'u
 
+# ---- POSIX select for timeout waiting ----
+
+proc ConnectionNumber(dpy: pointer): cint
+  {.cdecl, dynlib: libX11, importc: "XConnectionNumber".}
+
+type
+  XFdSet {.importc: "fd_set", header: "<sys/select.h>".} = object
+  XTimeval {.importc: "struct timeval", header: "<sys/time.h>".} = object
+    tv_sec {.importc.}: clong
+    tv_usec {.importc.}: clong
+
+proc xFdZero(s: ptr XFdSet)
+  {.importc: "FD_ZERO", header: "<sys/select.h>".}
+proc xFdSet(fd: cint; s: ptr XFdSet)
+  {.importc: "FD_SET", header: "<sys/select.h>".}
+proc xSelect(nfds: cint; readfds, writefds, exceptfds: ptr XFdSet;
+             timeout: ptr XTimeval): cint
+  {.importc: "select", header: "<sys/select.h>".}
+
 # ---- X11 function imports ----
 
 proc XOpenDisplay(name: cstring): pointer
@@ -831,26 +850,26 @@ proc x11WaitEvent(e: var input.Event; timeoutMs: int;
     return true
   if x11PollEvent(e, flags): return true
 
+  # Block on the X11 connection fd using select() with timeout.
+  let xfd = ConnectionNumber(gDisplay)
+  var fds: XFdSet
+  xFdZero(addr fds)
+  xFdSet(xfd, addr fds)
+
   if timeoutMs < 0:
-    # Block efficiently until an X11 event arrives
-    var xev: XEvent
-    discard XNextEvent(gDisplay, addr xev)
-    processXEvent(xev)
-    # Drain any remaining
-    drainXEvents()
-    if eventQueue.len > 0:
-      e = eventQueue[0]
-      eventQueue.delete(0)
-      return true
-    return false
+    discard xSelect(xfd + 1, addr fds, nil, nil, nil)
   else:
-    # Poll with short sleeps
-    let deadline = getTicks() + timeoutMs
-    while true:
-      let now = getTicks()
-      if now >= deadline: return false
-      os.sleep(10)
-      if x11PollEvent(e, flags): return true
+    var tv = XTimeval(tv_sec: (timeoutMs div 1000).clong,
+                      tv_usec: ((timeoutMs mod 1000) * 1000).clong)
+    discard xSelect(xfd + 1, addr fds, nil, nil, addr tv)
+
+  # select() returned -- drain whatever arrived
+  drainXEvents()
+  if eventQueue.len > 0:
+    e = eventQueue[0]
+    eventQueue.delete(0)
+    return true
+  return false
 
 proc x11GetClipboardText(): string =
   discard XConvertSelection(gDisplay, gClipboard, gUtf8String,
@@ -934,6 +953,6 @@ proc initX11Driver*() =
   inputRelays = InputRelays(
     pollEvent: x11PollEvent, waitEvent: x11WaitEvent,
     getTicks: x11GetTicks, sleep: x11Delay,
-    quitRequest: x11QuitRequest)
+    shutdown: x11QuitRequest)
   clipboardRelays = ClipboardRelays(
     getText: x11GetClipboardText, putText: x11PutClipboardText)

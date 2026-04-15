@@ -30,23 +30,18 @@
 ##   term.appendOutput("$ ")   # user types after the prompt
 
 import ../uirelays/[coords, screen, input]
+import ./theme
 from strutils import Whitespace
+export theme
+
+const
+  LinkMod* = when defined(macosx): GuiPressed else: CtrlPressed
 
 # ---------------------------------------------------------------------------
-# Token classes & source languages
+# Source languages
 # ---------------------------------------------------------------------------
 
 type
-  TokenClass* {.pure.} = enum
-    None, Whitespace, DecNumber, BinNumber, HexNumber,
-    OctNumber, FloatNumber, Identifier, Keyword, StringLit,
-    LongStringLit, CharLit, Backticks,
-    EscapeSequence,
-    Operator, Punctuation, Comment, LongComment, RegularExpression,
-    TagStart, TagStandalone, TagEnd, Key, Value, RawData, Assembler,
-    Preprocessor, Directive, Command, Rule, Link, Label,
-    Reference, Text, Other, Green, Yellow, Red
-
   SourceLanguage* = enum
     langNone, langNim, langCpp, langCsharp, langC, langJava, langJs,
     langXml, langHtml, langConsole
@@ -109,16 +104,16 @@ type
     currentlyIndexing: int
     position: int
 
-  Theme* = object
-    fg*: array[TokenClass, Color]   ## per-token foreground colors
-    bg*: Color                      ## editor background
-    selBg*: Color                   ## selection background
-    bracketBg*: Color               ## bracket match background
-    cursorColor*: Color             ## cursor bar color
-    lineNumColor*: Color            ## line number foreground
-    scrollBarColor*: Color          ## scrollbar grip
-    scrollBarActiveColor*: Color    ## scrollbar grip while dragging
-    scrollTrackColor*: Color        ## scrollbar track background
+  EditActionKind* = enum
+    noAction,
+    ctrlHover,          ## ctrl+mouse move over text
+    ctrlClick           ## ctrl+click on text
+
+  EditAction* = object
+    case kind*: EditActionKind
+    of noAction: discard
+    of ctrlHover, ctrlClick:
+      pos*: int         ## buffer offset
 
   SynEdit* = object
     # Gap buffer
@@ -140,7 +135,6 @@ type
     font: Font
     theme*: Theme
     showLineNumbers*: bool
-    focused*: bool                  ## receives keyboard input; set by the app
     cursorVisible: bool
     lastBlinkTick: int
     cursorDim: tuple[x, y, h: int]
@@ -152,6 +146,13 @@ type
                                     ## >= 0 = positions <= readOnly are protected
     # Bracket matching
     bracketA, bracketB: int
+    # Underline (set by the app via underline())
+    hotLink*: tuple[a, b: int]      ## buffer range to draw underlined
+                                    ## (-1, -1) = no underline
+    # Ctrl+hover probe
+    probeX, probeY: int             ## screen coords for hover probe
+    probeActive: bool               ## a probe is pending
+    probeResult*: int               ## resolved buffer offset after render; -1 if none
     # Mouse
     mouseX, mouseY, clicks: int
     # Scrollbar
@@ -169,6 +170,7 @@ type
 proc currentLine*(s: SynEdit): int {.inline.} = s.currentLine.int
 proc currentCol*(s: SynEdit): int {.inline.} = s.desiredCol.int
 proc changed*(s: SynEdit): bool {.inline.} = s.changed
+proc cursor*(s: SynEdit): int {.inline.} = s.cursor.int
 
 # ---------------------------------------------------------------------------
 # Gap buffer access
@@ -192,7 +194,7 @@ proc setCellStyle(s: var SynEdit; i: Natural; tc: TokenClass) =
     if j <= s.back.high:
       s.back[s.back.high - j].s = tc
 
-proc `[]`(s: SynEdit; i: Natural): char {.inline.} = s.getCell(i).c
+proc `[]`*(s: SynEdit; i: Natural): char {.inline.} = s.getCell(i).c
 
 proc len*(s: SynEdit): int {.inline.} = s.front.len + s.back.len
 
@@ -890,7 +892,7 @@ proc insertNoSelect(s: var SynEdit; text: string; singleUndoOp = false) =
   s.desiredCol = s.getColumn().Natural
   s.highlightLine(oldCursor)
 
-proc gotoPos(s: var SynEdit; pos: int) =
+proc gotoPos*(s: var SynEdit; pos: int) =
   let pos = clamp(pos, 0, s.len)
   s.cursor = pos.Natural
   s.currentLine = s.getLineFromOffset(pos)
@@ -1147,7 +1149,7 @@ proc selectDown(s: var SynEdit; jump: bool) =
 # High-level editing
 # ---------------------------------------------------------------------------
 
-proc insertChar(s: var SynEdit; c: char) =
+proc insertChar*(s: var SynEdit; c: char) =
   # Each high-level editing operation increments `version`. All Actions
   # created within the same call share that version number, so undo
   # reverses them as a unit. For simple typing this is one Action per
@@ -1170,13 +1172,13 @@ proc insertChar(s: var SynEdit; c: char) =
     s.insertNoSelect($c)
   s.cursorMoved()
 
-proc insertText(s: var SynEdit; text: string) =
+proc insertText*(s: var SynEdit; text: string) =
   inc s.version
   s.removeSelectedText()
   s.insertNoSelect(text, singleUndoOp = true)
   s.cursorMoved()
 
-proc backspace(s: var SynEdit; smartIndent: bool) =
+proc backspace*(s: var SynEdit; smartIndent: bool) =
   inc s.version
   if s.selected.b < 0:
     if smartIndent:
@@ -1340,9 +1342,19 @@ proc setText*(s: var SynEdit; text: string) =
   s.highlightEverything()
   s.changed = false
 
+proc isBinary(text: string): bool =
+  let check = min(text.len, 8192)
+  for i in 0 ..< check:
+    if text[i] == '\0': return true
+
 proc loadFromFile*(s: var SynEdit; filename: string) =
   let text = readFile(filename)
+  if text.isBinary: return
   s.setText(text)
+
+proc saveToFile*(s: var SynEdit; filename: string) =
+  writeFile(filename, s.fullText)
+  s.changed = false
 
 proc appendOutput*(s: var SynEdit; text: string) =
   ## Append text and mark everything as read-only up to the end.
@@ -1364,43 +1376,11 @@ proc setLabel*(s: var SynEdit; text: string) =
 # Initialization
 # ---------------------------------------------------------------------------
 
-proc catppuccinMocha*(): Theme =
-  let fg = color(205, 214, 244)
-  for tc in TokenClass:
-    result.fg[tc] = fg
-  result.fg[TokenClass.Keyword] = color(203, 166, 247)     # mauve
-  result.fg[TokenClass.StringLit] = color(166, 227, 161)   # green
-  result.fg[TokenClass.LongStringLit] = color(166, 227, 161)
-  result.fg[TokenClass.CharLit] = color(166, 227, 161)
-  result.fg[TokenClass.RawData] = color(166, 227, 161)
-  result.fg[TokenClass.Comment] = color(108, 112, 134)     # overlay0
-  result.fg[TokenClass.LongComment] = color(108, 112, 134)
-  result.fg[TokenClass.DecNumber] = color(250, 179, 135)   # peach
-  result.fg[TokenClass.BinNumber] = color(250, 179, 135)
-  result.fg[TokenClass.HexNumber] = color(250, 179, 135)
-  result.fg[TokenClass.OctNumber] = color(250, 179, 135)
-  result.fg[TokenClass.FloatNumber] = color(250, 179, 135)
-  result.fg[TokenClass.Operator] = color(137, 180, 250)    # blue
-  result.fg[TokenClass.Punctuation] = color(147, 153, 178) # subtext0
-  result.fg[TokenClass.EscapeSequence] = color(245, 194, 231) # pink
-  result.fg[TokenClass.Preprocessor] = color(203, 166, 247)
-  result.fg[TokenClass.Identifier] = fg
-  result.fg[TokenClass.Green] = color(166, 227, 161)
-  result.fg[TokenClass.Yellow] = color(249, 226, 175)
-  result.fg[TokenClass.Red] = color(243, 139, 168)
-  result.bg = color(30, 30, 46)
-  result.selBg = color(88, 91, 112)
-  result.bracketBg = color(69, 71, 90)
-  result.cursorColor = color(205, 214, 244)
-  result.lineNumColor = color(108, 112, 134)
-  result.scrollBarColor = color(69, 71, 90)
-  result.scrollBarActiveColor = color(108, 112, 134)
-  result.scrollTrackColor = color(36, 36, 54)
-
 proc createSynEdit*(font: Font; theme = catppuccinMocha()): SynEdit =
   result = SynEdit(front: @[], back: @[], actions: @[], cursor: 0,
-    selected: (-1, -1), bracketA: -1, bracketB: -1, readOnly: -1,
-    tabSize: TabWidth, lang: langNim, font: font, theme: theme,
+    selected: (-1, -1), bracketA: -1, bracketB: -1, hotLink: (-1, -1),
+    readOnly: -1, tabSize: TabWidth, lang: langNim,
+    font: font, theme: theme,
     showLineNumbers: false, cursorVisible: true, lastBlinkTick: 0)
 
 # ---------------------------------------------------------------------------
@@ -1423,6 +1403,11 @@ proc getBg(s: SynEdit; i: int): Color =
   if i <= s.selected.b and s.selected.a <= i: return s.theme.selBg
   if i == s.bracketA or i == s.bracketB: return s.theme.bracketBg
   return s.theme.bg
+
+proc underline*(s: var SynEdit; a, b: int) =
+  ## Set the underline range. Call before the draw/render that should show it.
+  ## Pass (-1, -1) to clear.
+  s.hotLink = (a, b)
 
 const
   CharBufSize = 80
@@ -1475,7 +1460,27 @@ proc drawSubtoken(db: var DrawBuf; ra, rb: int; fg, bg: Color) =
       db.s[].setCurrentLine()
       db.s[].clicks = 0
       db.s[].cursorMoved()
-  discard drawText(db.font, d.x, d.y, db.tempStr, fg, bg)
+  # Ctrl+hover probe: resolve screen coords to buffer position
+  if db.s[].probeActive and db.s[].probeResult < 0:
+    let p = point(db.s[].probeX, db.s[].probeY)
+    if d.contains(p):
+      var best = ra
+      var prefix = ""
+      for k in ra .. rb:
+        prefix.add db.chars[k]
+        if d.x + textWidth(db.font, prefix) > db.s[].probeX:
+          break
+        best = k + 1
+      if best > rb + 1: best = rb + 1
+      db.s[].probeResult = db.toCursor[min(best, rb)]
+  # Underline range (set externally via underline())
+  let hl = db.s[].hotLink
+  let isLink = hl.a >= 0 and db.toCursor[ra] <= hl.b and db.toCursor[rb] >= hl.a
+  let fgColor = if isLink: db.s[].theme.cursorColor else: fg
+  discard drawText(db.font, d.x, d.y, db.tempStr, fgColor, bg)
+  if isLink:
+    let ulY = d.y + db.lineH - 1
+    drawLine(d.x, ulY, d.x + textWidth(db.font, db.tempStr), ulY, fgColor)
 
 proc drawToken(db: var DrawBuf; fg, bg: Color) =
   if db.dim.y + db.lineH > db.maxY: return
@@ -1642,15 +1647,81 @@ proc scrollGrip(s: SynEdit; area: Rect; lineH: int): Rect =
   result = rect(area.x + area.w - ScrollBarWidth, gripY,
                 ScrollBarWidth - 2, gripH)
 
-proc draw*(s: var SynEdit; e: Event; area: Rect) =
+proc render*(s: var SynEdit; area: Rect; showCursor: bool) =
+  ## Core rendering. Paints the buffer, optionally with a blinking cursor.
+  let lineH = fontLineSkip(s.font)
+  let hasScrollBar = s.scrollEnabled
+
+  s.highlightIncrementally()
+
+  s.cursorDim.h = 0
+  let endY = area.y + area.h - 1
+  let endX = area.x + area.w - (if hasScrollBar: ScrollBarWidth else: 0) - 1
+  var dim = area
+  dim.w = endX
+  dim.h = endY
+
+  fillRect(area, s.theme.bg)
+
+  let spl = s.spaceForLines()
+  if s.showLineNumbers:
+    dim.x = area.x + spl + 4
+
+  var renderLine = s.firstLine
+  var i = s.firstLineOffset.int
+  s.span = 0
+
+  let fontSize = lineH
+
+  var blink = false
+  if showCursor and s.readOnly < s.cursor.int:
+    let ticks = getTicks()
+    if ticks - s.lastBlinkTick > 500:
+      s.cursorVisible = not s.cursorVisible
+      s.lastBlinkTick = ticks
+    blink = s.cursorVisible
+
+  while dim.y + fontSize < endY and i <= s.len:
+    if s.showLineNumbers:
+      let num = $(renderLine + 1)
+      let numColor = if renderLine == s.currentLine: s.theme.fg[TokenClass.None]
+                     else: s.theme.lineNumColor
+      discard drawText(s.font, area.x + 2, dim.y, num, numColor, s.theme.bg)
+
+    i = s.drawTextLine(i, dim, blink)
+    inc s.span
+    inc renderLine
+
+  while dim.y + fontSize < endY:
+    inc dim.y, lineH
+    inc s.span
+
+  if s.clicks > 0:
+    s.cursor = min(i, s.len).Natural
+    s.setCurrentLine()
+    s.clicks = 0
+    s.cursorMoved()
+
+  # draw scrollbar
+  if hasScrollBar:
+    let trackRect = rect(area.x + area.w - ScrollBarWidth, area.y,
+                         ScrollBarWidth, area.h)
+    fillRect(trackRect, s.theme.scrollTrackColor)
+    let finalGrip = s.scrollGrip(area, lineH)
+    let gripColor = if s.scrollGrabbed: s.theme.scrollBarActiveColor
+                    else: s.theme.scrollBarColor
+    fillRect(finalGrip, gripColor)
+
+proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
+  ## Per-frame entry point. When focused, processes input and shows cursor.
+  ## When not focused, just paints. Always returns an action (noAction if unfocused).
   let lineH = fontLineSkip(s.font)
   let grip = s.scrollGrip(area, lineH)
   let hasScrollBar = s.scrollEnabled
 
-  # --- input handling ---
   case e.kind
   of TextInputEvent:
-    if s.focused:
+    if focused:
       var text = ""
       for c in e.text:
         if c == '\0': break
@@ -1660,8 +1731,8 @@ proc draw*(s: var SynEdit; e: Event; area: Rect) =
           s.insertChar(c)
 
   of KeyDownEvent:
-    if s.focused:
-      let ctrl = CtrlPressed in e.mods
+    if focused:
+      let ctrl = CtrlPressed in e.mods or GuiPressed in e.mods
       let shift = ShiftPressed in e.mods
 
       case e.key
@@ -1732,13 +1803,12 @@ proc draw*(s: var SynEdit; e: Event; area: Rect) =
 
   of MouseDownEvent:
     if hasScrollBar and grip.contains(point(e.x, e.y)):
-      # clicked on the scrollbar grip -- start dragging
-      s.focused = true
       s.scrollGrabbed = true
       s.scrollGrabOffset = e.y - grip.y
     elif area.contains(point(e.x, e.y)):
-      s.focused = true
-      if e.clicks >= 3:
+      if LinkMod in e.mods:
+        s.setCursorFromMouse(e.x, e.y, 1)
+      elif e.clicks >= 3:
         s.setCursorFromMouse(e.x, e.y, 1)
         s.mouseSelectWholeLine()
       elif e.clicks == 2:
@@ -1746,13 +1816,19 @@ proc draw*(s: var SynEdit; e: Event; area: Rect) =
         s.mouseSelectCurrentToken()
       else:
         s.setCursorFromMouse(e.x, e.y, e.clicks)
-    else:
-      s.focused = false
 
   of MouseUpEvent:
     s.scrollGrabbed = false
 
   of MouseMoveEvent:
+    if (LinkMod in e.mods) and area.contains(point(e.x, e.y)):
+      s.probeX = e.x
+      s.probeY = e.y
+      s.probeActive = true
+      s.probeResult = -1
+    else:
+      s.probeActive = false
+      s.probeResult = -1
     if s.scrollGrabbed and hasScrollBar:
       let trackH = float(area.h - 2)
       let totalLines = s.numberOfLines.int + s.span
@@ -1767,72 +1843,22 @@ proc draw*(s: var SynEdit; e: Event; area: Rect) =
         s.scrollLines(target - s.firstLine.int)
 
   of MouseWheelEvent:
-    if s.focused:
+    if focused:
       s.scrollLines(-e.y * 3)
 
   else: discard
 
-  # --- rendering ---
-  s.highlightIncrementally()
+  # Reset cursor blink on any input so the cursor stays visible while editing.
+  if focused and e.kind != NoEvent:
+    s.cursorVisible = true
+    s.lastBlinkTick = getTicks()
 
-  s.cursorDim.h = 0
-  let endY = area.y + area.h - 1
-  let endX = area.x + area.w - (if hasScrollBar: ScrollBarWidth else: 0) - 1
-  var dim = area
-  dim.w = endX
-  dim.h = endY
+  s.render(area, showCursor = focused)
 
-  fillRect(area, s.theme.bg)
-
-  let spl = s.spaceForLines()
-  if s.showLineNumbers:
-    dim.x = area.x + spl + 4
-
-  var renderLine = s.firstLine
-  var i = s.firstLineOffset.int
-  s.span = 0
-
-  let fontSize = lineH
-
-  # cursor: show when focused and cursor is in an editable position
-  let showCursor = s.focused and s.readOnly < s.cursor.int
-  var blink = false
-  if showCursor:
-    let ticks = getTicks()
-    if ticks - s.lastBlinkTick > 500:
-      s.cursorVisible = not s.cursorVisible
-      s.lastBlinkTick = ticks
-    blink = s.cursorVisible
-
-  while dim.y + fontSize < endY and i <= s.len:
-    if s.showLineNumbers:
-      let num = $(renderLine + 1)
-      let numColor = if renderLine == s.currentLine: s.theme.fg[TokenClass.None]
-                     else: s.theme.lineNumColor
-      discard drawText(s.font, area.x + 2, dim.y, num, numColor, s.theme.bg)
-
-    i = s.drawTextLine(i, dim, blink)
-    inc s.span
-    inc renderLine
-
-  while dim.y + fontSize < endY:
-    inc dim.y, lineH
-    inc s.span
-
-  if s.clicks > 0:
-    s.cursor = min(i, s.len).Natural
-    s.setCurrentLine()
-    s.clicks = 0
-    s.cursorMoved()
-
-  # draw scrollbar
-  if hasScrollBar:
-    let trackRect = rect(area.x + area.w - ScrollBarWidth, area.y,
-                         ScrollBarWidth, area.h)
-    fillRect(trackRect, s.theme.scrollTrackColor)
-    # recompute grip after possible scroll changes
-    let finalGrip = s.scrollGrip(area, lineH)
-    let gripColor = if s.scrollGrabbed: s.theme.scrollBarActiveColor
-                    else: s.theme.scrollBarColor
-    fillRect(finalGrip, gripColor)
+  # After rendering, probe and click positions have been resolved.
+  if e.kind == MouseDownEvent and (LinkMod in e.mods) and
+     area.contains(point(e.x, e.y)):
+    result = EditAction(kind: ctrlClick, pos: s.cursor.int)
+  elif s.probeActive and s.probeResult >= 0:
+    result = EditAction(kind: ctrlHover, pos: s.probeResult)
 
