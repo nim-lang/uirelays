@@ -4,6 +4,8 @@ Native Nim UI library based on the idea of "relays" -- dependency injection
 via global callbacks. Has Windows API, X11, Cocoa, GTK4, SDL2 and SDL3
 support. Write UI apps as easily as terminal apps!
 
+![SynEdit Demo](screenshots/synedit_demo.png)
+
 ## Getting started
 
 `import uirelays` is all you need -- it re-exports everything and
@@ -157,8 +159,11 @@ nim c -d:sdl2 examples/hello.nim
 
 ## Examples
 
-- [hello.nim](examples/hello.nim) -- Uses `import uirelays` for maximum convenience
-- [paint.nim](examples/paint.nim) -- Uses explicit submodule imports with manual `initBackend()`
+- [editor.nim](examples/editor.nim) -- Code editor with integrated terminal
+- [hello.nim](examples/hello.nim) -- Minimal window with text rendering
+- [paint.nim](examples/paint.nim) -- Simple drawing app with explicit submodule imports
+- [layout_demo.nim](examples/layout_demo.nim) -- Markdown table layout system demo
+- [todo.nim](examples/todo.nim) -- Todo list app
 
 ## Architecture
 
@@ -169,11 +174,11 @@ The library is split into five relay groups:
 | `screen` | `windowRelays` | Window lifecycle, cursor, clip rect |
 | `screen` | `fontRelays` | Font loading, text measurement and rendering |
 | `screen` | `drawRelays` | Rectangles, lines, points, images |
-| `input` | `inputRelays` | Events, timing, quit |
+| `input` | `inputRelays` | Events, timing, shutdown |
 | `input` | `clipboardRelays` | Copy/paste |
 
 Drivers populate these relay objects at init time. Application code calls
-convenience wrappers (`fillRect`, `drawText`, `pollEvent`, ...) that
+convenience wrappers (`fillRect`, `drawText`, `waitEvent`, ...) that
 dispatch through the relays. No virtual calls, no inheritance, no heap
 allocation -- just plain proc pointers.
 

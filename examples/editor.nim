@@ -3,6 +3,19 @@
 ##
 ## Compile:
 ##   nim c examples/editor.nim
+##
+## Design Notes
+##[
+Everything is text. The core widget is **SynEdit** -- a syntax-aware text
+editor ported from NimEdit. Labels, status bars, and terminals are all
+SynEdit instances with different configurations:
+
+- **Editor**: Full editing with syntax highlighting, undo, line numbers
+- **Label / status bar**: Read-only SynEdit via `setLabel()`
+- **Terminal**: SynEdit wrapped with command execution, history, tab completion
+- **Cmd+click** (macOS) / **Ctrl+click** (other): clickable text -- the app
+  decides what happens (open file, go to definition, navigate directory)
+]##
 
 import std/[tables, os]
 from std/cmdline import paramCount, paramStr
