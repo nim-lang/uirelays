@@ -34,6 +34,9 @@ import ./theme
 from strutils import Whitespace
 export theme
 
+const
+  LinkMod* = when defined(macosx): GuiPressed else: CtrlPressed
+
 # ---------------------------------------------------------------------------
 # Source languages
 # ---------------------------------------------------------------------------
@@ -889,7 +892,7 @@ proc insertNoSelect(s: var SynEdit; text: string; singleUndoOp = false) =
   s.desiredCol = s.getColumn().Natural
   s.highlightLine(oldCursor)
 
-proc gotoPos(s: var SynEdit; pos: int) =
+proc gotoPos*(s: var SynEdit; pos: int) =
   let pos = clamp(pos, 0, s.len)
   s.cursor = pos.Natural
   s.currentLine = s.getLineFromOffset(pos)
@@ -1799,7 +1802,7 @@ proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
       s.scrollGrabbed = true
       s.scrollGrabOffset = e.y - grip.y
     elif area.contains(point(e.x, e.y)):
-      if CtrlPressed in e.mods:
+      if LinkMod in e.mods:
         s.setCursorFromMouse(e.x, e.y, 1)
       elif e.clicks >= 3:
         s.setCursorFromMouse(e.x, e.y, 1)
@@ -1814,7 +1817,7 @@ proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
     s.scrollGrabbed = false
 
   of MouseMoveEvent:
-    if (CtrlPressed in e.mods) and area.contains(point(e.x, e.y)):
+    if (LinkMod in e.mods) and area.contains(point(e.x, e.y)):
       s.probeX = e.x
       s.probeY = e.y
       s.probeActive = true
@@ -1849,7 +1852,7 @@ proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
   s.render(area, showCursor = focused)
 
   # After rendering, probe and click positions have been resolved.
-  if e.kind == MouseDownEvent and (CtrlPressed in e.mods) and
+  if e.kind == MouseDownEvent and (LinkMod in e.mods) and
      area.contains(point(e.x, e.y)):
     result = EditAction(kind: ctrlClick, pos: s.cursor.int)
   elif s.probeActive and s.probeResult >= 0:

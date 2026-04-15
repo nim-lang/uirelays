@@ -97,7 +97,10 @@ proc handleTermCtrlClick(buf: SynEdit; pos: int;
   if dirExists(path):
     os.setCurrentDir(path)
     setWindowTitle("SynEdit Demo - " & path)
+    term.ed.appendOutput("\L")
     term.insertPrompt()
+    var lsCmd = "ls"
+    discard term.runCommand(lsCmd)
   elif fileExists(path):
     editor.loadFromFile(path)
     editor.lang = fileExtToLanguage(path.splitFile.ext)

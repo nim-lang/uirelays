@@ -363,7 +363,7 @@ proc dirContents(t: var Terminal; ext: string) =
       inc i
   t.ed.appendOutput("\L")
 
-proc runCommand(t: var Terminal; cmd: var string): TermAction =
+proc runCommand*(t: var Terminal; cmd: var string): TermAction =
   result = TermAction(kind: noAction)
   t.files.setLen 0
   t.hist[t.process].addCmd(cmd)
@@ -468,6 +468,9 @@ proc draw*(t: var Terminal; e: Event; area: Rect; focused: bool): TermAction =
   t.update()
 
   if focused:
+    # Ensure cursor is in the editable area so it's visible.
+    if t.ed.cursor <= t.ed.readOnly:
+      t.ed.gotoPos(t.ed.len)
     # Intercept terminal-specific keys before passing to SynEdit.
     if e.kind == KeyDownEvent:
       let ctrl = CtrlPressed in e.mods
