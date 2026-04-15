@@ -104,6 +104,14 @@ type
     currentlyIndexing: int
     position: int
 
+  Marker = object
+    a, b: int             ## buffer range [a..b] to highlight
+    color: Color          ## background color for this marker
+
+  LineDecoration = object
+    line: int             ## line number (0-based)
+    color: Color          ## color indicator shown in the line number gutter
+
   EditActionKind* = enum
     noAction,
     ctrlHover,          ## ctrl+mouse move over text
@@ -160,6 +168,10 @@ type
     scrollGrabOffset: int
     # Highlighting
     highlighter: Indexer
+    # Markers (search results, etc.)
+    markers: seq[Marker]
+    # Line decorations (breakpoints, active execution line, etc.)
+    lineDecorations: seq[LineDecoration]
     # Cache
     offsetToLineCache: array[20, tuple[version, offset, line: int]]
 
@@ -1402,12 +1414,49 @@ proc spaceForLines(s: SynEdit): int =
 proc getBg(s: SynEdit; i: int): Color =
   if i <= s.selected.b and s.selected.a <= i: return s.theme.selBg
   if i == s.bracketA or i == s.bracketB: return s.theme.bracketBg
+  for m in s.markers:
+    if m.a <= i and i <= m.b: return m.color
   return s.theme.bg
 
 proc underline*(s: var SynEdit; a, b: int) =
   ## Set the underline range. Call before the draw/render that should show it.
   ## Pass (-1, -1) to clear.
   s.hotLink = (a, b)
+
+# ---------------------------------------------------------------------------
+# Markers -- highlighted buffer ranges (search results, diagnostics, etc.)
+# ---------------------------------------------------------------------------
+
+proc addMarker*(s: var SynEdit; a, b: int; color: Color) =
+  ## Add a highlighted range [a..b] with the given background color.
+  s.markers.add Marker(a: a, b: b, color: color)
+
+proc clearMarkers*(s: var SynEdit) =
+  ## Remove all markers.
+  s.markers.setLen 0
+
+# ---------------------------------------------------------------------------
+# Line decorations -- gutter indicators (breakpoints, active line, etc.)
+# ---------------------------------------------------------------------------
+
+proc setLineDecoration*(s: var SynEdit; line: int; color: Color) =
+  ## Set a colored indicator for the given line number in the gutter.
+  for i in 0 ..< s.lineDecorations.len:
+    if s.lineDecorations[i].line == line:
+      s.lineDecorations[i].color = color
+      return
+  s.lineDecorations.add LineDecoration(line: line, color: color)
+
+proc clearLineDecoration*(s: var SynEdit; line: int) =
+  ## Remove the decoration for a specific line.
+  for i in 0 ..< s.lineDecorations.len:
+    if s.lineDecorations[i].line == line:
+      s.lineDecorations.del(i)
+      return
+
+proc clearLineDecorations*(s: var SynEdit) =
+  ## Remove all line decorations.
+  s.lineDecorations.setLen 0
 
 const
   CharBufSize = 80
@@ -1684,9 +1733,16 @@ proc render*(s: var SynEdit; area: Rect; showCursor: bool) =
   while dim.y + fontSize < endY and i <= s.len:
     if s.showLineNumbers:
       let num = $(renderLine + 1)
-      let numColor = if renderLine == s.currentLine: s.theme.fg[TokenClass.None]
+      var numColor = if renderLine == s.currentLine: s.theme.fg[TokenClass.None]
                      else: s.theme.lineNumColor
-      discard drawText(s.font, area.x + 2, dim.y, num, numColor, s.theme.bg)
+      var numBg = s.theme.bg
+      for ld in s.lineDecorations:
+        if ld.line == renderLine.int:
+          numBg = ld.color
+          let dotSize = max(lineH - 4, 4)
+          fillRect(rect(area.x, dim.y + 2, dotSize, dotSize), ld.color)
+          break
+      discard drawText(s.font, area.x + 2, dim.y, num, numColor, numBg)
 
     i = s.drawTextLine(i, dim, blink)
     inc s.span
