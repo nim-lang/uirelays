@@ -8,7 +8,7 @@ import std/tables
 from std/cmdline import paramCount, paramStr
 import uirelays
 import uirelays/layout
-import widgets/[synedit, terminal, label]
+import widgets/[synedit, terminal]
 
 const appLayout = parseLayout("""
 | title, 1 line                    |
@@ -48,10 +48,12 @@ proc main =
   let font = openFont("", 16, fm)
   setWindowTitle("SynEdit Demo")
 
-  var title = createLabel(font, "SynEdit Demo  --  editor (left) | terminal (right)")
+  var title = createSynEdit(font)
   var editor = createSynEdit(font)
   var term = createTerminal(font)
-  var status = createLabel(font)
+  var status = createSynEdit(font)
+
+  title.setLabel("SynEdit Demo  --  editor (left) | terminal (right)")
 
   editor.lang = langNim
   editor.showLineNumbers = true
@@ -80,17 +82,17 @@ proc main =
         focus = hit.name
     else: discard
 
-    title.draw(cells["title"])
+    discard title.draw(e, cells["title"], focus == "title")
     discard editor.draw(e, cells["editor"], focus == "editor")
     let termAct = term.draw(e, cells["terminal"], focus == "terminal")
     if termAct.kind == openFile:
       editor.loadFromFile(termAct.file)
       focus = "editor"
 
-    status.text = "Ln " & $(editor.currentLine + 1) &
-                  ", Col " & $(editor.currentCol + 1) &
-                  "  |  " & (if editor.changed: "modified" else: "saved")
-    status.draw(cells["status"])
+    status.setLabel("Ln " & $(editor.currentLine + 1) &
+                    ", Col " & $(editor.currentCol + 1) &
+                    "  |  " & (if editor.changed: "modified" else: "saved"))
+    discard status.draw(e, cells["status"], focus == "status")
 
     refresh()
 

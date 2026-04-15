@@ -921,7 +921,7 @@ void cocoa_startTextInput(void) {
   /* NSTextInputClient is always active on our view */
 }
 
-void cocoa_quitRequest(void) {
+void cocoa_shutdown(void) {
   NEEvent e = {0};
   e.kind = NE_QUIT;
   pushEvent(e);
