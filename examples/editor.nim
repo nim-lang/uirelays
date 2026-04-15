@@ -1,11 +1,6 @@
-## editor.nim -- Example app demonstrating multiple SynEdit widgets
-## with layout, labels, a code editor, and a terminal panel.
-##
-## Compile:
-##   nim c examples/editor.nim
-##
-## Design Notes
 ##[
+Design Notes:
+
 Everything is text. The core widget is **SynEdit** -- a syntax-aware text
 editor ported from NimEdit. Labels, status bars, and terminals are all
 SynEdit instances with different configurations:
