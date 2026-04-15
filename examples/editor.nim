@@ -145,6 +145,27 @@ proc handleTermCtrlClick(buf: SynEdit; pos: int;
     setWindowTitle("SynEdit - " & path.extractFilename)
     focus = "editor"
 
+proc updateStatus(status: var Terminal; ed: SynEdit; path: string) =
+  let name = if path.len > 0: path.extractFilename else: "[scratch]"
+  let info = name & "  Ln " & $(ed.currentLine + 1) &
+             ", Col " & $(ed.currentCol + 1) &
+             (if ed.changed: "  *" else: "") & " > "
+  status.ed.clear()
+  status.ed.lang = langConsole
+  status.ed.appendOutput(info)
+
+proc tryOpenFile(arg: string; buffers: var seq[BufferEntry];
+                 current: var int; font: Font; focus: var string) =
+  let path = if isAbsolute(arg): arg else: os.getCurrentDir() / arg
+  if fileExists(path):
+    current = buffers.openFile(font, path, -1, -1)
+    setWindowTitle("SynEdit - " & path.extractFilename)
+    focus = "editor"
+  elif dirExists(path):
+    os.setCurrentDir(path)
+    setWindowTitle("SynEdit Demo - " & path)
+
+
 proc main =
   let screen = createWindow(1100, 700)
   var width = screen.width
@@ -157,7 +178,7 @@ proc main =
   var title = createSynEdit(font)
   var files = createSynEdit(font)
   var term = createTerminal(font)
-  var status = createSynEdit(font)
+  var status = createTerminal(font)
 
   title.setLabel("SynEdit Demo")
 
@@ -244,11 +265,20 @@ proc main =
     of noAction:
       term.ed.underline(-1, -1)
 
-    let ed = buffers[current].ed
-    status.setLabel("Ln " & $(ed.currentLine + 1) &
-                    ", Col " & $(ed.currentCol + 1) &
-                    "  |  " & (if ed.changed: "modified" else: "saved"))
-    discard status.draw(e, cells["status"], focus == "status")
+    # Status bar / prompt -- update prefix when not focused
+    if focus != "status":
+      updateStatus(status, buffers[current].ed, buffers[current].path)
+    let statusAct = status.draw(e, cells["status"], focus == "status")
+    case statusAct.kind
+    of openFile:
+      tryOpenFile(statusAct.file, buffers, current, font, focus)
+      updateStatus(status, buffers[current].ed, buffers[current].path)
+    of saveFile:
+      if buffers[current].path.len > 0:
+        buffers[current].ed.saveToFile(buffers[current].path)
+      focus = "editor"
+      updateStatus(status, buffers[current].ed, buffers[current].path)
+    of ctrlHover, ctrlClick, noAction: discard
 
     refresh()
 
