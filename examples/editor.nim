@@ -67,23 +67,20 @@ proc main =
     let cells = appLayout.resolve(width, height, fm.lineHeight)
 
     var e = default Event
-    if pollEvent(e, {WantTextInput}):
-      case e.kind
-      of QuitEvent, WindowCloseEvent:
-        running = false
-      of WindowResizeEvent:
-        width = e.x
-        height = e.y
-      of MouseDownEvent:
-        let hit = cells.hitTest(e.x, e.y)
-        if hit.name.len > 0:
-          focus = hit.name
-      else: discard
-    else:
-      sleep(16)
+    discard waitEvent(e, 500, {WantTextInput})
+    case e.kind
+    of QuitEvent, WindowCloseEvent:
+      running = false
+    of WindowResizeEvent:
+      width = e.x
+      height = e.y
+    of MouseDownEvent:
+      let hit = cells.hitTest(e.x, e.y)
+      if hit.name.len > 0:
+        focus = hit.name
+    else: discard
 
     title.draw(cells["title"])
-
     discard editor.draw(e, cells["editor"], focus == "editor")
     let termAct = term.draw(e, cells["terminal"], focus == "terminal")
     if termAct.kind == openFile:

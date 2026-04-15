@@ -82,27 +82,37 @@ int cocoa_pollEvent(NEEvent *out) {
 }
 
 int cocoa_waitEvent(NEEvent *out, int timeoutMs) {
-  @autoreleasepool {
-    NSDate *deadline = (timeoutMs < 0)
-      ? [NSDate distantFuture]
-      : [NSDate dateWithTimeIntervalSinceNow:timeoutMs / 1000.0];
-    NSEvent *ev = [NSApp nextEventMatchingMask:NSEventMaskAny
-                                     untilDate:deadline
-                                        inMode:NSDefaultRunLoopMode
-                                       dequeue:YES];
-    if (ev) {
-      [NSApp sendEvent:ev];
-      [NSApp updateWindows];
-      /* pump remaining */
-      while ((ev = [NSApp nextEventMatchingMask:NSEventMaskAny
-                                      untilDate:nil
-                                         inMode:NSDefaultRunLoopMode
-                                        dequeue:YES]) != nil) {
+  NSDate *deadline = (timeoutMs < 0)
+    ? [NSDate distantFuture]
+    : [NSDate dateWithTimeIntervalSinceNow:timeoutMs / 1000.0];
+
+  /* Loop until we have an event in our queue or the deadline passes.
+     nextEventMatchingMask may return internal Cocoa events that don't
+     produce NEEvents -- we must keep waiting in that case. */
+  while (eqTail == eqHead) {
+    @autoreleasepool {
+      NSEvent *ev = [NSApp nextEventMatchingMask:NSEventMaskAny
+                                       untilDate:deadline
+                                          inMode:NSDefaultRunLoopMode
+                                         dequeue:YES];
+      if (ev) {
         [NSApp sendEvent:ev];
         [NSApp updateWindows];
+        /* drain remaining without blocking */
+        while ((ev = [NSApp nextEventMatchingMask:NSEventMaskAny
+                                        untilDate:nil
+                                           inMode:NSDefaultRunLoopMode
+                                          dequeue:YES]) != nil) {
+          [NSApp sendEvent:ev];
+          [NSApp updateWindows];
+        }
+      } else {
+        /* nextEvent returned nil -- timeout expired */
+        break;
       }
     }
   }
+
   if (eqTail == eqHead) {
     out->kind = NE_NONE;
     return 0;

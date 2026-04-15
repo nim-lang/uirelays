@@ -271,6 +271,25 @@ const
   XK_comma = 0x2c'u
   XK_period = 0x2e'u
 
+# ---- POSIX select for timeout waiting ----
+
+proc ConnectionNumber(dpy: pointer): cint
+  {.cdecl, dynlib: libX11, importc: "XConnectionNumber".}
+
+type
+  FdSet {.importc: "fd_set", header: "<sys/select.h>".} = object
+  Timeval {.importc: "struct timeval", header: "<sys/time.h>".} = object
+    tv_sec {.importc.}: clong
+    tv_usec {.importc.}: clong
+
+proc FD_ZERO(s: ptr FdSet)
+  {.importc, header: "<sys/select.h>".}
+proc FD_SET(fd: cint; s: ptr FdSet)
+  {.importc, header: "<sys/select.h>".}
+proc c_select(nfds: cint; readfds, writefds, exceptfds: ptr FdSet;
+              timeout: ptr Timeval): cint
+  {.importc: "select", header: "<sys/select.h>".}
+
 # ---- X11 function imports ----
 
 proc XOpenDisplay(name: cstring): pointer
@@ -831,26 +850,27 @@ proc x11WaitEvent(e: var input.Event; timeoutMs: int;
     return true
   if x11PollEvent(e, flags): return true
 
+  # Block on the X11 connection fd using select() with timeout.
+  let xfd = ConnectionNumber(gDisplay)
+  var fds: FdSet
+  FD_ZERO(addr fds)
+  FD_SET(xfd, addr fds)
+
   if timeoutMs < 0:
-    # Block efficiently until an X11 event arrives
-    var xev: XEvent
-    discard XNextEvent(gDisplay, addr xev)
-    processXEvent(xev)
-    # Drain any remaining
-    drainXEvents()
-    if eventQueue.len > 0:
-      e = eventQueue[0]
-      eventQueue.delete(0)
-      return true
-    return false
+    # Block indefinitely
+    discard c_select(xfd + 1, addr fds, nil, nil, nil)
   else:
-    # Poll with short sleeps
-    let deadline = getTicks() + timeoutMs
-    while true:
-      let now = getTicks()
-      if now >= deadline: return false
-      os.sleep(10)
-      if x11PollEvent(e, flags): return true
+    var tv = Timeval(tv_sec: (timeoutMs div 1000).clong,
+                     tv_usec: ((timeoutMs mod 1000) * 1000).clong)
+    discard c_select(xfd + 1, addr fds, nil, nil, addr tv)
+
+  # select() returned -- drain whatever arrived
+  drainXEvents()
+  if eventQueue.len > 0:
+    e = eventQueue[0]
+    eventQueue.delete(0)
+    return true
+  return false
 
 proc x11GetClipboardText(): string =
   discard XConvertSelection(gDisplay, gClipboard, gUtf8String,

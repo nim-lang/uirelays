@@ -1721,13 +1721,13 @@ proc render*(s: var SynEdit; area: Rect; showCursor: bool) =
 proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
   ## Per-frame entry point. When focused, processes input and shows cursor.
   ## When not focused, just paints. Always returns an action (noAction if unfocused).
-  if focused:
-    let lineH = fontLineSkip(s.font)
-    let grip = s.scrollGrip(area, lineH)
-    let hasScrollBar = s.scrollEnabled
+  let lineH = fontLineSkip(s.font)
+  let grip = s.scrollGrip(area, lineH)
+  let hasScrollBar = s.scrollEnabled
 
-    case e.kind
-    of TextInputEvent:
+  case e.kind
+  of TextInputEvent:
+    if focused:
       var text = ""
       for c in e.text:
         if c == '\0': break
@@ -1736,7 +1736,8 @@ proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
         for c in text:
           s.insertChar(c)
 
-    of KeyDownEvent:
+  of KeyDownEvent:
+    if focused:
       let ctrl = CtrlPressed in e.mods
       let shift = ShiftPressed in e.mods
 
@@ -1806,41 +1807,47 @@ proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
           if text.len > 0: s.insertText(text)
       else: discard
 
-    of MouseDownEvent:
-      if hasScrollBar and grip.contains(point(e.x, e.y)):
-        s.scrollGrabbed = true
-        s.scrollGrabOffset = e.y - grip.y
-      elif area.contains(point(e.x, e.y)):
-        if e.clicks >= 3:
-          s.setCursorFromMouse(e.x, e.y, 1)
-          s.mouseSelectWholeLine()
-        elif e.clicks == 2:
-          s.setCursorFromMouse(e.x, e.y, 1)
-          s.mouseSelectCurrentToken()
-        else:
-          s.setCursorFromMouse(e.x, e.y, e.clicks)
+  of MouseDownEvent:
+    if hasScrollBar and grip.contains(point(e.x, e.y)):
+      s.scrollGrabbed = true
+      s.scrollGrabOffset = e.y - grip.y
+    elif area.contains(point(e.x, e.y)):
+      if e.clicks >= 3:
+        s.setCursorFromMouse(e.x, e.y, 1)
+        s.mouseSelectWholeLine()
+      elif e.clicks == 2:
+        s.setCursorFromMouse(e.x, e.y, 1)
+        s.mouseSelectCurrentToken()
+      else:
+        s.setCursorFromMouse(e.x, e.y, e.clicks)
 
-    of MouseUpEvent:
-      s.scrollGrabbed = false
+  of MouseUpEvent:
+    s.scrollGrabbed = false
 
-    of MouseMoveEvent:
-      if s.scrollGrabbed and hasScrollBar:
-        let trackH = float(area.h - 2)
-        let totalLines = s.numberOfLines.int + s.span
-        let ratio = float(area.h) / float(totalLines * lineH)
-        let gripH = clamp(trackH * ratio, 20, trackH)
-        let trackScrollArea = trackH - gripH
-        if trackScrollArea > 0:
-          let mouseRel = float(e.y - s.scrollGrabOffset - area.y - 1)
-          let posRatio = clamp(mouseRel / trackScrollArea, 0.0, 1.0)
-          let maxScroll = totalLines - s.span
-          let target = clamp(int(posRatio * float(maxScroll)), 0, maxScroll)
-          s.scrollLines(target - s.firstLine.int)
+  of MouseMoveEvent:
+    if s.scrollGrabbed and hasScrollBar:
+      let trackH = float(area.h - 2)
+      let totalLines = s.numberOfLines.int + s.span
+      let ratio = float(area.h) / float(totalLines * lineH)
+      let gripH = clamp(trackH * ratio, 20, trackH)
+      let trackScrollArea = trackH - gripH
+      if trackScrollArea > 0:
+        let mouseRel = float(e.y - s.scrollGrabOffset - area.y - 1)
+        let posRatio = clamp(mouseRel / trackScrollArea, 0.0, 1.0)
+        let maxScroll = totalLines - s.span
+        let target = clamp(int(posRatio * float(maxScroll)), 0, maxScroll)
+        s.scrollLines(target - s.firstLine.int)
 
-    of MouseWheelEvent:
+  of MouseWheelEvent:
+    if focused:
       s.scrollLines(-e.y * 3)
 
-    else: discard
+  else: discard
+
+  # Reset cursor blink on any input so the cursor stays visible while editing.
+  if focused and e.kind != NoEvent:
+    s.cursorVisible = true
+    s.lastBlinkTick = getTicks()
 
   s.render(area, showCursor = focused)
 
