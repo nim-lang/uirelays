@@ -238,12 +238,13 @@ type
   TermActionKind* = enum
     noAction,
     openFile,           ## user typed `o <file>`
+    saveFile,           ## user typed `save`
     ctrlHover,          ## ctrl+mouse move over text
     ctrlClick           ## ctrl+click on text
 
   TermAction* = object
     case kind*: TermActionKind
-    of noAction: discard
+    of noAction, saveFile: discard
     of openFile:
       file*: string
     of ctrlHover, ctrlClick:
@@ -389,6 +390,9 @@ proc runCommand*(t: var Terminal; cmd: var string): TermAction =
     if b.len > 0:
       let path = if isAbsolute(b): b else: os.getCurrentDir() / b
       result = TermAction(kind: openFile, file: path)
+  of "save":
+    t.insertPrompt()
+    result = TermAction(kind: saveFile)
   of "cls":
     t.ed.clear()
     t.ed.lang = langConsole

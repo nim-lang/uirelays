@@ -1352,6 +1352,10 @@ proc loadFromFile*(s: var SynEdit; filename: string) =
   if text.isBinary: return
   s.setText(text)
 
+proc saveToFile*(s: var SynEdit; filename: string) =
+  writeFile(filename, s.fullText)
+  s.changed = false
+
 proc appendOutput*(s: var SynEdit; text: string) =
   ## Append text and mark everything as read-only up to the end.
   ## For terminal/console use: output is protected, user types after it.
@@ -1728,7 +1732,7 @@ proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
 
   of KeyDownEvent:
     if focused:
-      let ctrl = CtrlPressed in e.mods
+      let ctrl = CtrlPressed in e.mods or GuiPressed in e.mods
       let shift = ShiftPressed in e.mods
 
       case e.key

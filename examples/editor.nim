@@ -19,9 +19,9 @@ import uirelays/layout
 import widgets/[synedit, terminal]
 
 const appLayout = parseLayout("""
-| title, 1 line                    |
-| editor, *       | terminal, *    |
-| status, 1 line                   |
+| title, 1 line                                        |
+| files, 120px | editor, *       | terminal, *         |
+| status, 1 line                                       |
 """)
 
 const sampleCode = """
@@ -94,13 +94,44 @@ proc extractFilePosition(s: SynEdit; pos: int):
   else:
     result = (path, -1, -1, a, b)
 
+type
+  BufferEntry = object
+    ed: SynEdit
+    path: string        ## "" for scratch buffers
+
+proc openFile(buffers: var seq[BufferEntry]; font: Font;
+              path: string; line, col: int): int =
+  ## Open a file or switch to it if already open. Returns the buffer index.
+  for i, b in buffers:
+    if b.path == path:
+      if line >= 0: buffers[i].ed.gotoLine(line, max(col, 0))
+      return i
+  var ed = createSynEdit(font)
+  ed.showLineNumbers = true
+  ed.lang = fileExtToLanguage(path.splitFile.ext)
+  ed.loadFromFile(path)
+  if line >= 0: ed.gotoLine(line, max(col, 0))
+  buffers.add BufferEntry(ed: ed, path: path)
+  result = buffers.high
+
+proc updateFilesPanel(files: var SynEdit; buffers: seq[BufferEntry];
+                      current: int) =
+  var text = ""
+  for i, b in buffers:
+    let name = if b.path.len > 0: b.path.extractFilename else: "[scratch]"
+    let marker = if i == current: "> " else: "  "
+    let modified = if b.ed.changed: " *" else: ""
+    text.add marker & name & modified
+    if i < buffers.high: text.add "\n"
+  files.setLabel(text)
+
 proc handleTermCtrlClick(buf: SynEdit; pos: int;
-                         editor: var SynEdit; term: var Terminal;
+                         buffers: var seq[BufferEntry]; current: var int;
+                         font: Font; term: var Terminal;
                          focus: var string) =
   let (file, ln, fc, a, b) = buf.extractFilePosition(pos)
   if file.len == 0: return
   let path = if isAbsolute(file): file else: os.getCurrentDir() / file
-  # Set underline on the detected range
   term.ed.underline(a, b)
   if dirExists(path):
     os.setCurrentDir(path)
@@ -110,11 +141,7 @@ proc handleTermCtrlClick(buf: SynEdit; pos: int;
     var lsCmd = "ls"
     discard term.runCommand(lsCmd)
   elif fileExists(path):
-    editor.loadFromFile(path)
-    editor.lang = fileExtToLanguage(path.splitFile.ext)
-    editor.showLineNumbers = true
-    if ln >= 0:
-      editor.gotoLine(ln, max(fc, 0))
+    current = buffers.openFile(font, path, ln, fc)
     setWindowTitle("SynEdit - " & path.extractFilename)
     focus = "editor"
 
@@ -128,18 +155,23 @@ proc main =
   setWindowTitle("SynEdit Demo")
 
   var title = createSynEdit(font)
-  var editor = createSynEdit(font)
+  var files = createSynEdit(font)
   var term = createTerminal(font)
   var status = createSynEdit(font)
 
-  title.setLabel("SynEdit Demo  --  editor (left) | terminal (right)")
+  title.setLabel("SynEdit Demo")
 
-  editor.lang = langNim
-  editor.showLineNumbers = true
+  # Buffer list
+  var buffers: seq[BufferEntry]
+  var current = 0
   if paramCount() >= 1:
-    editor.loadFromFile(paramStr(1))
+    current = buffers.openFile(font, paramStr(1), -1, -1)
   else:
-    editor.setText(sampleCode)
+    var ed = createSynEdit(font)
+    ed.lang = langNim
+    ed.showLineNumbers = true
+    ed.setText(sampleCode)
+    buffers.add BufferEntry(ed: ed, path: "")
 
   var focus = "editor"
 
@@ -159,38 +191,60 @@ proc main =
       let hit = cells.hitTest(e.x, e.y)
       if hit.name.len > 0:
         focus = hit.name
+    of KeyDownEvent:
+      let cmd = CtrlPressed in e.mods or GuiPressed in e.mods
+      if cmd and e.key == KeyS:
+        if buffers[current].path.len > 0:
+          buffers[current].ed.saveToFile(buffers[current].path)
+        e = default Event  # consume the event
     else: discard
 
     discard title.draw(e, cells["title"], focus == "title")
-    let edAct = editor.draw(e, cells["editor"], focus == "editor")
-    if edAct.kind == ctrlClick:
-      discard # TODO: language server lookup at edAct.pos
-    elif edAct.kind == ctrlHover:
-      discard # TODO: underline identifier at edAct.pos
-    else:
-      editor.underline(-1, -1)
 
+    # Files panel -- click to switch buffer
+    updateFilesPanel(files, buffers, current)
+    discard files.draw(e, cells["files"], focus == "files")
+    if e.kind == MouseDownEvent and focus == "files":
+      let idx = files.currentLine
+      if idx < buffers.len:
+        current = idx
+        focus = "editor"
+
+    # Editor
+    let edAct = buffers[current].ed.draw(e, cells["editor"], focus == "editor")
+    case edAct.kind
+    of ctrlClick:
+      discard # TODO: language server lookup at edAct.pos
+    of ctrlHover:
+      discard # TODO: underline identifier at edAct.pos
+    of noAction:
+      buffers[current].ed.underline(-1, -1)
+
+    # Terminal
     let termAct = term.draw(e, cells["terminal"], focus == "terminal")
     case termAct.kind
     of openFile:
       if fileExists(termAct.file):
-        editor.loadFromFile(termAct.file)
-        editor.lang = fileExtToLanguage(termAct.file.splitFile.ext)
-        editor.showLineNumbers = true
+        current = buffers.openFile(font, termAct.file, -1, -1)
         setWindowTitle("SynEdit - " & termAct.file.extractFilename)
         focus = "editor"
+    of saveFile:
+      if buffers[current].path.len > 0:
+        buffers[current].ed.saveToFile(buffers[current].path)
     of ctrlHover:
       let (_, _, _, a, b) = term.ed.extractFilePosition(termAct.pos)
       term.ed.underline(a, b)
     of ctrlClick:
       term.ed.underline(-1, -1)
-      handleTermCtrlClick(term.ed, termAct.pos, editor, term, focus)
+      handleTermCtrlClick(term.ed, termAct.pos, buffers, current,
+                          font, term, focus)
     of noAction:
       term.ed.underline(-1, -1)
 
-    status.setLabel("Ln " & $(editor.currentLine + 1) &
-                    ", Col " & $(editor.currentCol + 1) &
-                    "  |  " & (if editor.changed: "modified" else: "saved"))
+    let ed = buffers[current].ed
+    status.setLabel("Ln " & $(ed.currentLine + 1) &
+                    ", Col " & $(ed.currentCol + 1) &
+                    "  |  " & (if ed.changed: "modified" else: "saved"))
     discard status.draw(e, cells["status"], focus == "status")
 
     refresh()
