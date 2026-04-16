@@ -2,7 +2,7 @@
 
 import sdl3
 import sdl3_ttf
-import std/os
+import std/[hashes, os, tables]
 import ../coords, ../input, ../screen
 
 # --- Font handle management ---
@@ -12,7 +12,49 @@ type
     ttfFont: sdl3_ttf.Font
     metrics: FontMetrics
 
+  MeasureCacheKey = object
+    fontId: int
+    text: string
+
+  TextCacheKey = object
+    fontId: int
+    fg: screen.Color
+    text: string
+
+  TextCacheEntry = object
+    texture: sdl3.Texture
+    extent: TextExtent
+    lastUsed: int
+
+  ClipState = object
+    enabled: bool
+    rect: sdl3.Rect
+
 var fonts: seq[FontSlot]
+
+const MaxTextCacheEntries = 64
+
+proc `==`(a, b: MeasureCacheKey): bool {.inline.} =
+  a.fontId == b.fontId and a.text == b.text
+
+proc hash(x: MeasureCacheKey): Hash {.inline.} =
+  var h: Hash = 0
+  h = h !& hash(x.fontId)
+  h = h !& hash(x.text)
+  !$h
+
+proc `==`(a, b: TextCacheKey): bool {.inline.} =
+  a.fontId == b.fontId and a.fg == b.fg and a.text == b.text
+
+proc hash(x: TextCacheKey): Hash {.inline.} =
+  var h: Hash = 0
+  h = h !& hash(x.fontId)
+  h = h !& hash(x.fg.r)
+  h = h !& hash(x.fg.g)
+  h = h !& hash(x.fg.b)
+  h = h !& hash(x.fg.a)
+  h = h !& hash(x.text)
+  !$h
 
 proc toColor(c: screen.Color): sdl3.Color {.inline.} =
   sdl3.Color(r: c.r, g: c.g, b: c.b, a: c.a)
@@ -27,6 +69,90 @@ proc getFontPtr(f: screen.Font): sdl3_ttf.Font {.inline.} =
 var
   win: sdl3.Window
   ren: sdl3.Renderer
+  measureCache: Table[MeasureCacheKey, TextExtent]
+  textCache: Table[TextCacheKey, TextCacheEntry]
+  textCacheGeneration: int
+  cursors: array[CursorKind, sdl3.Cursor]
+  currentCursor = curDefault
+  drawColorValid: bool
+  drawColor: screen.Color
+  clipStack: seq[ClipState]
+  currentClip: ClipState
+
+proc clearMeasureCache() =
+  measureCache.clear()
+
+proc clearTextCache() =
+  for entry in textCache.values:
+    if entry.texture != nil:
+      destroyTexture(entry.texture)
+  textCache.clear()
+  textCacheGeneration = 0
+
+proc clearCursorCache() =
+  for cursor in mitems(cursors):
+    if cursor != nil:
+      destroyCursor(cursor)
+      cursor = nil
+  currentCursor = curDefault
+
+proc closeAllFonts() =
+  for slot in mitems(fonts):
+    if slot.ttfFont != nil:
+      sdl3_ttf.closeFont(slot.ttfFont)
+      slot.ttfFont = nil
+  fonts.setLen(0)
+
+proc resetSdlState() =
+  clearTextCache()
+  clearMeasureCache()
+  clearCursorCache()
+  closeAllFonts()
+  clipStack.setLen(0)
+  currentClip = ClipState()
+  drawColorValid = false
+  if ren != nil:
+    destroyRenderer(ren)
+    ren = nil
+  if win != nil:
+    destroyWindow(win)
+    win = nil
+
+proc ensureDrawColor(color: screen.Color) =
+  if drawColorValid and drawColor == color:
+    return
+  discard setRenderDrawColor(ren, color.r, color.g, color.b, color.a)
+  drawColor = color
+  drawColorValid = true
+
+proc applyClipState() =
+  if ren == nil:
+    return
+  if currentClip.enabled:
+    discard setRenderClipRect(ren, addr currentClip.rect)
+  else:
+    discard setRenderClipRect(ren, cast[ptr sdl3.Rect](nil))
+
+proc nextTextCacheGeneration(): int =
+  inc textCacheGeneration
+  textCacheGeneration
+
+proc evictTextCacheIfNeeded() =
+  while textCache.len > MaxTextCacheEntries:
+    var oldestKey: TextCacheKey
+    var oldestGen = high(int)
+    var found = false
+    for key, entry in textCache.pairs:
+      if entry.lastUsed < oldestGen:
+        oldestKey = key
+        oldestGen = entry.lastUsed
+        found = true
+    if not found:
+      break
+    let entry = textCache[oldestKey]
+    if entry.texture != nil:
+      destroyTexture(entry.texture)
+    textCache.del(oldestKey)
 
 # --- Screen hook implementations ---
 
@@ -61,6 +187,8 @@ proc resolveFontPath(path: string): string =
   ""
 
 proc sdlCreateWindow(layout: var ScreenLayout) =
+  if ren != nil or win != nil:
+    resetSdlState()
   discard createWindowAndRenderer(cstring"NimEdit",
     layout.width.cint, layout.height.cint, WINDOW_RESIZABLE, win, ren)
   discard startTextInput(win)
@@ -70,16 +198,27 @@ proc sdlCreateWindow(layout: var ScreenLayout) =
   layout.height = h
   layout.scaleX = 1
   layout.scaleY = 1
+  currentClip = ClipState()
+  applyClipState()
 
 proc sdlRefresh() =
   discard renderPresent(ren)
 
-proc sdlSaveState() = discard
-proc sdlRestoreState() = discard
+proc sdlSaveState() =
+  clipStack.add currentClip
+
+proc sdlRestoreState() =
+  if clipStack.len == 0:
+    return
+  currentClip = clipStack[^1]
+  clipStack.setLen(clipStack.len - 1)
+  applyClipState()
 
 proc sdlSetClipRect(r: coords.Rect) =
-  var sr = sdl3.Rect(x: r.x.cint, y: r.y.cint, w: r.w.cint, h: r.h.cint)
-  discard setRenderClipRect(ren, addr sr)
+  currentClip = ClipState(
+    enabled: true,
+    rect: sdl3.Rect(x: r.x.cint, y: r.y.cint, w: r.w.cint, h: r.h.cint))
+  applyClipState()
 
 proc sdlOpenFont(path: string; size: int;
                  metrics: var FontMetrics): screen.Font =
@@ -93,6 +232,8 @@ proc sdlOpenFont(path: string; size: int;
   metrics.descent = sdl3_ttf.getFontDescent(f)
   metrics.lineHeight = sdl3_ttf.getFontLineSkip(f)
   fonts.add FontSlot(ttfFont: f, metrics: metrics)
+  clearMeasureCache()
+  clearTextCache()
   result = screen.Font(fonts.len)
 
 proc sdlCloseFont(f: screen.Font) =
@@ -100,39 +241,65 @@ proc sdlCloseFont(f: screen.Font) =
   if idx >= 0 and idx < fonts.len and fonts[idx].ttfFont != nil:
     sdl3_ttf.closeFont(fonts[idx].ttfFont)
     fonts[idx].ttfFont = nil
+    clearMeasureCache()
+    clearTextCache()
+
+proc getCachedExtent(f: screen.Font; text: string): TextExtent =
+  let fp = getFontPtr(f)
+  if fp == nil or text.len == 0:
+    return TextExtent()
+  let key = MeasureCacheKey(fontId: f.int, text: text)
+  if key in measureCache:
+    return measureCache[key]
+  var w, h: cint
+  discard sdl3_ttf.getStringSize(fp, cstring(text), 0, w, h)
+  result = TextExtent(w: w, h: h)
+  measureCache[key] = result
 
 proc sdlMeasureText(f: screen.Font; text: string): TextExtent =
-  let fp = getFontPtr(f)
-  if fp != nil and text != "":
-    var w, h: cint
-    discard sdl3_ttf.getStringSize(fp, cstring(text), 0, w, h)
-    result = TextExtent(w: w, h: h)
+  getCachedExtent(f, text)
 
-proc sdlDrawText(f: screen.Font; x, y: int; text: string;
-                 fg, bg: screen.Color): TextExtent =
+proc getCachedTextEntry(f: screen.Font; text: string;
+                        fg: screen.Color): TextCacheEntry =
   let fp = getFontPtr(f)
-  if fp == nil or text == "": return
-  # Fill background, then draw blended text on top
-  let ext0 = sdlMeasureText(f, text)
-  var bgRect = FRect(x: x.cfloat, y: y.cfloat,
-                     w: ext0.w.cfloat, h: ext0.h.cfloat)
-  discard setRenderDrawColor(ren, bg.r, bg.g, bg.b, bg.a)
-  discard renderFillRect(ren, addr bgRect)
+  if fp == nil or text.len == 0 or ren == nil:
+    return TextCacheEntry()
+  let key = TextCacheKey(fontId: f.int, fg: fg, text: text)
+  if key in textCache:
+    textCache[key].lastUsed = nextTextCacheGeneration()
+    return textCache[key]
   let surf = sdl3_ttf.renderTextBlended(fp, cstring(text), 0, toColor(fg))
-  if surf == nil: return
+  if surf == nil:
+    return TextCacheEntry()
   let tex = createTextureFromSurface(ren, surf)
   if tex == nil:
     destroySurface(surf)
-    return
+    return TextCacheEntry()
   discard setTextureBlendMode(tex, BLENDMODE_BLEND)
-  var tw, th: cfloat
-  discard getTextureSize(tex, tw, th)
-  var src = FRect(x: 0, y: 0, w: tw, h: th)
-  var dst = FRect(x: x.cfloat, y: y.cfloat, w: tw, h: th)
-  discard renderTexture(ren, tex, addr src, addr dst)
-  result = TextExtent(w: tw.int, h: th.int)
+  let entry = TextCacheEntry(
+    texture: tex,
+    extent: getCachedExtent(f, text),
+    lastUsed: nextTextCacheGeneration())
   destroySurface(surf)
-  destroyTexture(tex)
+  textCache[key] = entry
+  evictTextCacheIfNeeded()
+  entry
+
+proc sdlDrawText(f: screen.Font; x, y: int; text: string;
+                 fg, bg: screen.Color): TextExtent =
+  let entry = getCachedTextEntry(f, text, fg)
+  if entry.texture == nil:
+    return
+  if bg.a != 0 and entry.extent.w > 0 and entry.extent.h > 0:
+    var bgRect = FRect(x: x.cfloat, y: y.cfloat,
+                       w: entry.extent.w.cfloat, h: entry.extent.h.cfloat)
+    ensureDrawColor(bg)
+    discard renderFillRect(ren, addr bgRect)
+  var src = FRect(x: 0, y: 0, w: entry.extent.w.cfloat, h: entry.extent.h.cfloat)
+  var dst = FRect(x: x.cfloat, y: y.cfloat,
+                  w: entry.extent.w.cfloat, h: entry.extent.h.cfloat)
+  discard renderTexture(ren, entry.texture, addr src, addr dst)
+  result = entry.extent
 
 proc sdlGetFontMetrics(f: screen.Font): FontMetrics =
   let idx = f.int - 1
@@ -140,30 +307,36 @@ proc sdlGetFontMetrics(f: screen.Font): FontMetrics =
   else: screen.FontMetrics()
 
 proc sdlFillRect(r: coords.Rect; color: screen.Color) =
-  discard setRenderDrawColor(ren, color.r, color.g, color.b, color.a)
+  ensureDrawColor(color)
   var fr = FRect(x: r.x.cfloat, y: r.y.cfloat,
                  w: r.w.cfloat, h: r.h.cfloat)
   discard renderFillRect(ren, addr fr)
 
 proc sdlDrawLine(x1, y1, x2, y2: int; color: screen.Color) =
-  discard setRenderDrawColor(ren, color.r, color.g, color.b, color.a)
+  ensureDrawColor(color)
   discard renderLine(ren, x1.cfloat, y1.cfloat, x2.cfloat, y2.cfloat)
 
 proc sdlDrawPoint(x, y: int; color: screen.Color) =
-  discard setRenderDrawColor(ren, color.r, color.g, color.b, color.a)
+  ensureDrawColor(color)
   discard renderPoint(ren, x.cfloat, y.cfloat)
 
 proc sdlSetCursor(c: CursorKind) =
-  let sc = case c
-    of curDefault, curArrow: SYSTEM_CURSOR_DEFAULT
-    of curIbeam: SYSTEM_CURSOR_TEXT
-    of curWait: SYSTEM_CURSOR_WAIT
-    of curCrosshair: SYSTEM_CURSOR_CROSSHAIR
-    of curHand: SYSTEM_CURSOR_POINTER
-    of curSizeNS: SYSTEM_CURSOR_NS_RESIZE
-    of curSizeWE: SYSTEM_CURSOR_EW_RESIZE
-  let cur = sdl3.createSystemCursor(sc)
-  discard sdl3.setCursor(cur)
+  if cursors[c] == nil:
+    let sc = case c
+      of curDefault, curArrow: SYSTEM_CURSOR_DEFAULT
+      of curIbeam: SYSTEM_CURSOR_TEXT
+      of curWait: SYSTEM_CURSOR_WAIT
+      of curCrosshair: SYSTEM_CURSOR_CROSSHAIR
+      of curHand: SYSTEM_CURSOR_POINTER
+      of curSizeNS: SYSTEM_CURSOR_NS_RESIZE
+      of curSizeWE: SYSTEM_CURSOR_EW_RESIZE
+    cursors[c] = sdl3.createSystemCursor(sc)
+  if cursors[c] == nil:
+    return
+  if c == currentCursor:
+    return
+  discard sdl3.setCursor(cursors[c])
+  currentCursor = c
 
 proc sdlSetWindowTitle(title: string) =
   if win != nil:
@@ -173,8 +346,11 @@ proc sdlSetWindowTitle(title: string) =
 
 proc sdlGetClipboardText(): string =
   let t = sdl3.getClipboardText()
-  if t != nil: result = $t
-  else: result = ""
+  if t != nil:
+    result = $t
+    sdlFree(t)
+  else:
+    result = ""
 
 proc sdlPutClipboardText(text: string) =
   discard setClipboardText(cstring(text))
@@ -333,7 +509,12 @@ proc sdlWaitEvent(e: var input.Event; timeoutMs: int;
 
 proc sdlGetTicks(): int = sdl3.getTicks().int
 proc sdlDelay(ms: int) = sdl3.delay(ms.uint32)
-proc sdlQuitRequest() = sdl3.quit()
+proc sdlQuitRequest() =
+  if win != nil:
+    discard stopTextInput(win)
+  resetSdlState()
+  sdl3_ttf.quit()
+  sdl3.quit()
 
 # --- Init ---
 
