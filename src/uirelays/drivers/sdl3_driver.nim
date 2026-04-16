@@ -69,8 +69,6 @@ proc getFontPtr(f: screen.Font): sdl3_ttf.Font {.inline.} =
 var
   win: sdl3.Window
   ren: sdl3.Renderer
-  defaultFontPath: string
-  didResolveDefaultFontPath: bool
   measureCache: Table[MeasureCacheKey, TextExtent]
   textCache: Table[TextCacheKey, TextCacheEntry]
   textCacheGeneration: int
@@ -158,10 +156,9 @@ proc evictTextCacheIfNeeded() =
 
 # --- Screen hook implementations ---
 
-proc resolveDefaultFontPath(): string =
-  if didResolveDefaultFontPath:
-    return defaultFontPath
-  didResolveDefaultFontPath = true
+proc resolveFontPath(path: string): string =
+  if path.len > 0:
+    return path
 
   when defined(windows):
     let candidates = [
@@ -185,16 +182,9 @@ proc resolveDefaultFontPath(): string =
 
   for candidate in candidates:
     if fileExists(candidate):
-      defaultFontPath = candidate
-      return defaultFontPath
+      return candidate
 
-  defaultFontPath = ""
-  defaultFontPath
-
-proc resolveFontPath(path: string): string =
-  if path.len > 0:
-    return path
-  resolveDefaultFontPath()
+  ""
 
 proc sdlCreateWindow(layout: var ScreenLayout) =
   if ren != nil or win != nil:
