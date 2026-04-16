@@ -95,7 +95,7 @@ proc cDelay(ms: uint32) {.importc: "cocoa_delay", cdecl.}
 proc cSetCursor(kind: cint) {.importc: "cocoa_setCursor", cdecl.}
 proc cSetWindowTitle(title: cstring) {.importc: "cocoa_setWindowTitle", cdecl.}
 proc cStartTextInput() {.importc: "cocoa_startTextInput", cdecl.}
-proc cQuitRequest() {.importc: "cocoa_quitRequest", cdecl.}
+proc cShutdown() {.importc: "cocoa_shutdown", cdecl.}
 
 # --- Relay implementations ---
 
@@ -255,7 +255,7 @@ proc cocoaPutClipboardText(text: string) =
 
 proc cocoaGetTicks(): int = cGetTicks().int
 proc cocoaDelay(ms: int) = cDelay(ms.uint32)
-proc cocoaQuitRequest() = cQuitRequest()
+proc cocoaShutdown() = cShutdown()
 
 # --- Init ---
 
@@ -275,6 +275,6 @@ proc initCocoaDriver*() =
   inputRelays = InputRelays(
     pollEvent: cocoaPollEvent, waitEvent: cocoaWaitEvent,
     getTicks: cocoaGetTicks, sleep: cocoaDelay,
-    quitRequest: cocoaQuitRequest)
+    shutdown: cocoaShutdown)
   clipboardRelays = ClipboardRelays(
     getText: cocoaGetClipboardText, putText: cocoaPutClipboardText)

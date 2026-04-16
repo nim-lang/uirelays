@@ -27,6 +27,7 @@ type
     name: string
     width: CellSize   ## horizontal size (for multi-column rows)
     height: CellSize  ## vertical size (row height)
+    subcells: seq[Cell] ## vertical stack within this cell (if ; was used)
 
   Row = object
     cells: seq[Cell]
@@ -58,8 +59,10 @@ proc parseSize(s: string): CellSize =
     raise newException(ValueError, "unknown size '" & s &
       "', expected Npx, N lines, or N*")
 
-proc parseCell(s: string): Cell =
-  ## Parse "name, 250px, scroll" or "name, 2 lines" or "name, *"
+proc parseSingleCell(s: string): Cell =
+  ## Parse "name, 250px" or "name, 2 lines" or "name, *"
+  ## With one size spec: used as both width and height (context decides).
+  ## With two size specs: first is height, second is width.
   let parts = s.strip().split(",")
   if parts.len == 0:
     raise newException(ValueError, "empty cell")
@@ -68,14 +71,23 @@ proc parseCell(s: string): Cell =
   result.width = CellSize(kind: skStretch, value: 1)  # default
   result.height = CellSize(kind: skStretch, value: 1) # default
 
-  for i in 1 ..< parts.len:
-    let sz = parseSize(parts[i].strip())
-    # In a multi-column row, this is the width.
-    # The row height comes from whichever cell specifies a height-like size.
-    # For single-column rows, it's the height.
-    # We store it as both and resolve during layout.
+  if parts.len == 2:
+    let sz = parseSize(parts[1].strip())
     result.width = sz
     result.height = sz
+  elif parts.len >= 3:
+    result.height = parseSize(parts[1].strip())
+    result.width = parseSize(parts[2].strip())
+
+proc parseCell(s: string): Cell =
+  ## Parse a cell, possibly containing ";" for vertical stacking.
+  if ";" in s:
+    let subs = s.split(";")
+    result = parseSingleCell(subs[0])
+    for i in 0 ..< subs.len:
+      result.subcells.add parseSingleCell(subs[i])
+  else:
+    result = parseSingleCell(s)
 
 proc parseLayout*(s: string): Layout =
   ## Parse a markdown table string into a Layout.
@@ -112,12 +124,41 @@ proc resolveSize(sz: CellSize; lineHeight, padding: int): int =
   of skLines: sz.value * lineHeight + 2 * padding
   of skStretch: 0  # resolved later
 
+proc resolveSubcells(subcells: seq[Cell]; parent: Rect;
+                     lineHeight, padding, gap: int;
+                     result: var Table[string, Rect]) =
+  ## Resolve vertically stacked subcells within a parent rect.
+  let subGaps = gap * max(0, subcells.len - 1)
+  var subHeights = newSeq[int](subcells.len)
+  var totalFixed = 0
+  var totalStretch = 0
+  for i, sc in subcells:
+    let h = resolveSize(sc.height, lineHeight, padding)
+    if sc.height.kind == skStretch:
+      totalStretch += sc.height.value
+    else:
+      totalFixed += h
+    subHeights[i] = h
+  let remain = max(0, parent.h - totalFixed - subGaps)
+  if totalStretch > 0:
+    for i, sc in subcells:
+      if sc.height.kind == skStretch:
+        subHeights[i] = (remain * sc.height.value) div totalStretch
+  var sy = parent.y
+  for i, sc in subcells:
+    result[sc.name] = Rect(x: parent.x, y: sy, w: parent.w, h: subHeights[i])
+    sy += subHeights[i] + gap
+
 proc resolve*(layout: Layout; screenW, screenH: int;
-              lineHeight: int = 20; padding: int = 6): Table[string, Rect] =
+              lineHeight: int = 20; padding: int = 6;
+              gap: int = 0): Table[string, Rect] =
   ## Resolve the layout into named Rects given screen dimensions.
   ## lineHeight is used to resolve "N lines" sizes.
   ## padding is added above and below the text area for "N lines" cells.
+  ## gap inserts pixel gaps between adjacent cells (for visible borders).
   result = initTable[string, Rect]()
+
+  let rowGaps = gap * max(0, layout.rows.len - 1)
 
   # Pass 1: resolve row heights
   var rowHeights = newSeq[int](layout.rows.len)
@@ -133,7 +174,7 @@ proc resolve*(layout: Layout; screenW, screenH: int;
     rowHeights[i] = h
 
   # Distribute remaining space to stretch rows
-  let remaining = max(0, screenH - totalFixed)
+  let remaining = max(0, screenH - totalFixed - rowGaps)
   if totalStretchWeight > 0:
     for i, row in layout.rows:
       if row.height.kind == skStretch:
@@ -143,10 +184,14 @@ proc resolve*(layout: Layout; screenW, screenH: int;
   var y = 0
   for i, row in layout.rows:
     let rowH = rowHeights[i]
+    let colGaps = gap * max(0, row.cells.len - 1)
     if row.cells.len == 1:
-      # Single cell spans full width
       let c = row.cells[0]
-      result[c.name] = Rect(x: 0, y: y, w: screenW, h: rowH)
+      let r = Rect(x: 0, y: y, w: screenW, h: rowH)
+      if c.subcells.len > 0:
+        resolveSubcells(c.subcells, r, lineHeight, padding, gap, result)
+      else:
+        result[c.name] = r
     else:
       # Multi-column: resolve widths
       var cellWidths = newSeq[int](row.cells.len)
@@ -160,7 +205,7 @@ proc resolve*(layout: Layout; screenW, screenH: int;
           fixedW += w
         cellWidths[j] = w
 
-      let remainW = max(0, screenW - fixedW)
+      let remainW = max(0, screenW - fixedW - colGaps)
       if stretchW > 0:
         for j, c in row.cells:
           if c.width.kind == skStretch:
@@ -168,11 +213,14 @@ proc resolve*(layout: Layout; screenW, screenH: int;
 
       var x = 0
       for j, c in row.cells:
-        result[c.name] = Rect(x: x, y: y,
-                              w: cellWidths[j], h: rowH)
-        x += cellWidths[j]
+        let r = Rect(x: x, y: y, w: cellWidths[j], h: rowH)
+        if c.subcells.len > 0:
+          resolveSubcells(c.subcells, r, lineHeight, padding, gap, result)
+        else:
+          result[c.name] = r
+        x += cellWidths[j] + gap
 
-    y += rowH
+    y += rowH + gap
 
 proc cell*(layout: Layout; name: string): bool =
   ## Check if a cell name exists in the layout.

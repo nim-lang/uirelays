@@ -97,6 +97,6 @@ proc main =
     refresh()
     sleep(16)
 
-  quitRequest()
+  shutdown()
 
 main()

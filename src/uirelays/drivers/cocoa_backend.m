@@ -82,27 +82,37 @@ int cocoa_pollEvent(NEEvent *out) {
 }
 
 int cocoa_waitEvent(NEEvent *out, int timeoutMs) {
-  @autoreleasepool {
-    NSDate *deadline = (timeoutMs < 0)
-      ? [NSDate distantFuture]
-      : [NSDate dateWithTimeIntervalSinceNow:timeoutMs / 1000.0];
-    NSEvent *ev = [NSApp nextEventMatchingMask:NSEventMaskAny
-                                     untilDate:deadline
-                                        inMode:NSDefaultRunLoopMode
-                                       dequeue:YES];
-    if (ev) {
-      [NSApp sendEvent:ev];
-      [NSApp updateWindows];
-      /* pump remaining */
-      while ((ev = [NSApp nextEventMatchingMask:NSEventMaskAny
-                                      untilDate:nil
-                                         inMode:NSDefaultRunLoopMode
-                                        dequeue:YES]) != nil) {
+  NSDate *deadline = (timeoutMs < 0)
+    ? [NSDate distantFuture]
+    : [NSDate dateWithTimeIntervalSinceNow:timeoutMs / 1000.0];
+
+  /* Loop until we have an event in our queue or the deadline passes.
+     nextEventMatchingMask may return internal Cocoa events that don't
+     produce NEEvents -- we must keep waiting in that case. */
+  while (eqTail == eqHead) {
+    @autoreleasepool {
+      NSEvent *ev = [NSApp nextEventMatchingMask:NSEventMaskAny
+                                       untilDate:deadline
+                                          inMode:NSDefaultRunLoopMode
+                                         dequeue:YES];
+      if (ev) {
         [NSApp sendEvent:ev];
         [NSApp updateWindows];
+        /* drain remaining without blocking */
+        while ((ev = [NSApp nextEventMatchingMask:NSEventMaskAny
+                                        untilDate:nil
+                                           inMode:NSDefaultRunLoopMode
+                                          dequeue:YES]) != nil) {
+          [NSApp sendEvent:ev];
+          [NSApp updateWindows];
+        }
+      } else {
+        /* nextEvent returned nil -- timeout expired */
+        break;
       }
     }
   }
+
   if (eqTail == eqHead) {
     out->kind = NE_NONE;
     return 0;
@@ -219,22 +229,31 @@ int cocoa_openFont(const char *path, int size,
                    int *outAscent, int *outDescent, int *outLineHeight) {
   if (fontCount >= MAX_FONTS) return 0;
 
-  /* Create font from file path */
-  CFStringRef cfPath = CFStringCreateWithCString(NULL, path, kCFStringEncodingUTF8);
-  CFURLRef url = CFURLCreateWithFileSystemPath(NULL, cfPath, kCFURLPOSIXPathStyle, false);
-  CGDataProviderRef provider = CGDataProviderCreateWithURL(url);
   CTFontRef ctFont = NULL;
 
-  if (provider) {
-    CGFontRef cgFont = CGFontCreateWithDataProvider(provider);
-    if (cgFont) {
-      ctFont = CTFontCreateWithGraphicsFont(cgFont, (CGFloat)size, NULL, NULL);
-      CGFontRelease(cgFont);
+  if (path[0] == '\0') {
+    /* Empty path = platform default (system) font */
+    ctFont = CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, (CGFloat)size, NULL);
+  } else {
+    /* Create font from file path */
+    CFStringRef cfPath = CFStringCreateWithCString(NULL, path, kCFStringEncodingUTF8);
+    if (cfPath) {
+      CFURLRef url = CFURLCreateWithFileSystemPath(NULL, cfPath, kCFURLPOSIXPathStyle, false);
+      if (url) {
+        CGDataProviderRef provider = CGDataProviderCreateWithURL(url);
+        if (provider) {
+          CGFontRef cgFont = CGFontCreateWithDataProvider(provider);
+          if (cgFont) {
+            ctFont = CTFontCreateWithGraphicsFont(cgFont, (CGFloat)size, NULL, NULL);
+            CGFontRelease(cgFont);
+          }
+          CGDataProviderRelease(provider);
+        }
+        CFRelease(url);
+      }
+      CFRelease(cfPath);
     }
-    CGDataProviderRelease(provider);
   }
-  CFRelease(url);
-  CFRelease(cfPath);
 
   if (!ctFont) return 0;
 
@@ -902,7 +921,7 @@ void cocoa_startTextInput(void) {
   /* NSTextInputClient is always active on our view */
 }
 
-void cocoa_quitRequest(void) {
+void cocoa_shutdown(void) {
   NEEvent e = {0};
   e.kind = NE_QUIT;
   pushEvent(e);

@@ -85,6 +85,6 @@ proc main =
     sleep(16)  # ~60fps
 
   closeFont(font)
-  quitRequest()
+  shutdown()
 
 main()

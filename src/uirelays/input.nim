@@ -52,7 +52,7 @@ type
                       flags: set[InputFlag]): bool {.nimcall.}
     getTicks*: proc (): int {.nimcall.}
     sleep*: proc (ms: int) {.nimcall.}
-    quitRequest*: proc () {.nimcall.}
+    shutdown*: proc () {.nimcall.}
 
 var clipboardRelays* = ClipboardRelays(
   getText: proc (): string = "",
@@ -64,7 +64,7 @@ var inputRelays* = InputRelays(
                    flags: set[InputFlag]): bool = false,
   getTicks: proc (): int = 0,
   sleep: proc (ms: int) = discard,
-  quitRequest: proc () = discard)
+  shutdown: proc () = discard)
 
 proc pollEvent*(e: var Event; flags: set[InputFlag] = {}): bool =
   inputRelays.pollEvent(e, flags)
@@ -75,4 +75,4 @@ proc getClipboardText*(): string = clipboardRelays.getText()
 proc putClipboardText*(text: string) = clipboardRelays.putText(text)
 proc getTicks*(): int = inputRelays.getTicks()
 proc sleep*(ms: int) = inputRelays.sleep(ms)
-proc quitRequest*() = inputRelays.quitRequest()
+proc shutdown*() = inputRelays.shutdown()
