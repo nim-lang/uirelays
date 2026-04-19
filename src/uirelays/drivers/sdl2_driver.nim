@@ -215,6 +215,8 @@ proc translateScancode(sc: Scancode): KeyCode =
   of SDL_SCANCODE_CAPSLOCK: KeyCapslock
   of SDL_SCANCODE_COMMA: KeyComma
   of SDL_SCANCODE_PERIOD: KeyPeriod
+  of SDL_SCANCODE_MINUS: KeyMinus
+  of SDL_SCANCODE_EQUALS: KeyEqual
   else: KeyNone
 
 proc translateMods(m: int16): set[Modifier] =

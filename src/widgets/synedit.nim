@@ -183,6 +183,8 @@ proc currentLine*(s: SynEdit): int {.inline.} = s.currentLine.int
 proc currentCol*(s: SynEdit): int {.inline.} = s.desiredCol.int
 proc changed*(s: SynEdit): bool {.inline.} = s.changed
 proc cursor*(s: SynEdit): int {.inline.} = s.cursor.int
+proc getFont*(s: SynEdit): Font {.inline.} = s.font
+proc setFont*(s: var SynEdit; f: Font) {.inline.} = s.font = f
 
 # ---------------------------------------------------------------------------
 # Gap buffer access

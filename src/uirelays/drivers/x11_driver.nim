@@ -268,8 +268,11 @@ const
   XK_Home = 0xff50'u
   XK_End = 0xff57'u
   XK_Caps_Lock = 0xffe5'u
+  XK_plus = 0x2b'u
   XK_comma = 0x2c'u
   XK_period = 0x2e'u
+  XK_minus = 0x2d'u
+  XK_equal = 0x3d'u
 
 # ---- POSIX select for timeout waiting ----
 
@@ -502,8 +505,11 @@ proc translateKeySym(ks: XKeySym): input.KeyCode =
   of XK_Home: KeyHome
   of XK_End: KeyEnd
   of XK_Caps_Lock: KeyCapslock
+  of XK_plus: KeyPlus
   of XK_comma: KeyComma
   of XK_period: KeyPeriod
+  of XK_minus: KeyMinus
+  of XK_equal: KeyEqual
   else: KeyNone
 
 proc translateMods(state: cuint): set[Modifier] =
