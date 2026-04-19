@@ -409,6 +409,7 @@ proc translateVK(vk: WPARAM): input.KeyCode =
   of VK_CAPITAL: KeyCapslock
   of VK_OEM_COMMA: KeyComma
   of VK_OEM_PERIOD: KeyPeriod
+  of VK_OEM_2: KeySlash
   else: KeyNone
 
 proc getModifiers(): set[Modifier] =

@@ -247,6 +247,7 @@ proc translateScancode(sc: Scancode): input.KeyCode =
   of SCANCODE_CAPSLOCK: KeyCapslock
   of SCANCODE_COMMA: KeyComma
   of SCANCODE_PERIOD: KeyPeriod
+  of SCANCODE_SLASH: KeySlash
   else: KeyNone
 
 proc translateMods(m: Keymod): set[Modifier] =
