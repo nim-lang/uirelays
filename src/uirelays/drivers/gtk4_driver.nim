@@ -280,8 +280,11 @@ proc translateKeyval(kv: guint): KeyCode =
   of 0xff50: KeyHome
   of 0xff57: KeyEnd
   of 0xffe5: KeyCapslock
+  of 0x02b: KeyPlus
   of 0x02c: KeyComma
   of 0x02e: KeyPeriod
+  of 0x02d: KeyMinus
+  of 0x03d: KeyEqual
   of 0xffbe: KeyF1
   of 0xffbf: KeyF2
   of 0xffc0: KeyF3
