@@ -299,6 +299,10 @@ proc XOpenDisplay(name: cstring): pointer
   {.cdecl, dynlib: libX11, importc.}
 proc XDefaultScreen(dpy: pointer): cint
   {.cdecl, dynlib: libX11, importc.}
+proc XDisplayWidth(dpy: pointer; screen: cint): cint
+  {.cdecl, dynlib: libX11, importc.}
+proc XDisplayHeight(dpy: pointer; screen: cint): cint
+  {.cdecl, dynlib: libX11, importc.}
 proc XRootWindow(dpy: pointer; screen: cint): XID
   {.cdecl, dynlib: libX11, importc.}
 proc XDefaultVisual(dpy: pointer; screen: cint): pointer
@@ -675,6 +679,10 @@ proc x11CreateWindow(layout: var ScreenLayout) =
   gVisual = XDefaultVisual(gDisplay, gScreen)
   gColormap = XDefaultColormap(gDisplay, gScreen)
   gDepth = XDefaultDepth(gDisplay, gScreen)
+
+  if layout.fullScreen:
+    layout.width = XDisplayWidth(gDisplay, gScreen)
+    layout.height = XDisplayHeight(gDisplay, gScreen)
 
   gWindow = XCreateSimpleWindow(gDisplay, XRootWindow(gDisplay, gScreen),
     0, 0, layout.width.cuint, layout.height.cuint, 0,

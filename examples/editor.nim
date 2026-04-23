@@ -13,6 +13,7 @@ SynEdit instances with different configurations:
 ]##
 
 import std/[tables, os]
+from std/strutils import toLowerAscii
 from std/cmdline import paramCount, paramStr
 import uirelays
 import uirelays/layout
@@ -33,6 +34,7 @@ type
     age: int
 
 proc greet(p: Person) =
+  # accent color: #abc000
   echo "Hello, " & p.name & "! You are " & $p.age & " years old."
 
 proc main() =
@@ -118,7 +120,11 @@ proc openFile(buffers: var seq[BufferEntry]; font: Font;
       return i
   var ed = createSynEdit(font)
   ed.showLineNumbers = true
-  ed.lang = fileExtToLanguage(path.splitFile.ext)
+  let ext = path.splitFile.ext.toLowerAscii
+  ed.lang = fileExtToLanguage(ext)
+  ed.flags = {rfColorLiterals}
+  if ext == ".md" or ext == ".markdown":
+    ed.flags.incl rfMarkdownImages
   ed.loadFromFile(path)
   if line >= 0: ed.gotoLine(line, max(col, 0))
   buffers.add BufferEntry(ed: ed, path: path)
@@ -254,6 +260,7 @@ proc main =
     var ed = createSynEdit(fonts.fontForSize(editorFontSize))
     ed.lang = langNim
     ed.showLineNumbers = true
+    ed.flags = {rfColorLiterals, rfMarkdownImages}
     ed.setText(sampleCode)
     buffers.add BufferEntry(ed: ed, path: "")
 

@@ -81,8 +81,8 @@ var drawRelays* = DrawRelays(
   drawImage: proc (img: Image; src, dst: Rect) = discard)
 
 # Convenience wrappers
-proc createWindow*(requestedW, requestedH: int): ScreenLayout =
-  result = ScreenLayout(width: requestedW, height: requestedH)
+proc createWindow*(requestedW, requestedH: int; fullScreen = false): ScreenLayout =
+  result = ScreenLayout(width: requestedW, height: requestedH, fullScreen: fullScreen)
   windowRelays.createWindow(result)
 
 proc refresh*() = windowRelays.refresh()
