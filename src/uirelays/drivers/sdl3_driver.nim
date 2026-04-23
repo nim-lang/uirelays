@@ -12,6 +12,10 @@ type
     ttfFont: sdl3_ttf.Font
     metrics: FontMetrics
 
+  ImageSlot = object
+    texture: sdl3.Texture
+    w, h: int
+
   MeasureCacheKey = object
     fontId: int
     text: string
@@ -69,6 +73,7 @@ proc getFontPtr(f: screen.Font): sdl3_ttf.Font {.inline.} =
 var
   win: sdl3.Window
   ren: sdl3.Renderer
+  images: seq[ImageSlot]
   measureCache: Table[MeasureCacheKey, TextExtent]
   textCache: Table[TextCacheKey, TextCacheEntry]
   textCacheGeneration: int
@@ -96,6 +101,15 @@ proc clearCursorCache() =
       cursor = nil
   currentCursor = curDefault
 
+proc clearImageCache() =
+  for slot in mitems(images):
+    if slot.texture != nil:
+      destroyTexture(slot.texture)
+      slot.texture = nil
+    slot.w = 0
+    slot.h = 0
+  images.setLen(0)
+
 proc closeAllFonts() =
   for slot in mitems(fonts):
     if slot.ttfFont != nil:
@@ -104,6 +118,7 @@ proc closeAllFonts() =
   fonts.setLen(0)
 
 proc resetSdlState() =
+  clearImageCache()
   clearTextCache()
   clearMeasureCache()
   clearCursorCache()
@@ -189,8 +204,10 @@ proc resolveFontPath(path: string): string =
 proc sdlCreateWindow(layout: var ScreenLayout) =
   if ren != nil or win != nil:
     resetSdlState()
+  let winFlags = if layout.fullScreen: WINDOW_FULLSCREEN
+                 else: WINDOW_RESIZABLE
   discard createWindowAndRenderer(cstring"NimEdit",
-    layout.width.cint, layout.height.cint, WINDOW_RESIZABLE, win, ren)
+    layout.width.cint, layout.height.cint, winFlags, win, ren)
   discard startTextInput(win)
   var w, h: cint
   discard getWindowSize(win, w, h)
@@ -320,6 +337,51 @@ proc sdlDrawPoint(x, y: int; color: screen.Color) =
   ensureDrawColor(color)
   discard renderPoint(ren, x.cfloat, y.cfloat)
 
+proc getImageSlot(img: screen.Image): ptr ImageSlot {.inline.} =
+  let idx = img.int - 1
+  if idx >= 0 and idx < images.len:
+    addr images[idx]
+  else:
+    nil
+
+proc sdlLoadImage(path: string): screen.Image =
+  ## SDL3 core supports BMP loading without SDL_image.
+  if ren == nil:
+    return screen.Image(0)
+  let surf = loadBMP(cstring(path))
+  if surf == nil:
+    return screen.Image(0)
+  let tex = createTextureFromSurface(ren, surf)
+  if tex == nil:
+    destroySurface(surf)
+    return screen.Image(0)
+  discard setTextureBlendMode(tex, BLENDMODE_BLEND)
+  images.add ImageSlot(texture: tex, w: surf.w.int, h: surf.h.int)
+  destroySurface(surf)
+  result = screen.Image(images.len)
+
+proc sdlFreeImage(img: screen.Image) =
+  let slot = getImageSlot(img)
+  if slot == nil:
+    return
+  if slot[].texture != nil:
+    destroyTexture(slot[].texture)
+    slot[].texture = nil
+  slot[].w = 0
+  slot[].h = 0
+
+proc sdlDrawImage(img: screen.Image; src, dst: coords.Rect) =
+  let slot = getImageSlot(img)
+  if slot == nil or slot[].texture == nil:
+    return
+  var srcRect = FRect(
+    x: src.x.cfloat, y: src.y.cfloat,
+    w: src.w.cfloat, h: src.h.cfloat)
+  var dstRect = FRect(
+    x: dst.x.cfloat, y: dst.y.cfloat,
+    w: dst.w.cfloat, h: dst.h.cfloat)
+  discard renderTexture(ren, slot[].texture, addr srcRect, addr dstRect)
+
 proc sdlSetCursor(c: CursorKind) =
   if cursors[c] == nil:
     let sc = case c
@@ -425,6 +487,16 @@ proc translateScancode(sc: Scancode): input.KeyCode =
   of SCANCODE_PERIOD: KeyPeriod
   of SCANCODE_MINUS: KeyMinus
   of SCANCODE_EQUALS: KeyEqual
+  of SCANCODE_KP_MINUS: KeyMinus
+  of SCANCODE_KP_PLUS: KeyPlus
+  of SCANCODE_KP_EQUALS: KeyEqual
+  else: KeyNone
+
+proc translateKeycode(k: sdl3.Keycode): input.KeyCode =
+  case k
+  of SDLK_MINUS, SDLK_KP_MINUS: KeyMinus
+  of SDLK_EQUALS, SDLK_KP_EQUALS: KeyEqual
+  of SDLK_PLUS, SDLK_KP_PLUS: KeyPlus
   else: KeyNone
 
 proc translateMods(m: Keymod): set[Modifier] =
@@ -452,10 +524,14 @@ proc translateEvent(sdlEvent: sdl3.Event; e: var input.Event) =
   elif evType == uint32(EVENT_KEY_DOWN):
     e.kind = KeyDownEvent
     e.key = translateScancode(sdlEvent.key.scancode)
+    if e.key == KeyNone:
+      e.key = translateKeycode(sdlEvent.key.key)
     e.mods = translateMods(sdlEvent.key.`mod`)
   elif evType == uint32(EVENT_KEY_UP):
     e.kind = KeyUpEvent
     e.key = translateScancode(sdlEvent.key.scancode)
+    if e.key == KeyNone:
+      e.key = translateKeycode(sdlEvent.key.key)
     e.mods = translateMods(sdlEvent.key.`mod`)
   elif evType == uint32(EVENT_TEXT_INPUT):
     e.kind = TextInputEvent
@@ -535,7 +611,8 @@ proc initSdl3Driver*() =
     getFontMetrics: sdlGetFontMetrics, measureText: sdlMeasureText,
     drawText: sdlDrawText)
   drawRelays = DrawRelays(
-    fillRect: sdlFillRect, drawLine: sdlDrawLine, drawPoint: sdlDrawPoint)
+    fillRect: sdlFillRect, drawLine: sdlDrawLine, drawPoint: sdlDrawPoint,
+    loadImage: sdlLoadImage, freeImage: sdlFreeImage, drawImage: sdlDrawImage)
   inputRelays = InputRelays(
     pollEvent: sdlPollEvent, waitEvent: sdlWaitEvent,
     getTicks: sdlGetTicks, sleep: sdlDelay,
