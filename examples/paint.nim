@@ -42,7 +42,7 @@ proc main =
       case e.kind
       of QuitEvent, WindowCloseEvent:
         running = false
-      of WindowResizeEvent:
+      of WindowResizeEvent, WindowMetricsEvent:
         width = e.x; height = e.y
       of KeyDownEvent:
         if e.key == KeyEsc: running = false

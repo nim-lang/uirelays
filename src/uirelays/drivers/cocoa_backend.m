@@ -827,7 +827,7 @@ static NimEditView *mainView = nil;
 static NimEditWindowDelegate *winDelegate = nil;
 
 void cocoa_createWindow(int w, int h, int *outW, int *outH,
-                        int *outScaleX, int *outScaleY) {
+                        double *outScaleX, double *outScaleY) {
   @autoreleasepool {
     /* Initialize timing */
     mach_timebase_info(&timebaseInfo);
@@ -885,8 +885,26 @@ void cocoa_createWindow(int w, int h, int *outW, int *outH,
 
     *outW = (int)contentFrame.size.width;
     *outH = (int)contentFrame.size.height;
-    *outScaleX = (int)scale;
-    *outScaleY = (int)scale;
+    *outScaleX = (double)scale;
+    *outScaleY = (double)scale;
+  }
+}
+
+void cocoa_getWindowLayout(int *outW, int *outH, double *outScaleX, double *outScaleY) {
+  @autoreleasepool {
+    if (!mainWindow || !mainView) {
+      *outW = 0;
+      *outH = 0;
+      *outScaleX = 1.0;
+      *outScaleY = 1.0;
+      return;
+    }
+    NSRect contentFrame = [mainView frame];
+    CGFloat scale = [mainWindow backingScaleFactor];
+    *outW = (int)contentFrame.size.width;
+    *outH = (int)contentFrame.size.height;
+    *outScaleX = (double)scale;
+    *outScaleY = (double)scale;
   }
 }
 
