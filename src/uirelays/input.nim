@@ -20,7 +20,7 @@ type
     NoEvent,
     KeyDownEvent, KeyUpEvent, TextInputEvent,
     MouseDownEvent, MouseUpEvent, MouseMoveEvent, MouseWheelEvent,
-    WindowResizeEvent, WindowCloseEvent,
+    WindowResizeEvent, WindowMetricsEvent, WindowCloseEvent,
     WindowFocusGainedEvent, WindowFocusLostEvent,
     QuitEvent
 
@@ -39,6 +39,7 @@ type
     mods*: set[Modifier]
     text*: array[4, char]  ## TextInputEvent: one UTF-8 codepoint, no alloc
     x*, y*: int            ## mouse position, scroll delta, or new window size
+    scaleX*, scaleY*: float32 ## WindowMetricsEvent: current logical-to-device scale
     button*: MouseButton   ## MouseDownEvent/MouseUpEvent: which button
     clicks*: int           ## number of consecutive clicks (double-click = 2)
 

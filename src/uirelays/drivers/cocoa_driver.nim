@@ -60,8 +60,10 @@ const
   neModAlt = 4.cint
   neModGui = 8.cint
 
-proc cCreateWindow(w, h: cint; outW, outH, outScaleX, outScaleY: ptr cint)
+proc cCreateWindow(w, h: cint; outW, outH: ptr cint; outScaleX, outScaleY: ptr cdouble)
   {.importc: "cocoa_createWindow", cdecl.}
+proc cGetWindowLayout(outW, outH: ptr cint; outScaleX, outScaleY: ptr cdouble)
+  {.importc: "cocoa_getWindowLayout", cdecl.}
 proc cRefresh() {.importc: "cocoa_refresh", cdecl.}
 proc cPollEvent(ev: ptr NEEvent): cint {.importc: "cocoa_pollEvent", cdecl.}
 proc cWaitEvent(ev: ptr NEEvent; timeoutMs: cint): cint {.importc: "cocoa_waitEvent", cdecl.}
@@ -100,13 +102,24 @@ proc cShutdown() {.importc: "cocoa_shutdown", cdecl.}
 # --- Relay implementations ---
 
 proc cocoaCreateWindow(layout: var ScreenLayout) =
-  var w, h, sx, sy: cint
+  var w, h: cint
+  var sx, sy: cdouble
   cCreateWindow(layout.width.cint, layout.height.cint,
                 addr w, addr h, addr sx, addr sy)
   layout.width = w
   layout.height = h
-  layout.scaleX = sx
-  layout.scaleY = sy
+  layout.scaleX = float32(sx)
+  layout.scaleY = float32(sy)
+
+proc cocoaGetWindowLayout(): ScreenLayout =
+  var w, h: cint
+  var sx, sy: cdouble
+  cGetWindowLayout(addr w, addr h, addr sx, addr sy)
+  ScreenLayout(
+    width: w,
+    height: h,
+    scaleX: float32(sx),
+    scaleY: float32(sy))
 
 proc cocoaRefresh() = cRefresh()
 proc cocoaSaveState() = cSaveState()
@@ -182,9 +195,12 @@ proc translateNEEvent(ne: NEEvent; e: var input.Event) =
   of neQuit:
     e.kind = QuitEvent
   of neWindowResize:
-    e.kind = WindowResizeEvent
-    e.x = ne.x
-    e.y = ne.y
+    let layout = cocoaGetWindowLayout()
+    e.kind = WindowMetricsEvent
+    e.x = layout.width
+    e.y = layout.height
+    e.scaleX = layout.scaleX
+    e.scaleY = layout.scaleY
   of neWindowClose:
     e.kind = WindowCloseEvent
   of neWindowFocusGained:
@@ -261,7 +277,8 @@ proc cocoaShutdown() = cShutdown()
 
 proc initCocoaDriver*() =
   windowRelays = WindowRelays(
-    createWindow: cocoaCreateWindow, refresh: cocoaRefresh,
+    createWindow: cocoaCreateWindow, getWindowLayout: cocoaGetWindowLayout,
+    refresh: cocoaRefresh,
     saveState: cocoaSaveState, restoreState: cocoaRestoreState,
     setClipRect: cocoaSetClipRect, setCursor: cocoaSetCursor,
     setWindowTitle: cocoaSetWindowTitle)

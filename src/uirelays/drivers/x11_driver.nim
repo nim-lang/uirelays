@@ -576,9 +576,11 @@ proc processXEvent(xev: XEvent) =
       gWidth = newW
       gHeight = newH
       recreateBackBuffer()
-      var e = input.Event(kind: WindowResizeEvent)
+      var e = input.Event(kind: WindowMetricsEvent)
       e.x = gWidth
       e.y = gHeight
+      e.scaleX = 1.0'f32
+      e.scaleY = 1.0'f32
       pushEvent(e)
 
   of ClientMessage:
@@ -713,8 +715,8 @@ proc x11CreateWindow(layout: var ScreenLayout) =
   gHeight = layout.height.cint
   recreateBackBuffer()
 
-  layout.scaleX = 1
-  layout.scaleY = 1
+  layout.scaleX = 1.0'f32
+  layout.scaleY = 1.0'f32
 
 proc x11Refresh() =
   if gBackPixmap != None:
@@ -734,6 +736,13 @@ proc x11SetClipRect(r: coords.Rect) =
     width: r.w.cushort, height: r.h.cushort)
   discard XSetClipRectangles(gDisplay, gGC, 0, 0, addr xr, 1, 0)
   discard XftDrawSetClipRectangles(gXftDraw, 0, 0, addr xr, 1)
+
+proc x11GetWindowLayout(): ScreenLayout =
+  ScreenLayout(
+    width: gWidth.int,
+    height: gHeight.int,
+    scaleX: 1.0'f32,
+    scaleY: 1.0'f32)
 
 proc x11OpenFont(path: string; size: int;
                  metrics: var FontMetrics): screen.Font =
@@ -954,7 +963,8 @@ proc x11QuitRequest() =
 
 proc initX11Driver*() =
   windowRelays = WindowRelays(
-    createWindow: x11CreateWindow, refresh: x11Refresh,
+    createWindow: x11CreateWindow, getWindowLayout: x11GetWindowLayout,
+    refresh: x11Refresh,
     saveState: x11SaveState, restoreState: x11RestoreState,
     setClipRect: x11SetClipRect, setCursor: x11SetCursor,
     setWindowTitle: x11SetWindowTitle)

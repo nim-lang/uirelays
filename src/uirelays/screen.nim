@@ -19,7 +19,7 @@ type
   ScreenLayout* = object
     width*, height*: int
     pitch*: int
-    scaleX*, scaleY*: int
+    scaleX*, scaleY*: float32
     fullScreen*: bool
 
   CursorKind* = enum
@@ -28,6 +28,7 @@ type
 
   WindowRelays* = object
     createWindow*: proc (layout: var ScreenLayout) {.nimcall.}
+    getWindowLayout*: proc (): ScreenLayout {.nimcall.}
     refresh*: proc () {.nimcall.}
     saveState*: proc () {.nimcall.}
     restoreState*: proc () {.nimcall.}
@@ -57,6 +58,7 @@ proc `==`*(a, b: Image): bool {.borrow.}
 
 var windowRelays* = WindowRelays(
   createWindow: proc (layout: var ScreenLayout) = discard,
+  getWindowLayout: proc (): ScreenLayout = ScreenLayout(scaleX: 1.0'f32, scaleY: 1.0'f32),
   refresh: proc () = discard,
   saveState: proc () = discard,
   restoreState: proc () = discard,
@@ -82,9 +84,15 @@ var drawRelays* = DrawRelays(
 
 # Convenience wrappers
 proc createWindow*(requestedW, requestedH: int; fullScreen = false): ScreenLayout =
-  result = ScreenLayout(width: requestedW, height: requestedH, fullScreen: fullScreen)
+  result = ScreenLayout(
+    width: requestedW,
+    height: requestedH,
+    scaleX: 1.0'f32,
+    scaleY: 1.0'f32,
+    fullScreen: fullScreen)
   windowRelays.createWindow(result)
 
+proc getWindowLayout*(): ScreenLayout = windowRelays.getWindowLayout()
 proc refresh*() = windowRelays.refresh()
 proc saveState*() = windowRelays.saveState()
 proc restoreState*() = windowRelays.restoreState()

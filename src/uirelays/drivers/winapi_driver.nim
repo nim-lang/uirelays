@@ -460,9 +460,11 @@ proc wndProc(hwnd: HWND; msg: UINT; wp: WPARAM; lp: LPARAM): LRESULT {.stdcall.}
       gWidth = newW
       gHeight = newH
       recreateBackBuffer()
-      var e = input.Event(kind: WindowResizeEvent)
+      var e = input.Event(kind: WindowMetricsEvent)
       e.x = gWidth
       e.y = gHeight
+      e.scaleX = 1.0'f32
+      e.scaleY = 1.0'f32
       pushEvent(e)
     return 0
 
@@ -609,10 +611,17 @@ proc winCreateWindow(layout: var ScreenLayout) =
   gHeight = rc.bottom - rc.top
   layout.width = gWidth
   layout.height = gHeight
-  layout.scaleX = 1
-  layout.scaleY = 1
+  layout.scaleX = 1.0'f32
+  layout.scaleY = 1.0'f32
 
   recreateBackBuffer()
+
+proc winGetWindowLayout(): ScreenLayout =
+  ScreenLayout(
+    width: gWidth.int,
+    height: gHeight.int,
+    scaleX: 1.0'f32,
+    scaleY: 1.0'f32)
 
 proc winRefresh() =
   discard InvalidateRect(gHwnd, nil, 0)
@@ -907,7 +916,8 @@ proc setDpiAware() =
 proc initWinapiDriver*() =
   setDpiAware()
   windowRelays = WindowRelays(
-    createWindow: winCreateWindow, refresh: winRefresh,
+    createWindow: winCreateWindow, getWindowLayout: winGetWindowLayout,
+    refresh: winRefresh,
     saveState: winSaveState, restoreState: winRestoreState,
     setClipRect: winSetClipRect, setCursor: winSetCursor,
     setWindowTitle: winSetWindowTitle)
