@@ -446,6 +446,63 @@ void cocoa_drawText(int fontHandle, int x, int y, const char *text,
   CFRelease(str);
 }
 
+/* ---- Image management ------------------------------------------------- */
+
+#define MAX_IMAGES 128
+
+static CGImageRef imageSlots[MAX_IMAGES];
+static int imageCount = 0;
+
+int cocoa_loadImage(const char *path) {
+  if (!path || path[0] == '\0') return 0;
+  if (imageCount >= MAX_IMAGES) return 0;
+
+  CFStringRef cfPath = CFStringCreateWithCString(NULL, path, kCFStringEncodingUTF8);
+  if (!cfPath) return 0;
+  CFURLRef url = CFURLCreateWithFileSystemPath(NULL, cfPath, kCFURLPOSIXPathStyle, false);
+  CFRelease(cfPath);
+  if (!url) return 0;
+
+  CGImageSourceRef source = CGImageSourceCreateWithURL(url, NULL);
+  CFRelease(url);
+  if (!source) return 0;
+
+  CGImageRef cgImage = CGImageSourceCreateImageAtIndex(source, 0, NULL);
+  CFRelease(source);
+  if (!cgImage) return 0;
+
+  int idx = imageCount++;
+  imageSlots[idx] = cgImage;
+  return idx + 1; /* 1-based handle */
+}
+
+void cocoa_drawImage(int handle, int srcX, int srcY, int srcW, int srcH,
+                     int dstX, int dstY, int dstW, int dstH) {
+  int idx = handle - 1;
+  if (idx < 0 || idx >= imageCount || !imageSlots[idx] || !backingCtx) return;
+
+  CGImageRef img = imageSlots[idx];
+  size_t imgW = CGImageGetWidth(img);
+  size_t imgH = CGImageGetHeight(img);
+
+  CGRect srcRect = CGRectMake(srcX, srcY, srcW, srcH);
+  CGRect dstRect = CGRectMake(dstX, dstY, dstW, dstH);
+
+  CGContextSaveGState(backingCtx);
+  /* Clip to destination rect */
+  CGContextClipToRect(backingCtx, dstRect);
+  /* Scale and translate so the source rect maps to the destination rect */
+  CGFloat scaleX = dstW / (CGFloat)srcW;
+  CGFloat scaleY = dstH / (CGFloat)srcH;
+  CGContextTranslateCTM(backingCtx, dstX - srcX * scaleX, dstY - srcY * scaleY);
+  CGContextScaleCTM(backingCtx, scaleX, scaleY);
+  /* Flip Y because CGImage is bottom-up and our view is flipped */
+  CGContextTranslateCTM(backingCtx, 0, imgH);
+  CGContextScaleCTM(backingCtx, 1.0, -1.0);
+  CGContextDrawImage(backingCtx, CGRectMake(0, 0, imgW, imgH), img);
+  CGContextRestoreGState(backingCtx);
+}
+
 void cocoa_setClipRect(int x, int y, int w, int h) {
   if (!backingCtx) return;
   CGContextRestoreGState(backingCtx);
