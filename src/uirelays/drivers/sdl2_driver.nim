@@ -37,7 +37,11 @@ var
 # --- Screen hook implementations ---
 
 proc sdlCreateWindow(layout: var ScreenLayout) =
-  let flags = SDL_WINDOW_RESIZABLE or SDL_WINDOW_SHOWN
+  let flags =
+    if layout.fullScreen:
+      SDL_WINDOW_FULLSCREEN_DESKTOP or SDL_WINDOW_SHOWN
+    else:
+      SDL_WINDOW_RESIZABLE or SDL_WINDOW_SHOWN
   window = createWindow("NimEdit",
     SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
     layout.width.cint, layout.height.cint, flags)
@@ -215,6 +219,8 @@ proc translateScancode(sc: Scancode): KeyCode =
   of SDL_SCANCODE_CAPSLOCK: KeyCapslock
   of SDL_SCANCODE_COMMA: KeyComma
   of SDL_SCANCODE_PERIOD: KeyPeriod
+  of SDL_SCANCODE_MINUS: KeyMinus
+  of SDL_SCANCODE_EQUALS: KeyEqual
   else: KeyNone
 
 proc translateMods(m: int16): set[Modifier] =
