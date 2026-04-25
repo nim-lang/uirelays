@@ -485,6 +485,7 @@ proc translateScancode(sc: Scancode): input.KeyCode =
   of SCANCODE_CAPSLOCK: KeyCapslock
   of SCANCODE_COMMA: KeyComma
   of SCANCODE_PERIOD: KeyPeriod
+  of SCANCODE_SLASH: KeySlash
   of SCANCODE_MINUS: KeyMinus
   of SCANCODE_EQUALS: KeyEqual
   of SCANCODE_KP_MINUS: KeyMinus

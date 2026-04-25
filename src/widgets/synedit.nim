@@ -1101,7 +1101,7 @@ proc selectAll(s: var SynEdit) =
 proc deselect(s: var SynEdit) {.inline.} =
   s.selected.b = -1
 
-proc getSelectedText(s: SynEdit): string =
+proc getSelectedText*(s: SynEdit): string =
   if s.selected.b < 0: return ""
   result = newStringOfCap(s.selected.b - s.selected.a + 1)
   for i in s.selected.a .. s.selected.b:
@@ -1322,6 +1322,241 @@ proc gotoLine*(s: var SynEdit; line, col: int) =
     while c <= col and s[s.cursor] != '\L':
       s.rawRight()
       inc c
+
+proc getLineCount*(s: SynEdit): int =
+  s.numberOfLines.int + 1
+
+proc getLineText*(s: SynEdit; lineIdx: int): string =
+  let start = s.getLineOffset(lineIdx)
+  var i = start
+  while i < s.len and s[i] != '\L': inc i
+  result = newStringOfCap(i - start)
+  for j in start ..< i: result.add s[j]
+
+proc deleteSelection*(s: var SynEdit) =
+  if s.selected.b >= 0:
+    s.removeSelectedText()
+
+proc selectLine*(s: var SynEdit) =
+  inc s.version
+  let lineStart = s.getLineOffset(s.currentLine.int)
+  var lineEnd = lineStart
+  while lineEnd < s.len and s[lineEnd] != '\L': inc lineEnd
+  s.selected = (lineStart, lineEnd - 1)
+  s.cursor = lineEnd.Natural
+  s.desiredCol = s.getColumn().Natural
+
+proc deleteLine*(s: var SynEdit) =
+  inc s.version
+  let lineStart = s.getLineOffset(s.currentLine.int)
+  var lineEnd = lineStart
+  while lineEnd < s.len and s[lineEnd] != '\L': inc lineEnd
+  # include the trailing newline if present
+  let delEnd = if lineEnd < s.len: lineEnd else: lineEnd - 1
+  s.cursor = (delEnd + 1).Natural
+  s.setCurrentLine()
+  let oldCursor = s.cursor
+  s.actions.setLen(clamp(s.undoIdx + 1, 0, s.actions.len))
+  s.actions.add(Action(k: delFinished, pos: s.cursor, word: "", version: s.version))
+  s.edit()
+  while s.cursor.int > lineStart and s.cursor > 0:
+    if s.cursor.int - 1 <= s.readOnly: break
+    s.prepareForEdit()
+    s.rawBackspace(overrideUtf8 = true, s.actions[^1].word)
+    s.actions[^1].pos = s.cursor
+  s.desiredCol = s.getColumn().Natural
+  s.highlightLine(oldCursor)
+  s.selected.b = -1
+
+proc duplicateLine*(s: var SynEdit) =
+  inc s.version
+  let lineText = s.getLineText(s.currentLine.int)
+  let lineStart = s.getLineOffset(s.currentLine.int)
+  var lineEnd = lineStart
+  while lineEnd < s.len and s[lineEnd] != '\L': inc lineEnd
+  s.gotoPos(lineEnd)
+  s.prepareForEdit()
+  s.actions.setLen(clamp(s.undoIdx + 1, 0, s.actions.len))
+  s.actions.add(Action(k: insFinished, pos: s.cursor, word: "", version: s.version))
+  s.edit()
+  let toInsert = "\L" & lineText
+  s.rawInsert(toInsert)
+  s.actions[^1].word = toInsert
+  s.desiredCol = s.getColumn().Natural
+  s.highlightLine(s.cursor)
+
+proc moveLineUp*(s: var SynEdit) =
+  if s.currentLine.int == 0: return
+  inc s.version
+  let curLine = s.currentLine.int
+  let curText = s.getLineText(curLine)
+  let prevText = s.getLineText(curLine - 1)
+  let prevStart = s.getLineOffset(curLine - 1)
+  var prevEnd = prevStart
+  while prevEnd < s.len and s[prevEnd] != '\L': inc prevEnd
+  var curEnd = prevEnd + 1
+  while curEnd < s.len and s[curEnd] != '\L': inc curEnd
+  # delete both lines + newline between them, reinsert swapped
+  s.cursor = (curEnd).Natural
+  s.setCurrentLine()
+  let oldCursor = s.cursor
+  s.actions.setLen(clamp(s.undoIdx + 1, 0, s.actions.len))
+  s.actions.add(Action(k: delFinished, pos: s.cursor, word: "", version: s.version))
+  s.edit()
+  while s.cursor.int > prevStart and s.cursor > 0:
+    if s.cursor.int - 1 <= s.readOnly: break
+    s.prepareForEdit()
+    s.rawBackspace(overrideUtf8 = true, s.actions[^1].word)
+    s.actions[^1].pos = s.cursor
+  # now insert swapped
+  let swapped = curText & "\L" & prevText
+  s.actions.add(Action(k: insFinished, pos: s.cursor, word: swapped, version: s.version))
+  s.edit()
+  s.prepareForEdit()
+  s.rawInsert(swapped)
+  s.desiredCol = s.getColumn().Natural
+  s.highlightLine(oldCursor)
+  s.selected.b = -1
+  s.gotoPos(s.getLineOffset(curLine - 1))
+
+proc moveLineDown*(s: var SynEdit) =
+  if s.currentLine.int >= s.numberOfLines.int: return
+  inc s.version
+  let curLine = s.currentLine.int
+  let curText = s.getLineText(curLine)
+  let nextText = s.getLineText(curLine + 1)
+  let curStart = s.getLineOffset(curLine)
+  var curEnd = curStart
+  while curEnd < s.len and s[curEnd] != '\L': inc curEnd
+  var nextEnd = curEnd + 1
+  while nextEnd < s.len and s[nextEnd] != '\L': inc nextEnd
+  s.cursor = (nextEnd).Natural
+  s.setCurrentLine()
+  let oldCursor = s.cursor
+  s.actions.setLen(clamp(s.undoIdx + 1, 0, s.actions.len))
+  s.actions.add(Action(k: delFinished, pos: s.cursor, word: "", version: s.version))
+  s.edit()
+  while s.cursor.int > curStart and s.cursor > 0:
+    if s.cursor.int - 1 <= s.readOnly: break
+    s.prepareForEdit()
+    s.rawBackspace(overrideUtf8 = true, s.actions[^1].word)
+    s.actions[^1].pos = s.cursor
+  let swapped = nextText & "\L" & curText
+  s.actions.add(Action(k: insFinished, pos: s.cursor, word: swapped, version: s.version))
+  s.edit()
+  s.prepareForEdit()
+  s.rawInsert(swapped)
+  s.desiredCol = s.getColumn().Natural
+  s.highlightLine(oldCursor)
+  s.selected.b = -1
+  s.gotoPos(s.getLineOffset(curLine + 1))
+
+proc insertLineAbove*(s: var SynEdit) =
+  inc s.version
+  let lineStart = s.getLineOffset(s.currentLine.int)
+  s.gotoPos(lineStart)
+  s.prepareForEdit()
+  s.actions.setLen(clamp(s.undoIdx + 1, 0, s.actions.len))
+  let toInsert = "\L"
+  s.actions.add(Action(k: insFinished, pos: s.cursor, word: toInsert, version: s.version))
+  s.edit()
+  s.rawInsert(toInsert)
+  # move cursor back to the new blank line
+  s.gotoPos(lineStart)
+  s.desiredCol = s.getColumn().Natural
+  s.highlightLine(s.cursor)
+
+proc insertLineBelow*(s: var SynEdit) =
+  inc s.version
+  var lineEnd = s.getLineOffset(s.currentLine.int)
+  while lineEnd < s.len and s[lineEnd] != '\L': inc lineEnd
+  s.gotoPos(lineEnd)
+  s.prepareForEdit()
+  s.actions.setLen(clamp(s.undoIdx + 1, 0, s.actions.len))
+  let toInsert = "\L"
+  s.actions.add(Action(k: insFinished, pos: s.cursor, word: toInsert, version: s.version))
+  s.edit()
+  s.rawInsert(toInsert)
+  s.desiredCol = s.getColumn().Natural
+  s.highlightLine(s.cursor)
+
+proc joinLines*(s: var SynEdit) =
+  if s.currentLine.int >= s.numberOfLines.int: return
+  inc s.version
+  var lineEnd = s.getLineOffset(s.currentLine.int)
+  while lineEnd < s.len and s[lineEnd] != '\L': inc lineEnd
+  if lineEnd >= s.len: return
+  # position after the newline
+  let afterNl = lineEnd + 1
+  # find start of next line content (skip leading spaces)
+  var nextContent = afterNl
+  while nextContent < s.len and s[nextContent] == ' ': inc nextContent
+  # delete from lineEnd to nextContent (newline + leading spaces), insert single space
+  s.cursor = nextContent.Natural
+  s.setCurrentLine()
+  let oldCursor = s.cursor
+  s.actions.setLen(clamp(s.undoIdx + 1, 0, s.actions.len))
+  s.actions.add(Action(k: delFinished, pos: s.cursor, word: "", version: s.version))
+  s.edit()
+  while s.cursor.int > lineEnd and s.cursor > 0:
+    s.prepareForEdit()
+    s.rawBackspace(overrideUtf8 = true, s.actions[^1].word)
+    s.actions[^1].pos = s.cursor
+  # insert a single space separator
+  s.actions.add(Action(k: insFinished, pos: s.cursor, word: " ", version: s.version))
+  s.edit()
+  s.prepareForEdit()
+  s.rawInsert(" ")
+  s.desiredCol = s.getColumn().Natural
+  s.highlightLine(oldCursor)
+
+proc toggleComment*(s: var SynEdit) =
+  inc s.version
+  let prefix = case s.lang
+    of langNim: "# "
+    of langC, langCpp, langCsharp, langJs, langJava, langRust: "// "
+    of langPython: "# "
+    else: "# "
+  let lineStart = s.getLineOffset(s.currentLine.int)
+  # check if line already starts with the comment prefix
+  var i = lineStart
+  while i < s.len and s[i] == ' ': inc i  # skip indent
+  var hasComment = true
+  for j in 0 ..< prefix.len:
+    if i + j >= s.len or s[i + j] != prefix[j]:
+      hasComment = false
+      break
+  if hasComment:
+    # remove the prefix
+    s.cursor = (i + prefix.len).Natural
+    s.setCurrentLine()
+    let oldCursor = s.cursor
+    s.actions.setLen(clamp(s.undoIdx + 1, 0, s.actions.len))
+    s.actions.add(Action(k: delFinished, pos: s.cursor, word: "", version: s.version))
+    s.edit()
+    while s.cursor.int > i and s.cursor > 0:
+      s.prepareForEdit()
+      s.rawBackspace(overrideUtf8 = true, s.actions[^1].word)
+      s.actions[^1].pos = s.cursor
+    s.desiredCol = s.getColumn().Natural
+    s.highlightLine(oldCursor)
+  else:
+    # insert prefix at indent level
+    s.gotoPos(i)
+    s.prepareForEdit()
+    s.actions.setLen(clamp(s.undoIdx + 1, 0, s.actions.len))
+    s.actions.add(Action(k: insFinished, pos: s.cursor, word: prefix, version: s.version))
+    s.edit()
+    s.rawInsert(prefix)
+    s.desiredCol = s.getColumn().Natural
+    s.highlightLine(s.cursor)
+
+proc gotoMatchingBracket*(s: var SynEdit) =
+  let c = s[s.cursor]
+  if s.bracketA >= 0:
+    s.gotoPos(s.bracketA)
+  elif c in {'(', '[', '{', ')', ']', '}'}:
+    discard
 
 # ---------------------------------------------------------------------------
 # File I/O

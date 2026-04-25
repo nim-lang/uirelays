@@ -209,6 +209,7 @@ static int translateKeyCode(unsigned short kc) {
     case 0x39: return 64;  /* keyCapslock */
     case 0x2B: return 65;  /* keyComma */
     case 0x2F: return 66;  /* keyPeriod */
+    case 0x2C: return 67;  /* keySlash */
     case 0x1B: return 67;  /* keyMinus */
     case 0x18: return 68;  /* keyEqual */
     default:   return 0;   /* keyNone */

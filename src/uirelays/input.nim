@@ -14,6 +14,7 @@ type
     KeyBackspace, KeyDelete, KeyInsert,
     KeyLeft, KeyRight, KeyUp, KeyDown,
     KeyPageUp, KeyPageDown, KeyHome, KeyEnd,
+    KeyCapslock, KeyComma, KeyPeriod, KeySlash,
     KeyCapslock, KeyComma, KeyPeriod, KeyMinus, KeyEqual, KeyPlus
 
   EventKind* = enum

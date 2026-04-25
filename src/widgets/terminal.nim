@@ -171,7 +171,12 @@ proc cmdToArgs(cmd: string): tuple[exe: string, args: seq[string]] =
 # Background process thread
 # ---------------------------------------------------------------------------
 
-var requests: Channel[string]
+type
+  ThreadTask = object
+    cwd: string
+    cmd: string
+
+var requests: Channel[ThreadTask]
 requests.open()
 var responses: Channel[string]
 responses.open()
@@ -188,20 +193,21 @@ proc execThreadProc() {.thread.} =
     if tasks > 0:
       for i in 0..<tasks:
         let task = requests.recv()
-        if task == EndToken:
-          p.terminate()
-          o.close()
-          started = false
-          let exitCode = p.waitForExit()
-          p.close()
-          if exitCode != 0:
-            responses.send("Process terminated with exitcode: " & $exitCode & "\L")
-          responses.send EndToken
+        if task.cmd == EndToken:
+          if started:
+            p.terminate()
+            o.close()
+            started = false
+            let exitCode = p.waitForExit()
+            p.close()
+            if exitCode != 0:
+              responses.send("Process terminated with exitcode: " & $exitCode & "\L")
+            responses.send EndToken
         else:
           if not started:
-            let (bin, args) = cmdToArgs(task)
+            let (bin, args) = cmdToArgs(task.cmd)
             try:
-              p = startProcess(bin, os.getCurrentDir(), args,
+              p = startProcess(bin, task.cwd, args,
                         options = {poStdErrToStdOut, poUsePath, poInteractive,
                                    poDaemon})
               o = p.outputStream
@@ -211,7 +217,7 @@ proc execThreadProc() {.thread.} =
               responses.send getCurrentExceptionMsg()
               responses.send EndToken
           else:
-            p.inputStream.writeLine task
+            p.inputStream.writeLine task.cmd
     if started:
       if not p.running:
         while not o.atEnd:
@@ -259,6 +265,7 @@ type
     beforeSuggestionPos: int
     aliases*: seq[(string, string)]
     process: string
+    cwd*: string
 
 proc getCommand(t: Terminal): string =
   result = ""
@@ -271,7 +278,7 @@ proc emptyCmd(t: var Terminal) =
     t.ed.backspace(smartIndent = false)
 
 proc insertPrompt*(t: var Terminal) =
-  t.ed.appendOutput(os.getCurrentDir() & ">")
+  t.ed.appendOutput(t.cwd & ">")
 
 # ---------------------------------------------------------------------------
 # Tab completion
@@ -369,7 +376,7 @@ proc runCommand*(t: var Terminal; cmd: var string): TermAction =
   t.files.setLen 0
   t.hist[t.process].addCmd(cmd)
   if t.processRunning:
-    requests.send cmd
+    requests.send(ThreadTask(cwd: t.cwd, cmd: cmd))
     return
 
   var a = ""
@@ -388,7 +395,7 @@ proc runCommand*(t: var Terminal; cmd: var string): TermAction =
     i = parseWord(cmd, b, i)
     t.insertPrompt()
     if b.len > 0:
-      let path = if isAbsolute(b): b else: os.getCurrentDir() / b
+      let path = if isAbsolute(b): b else: t.cwd / b
       result = TermAction(kind: openFile, file: path)
   of "save":
     t.insertPrompt()
@@ -400,10 +407,11 @@ proc runCommand*(t: var Terminal; cmd: var string): TermAction =
   of "cd":
     var b = ""
     i = parseWord(cmd, b, i)
-    try:
-      os.setCurrentDir(b)
-    except OSError:
-      t.ed.appendOutput(getCurrentExceptionMsg() & "\L")
+    if b.len > 0:
+      if isAbsolute(b):
+        t.cwd = b
+      else:
+        t.cwd = t.cwd / b
     t.insertPrompt()
   of "d":
     var b = ""
@@ -415,7 +423,7 @@ proc runCommand*(t: var Terminal; cmd: var string): TermAction =
         a.startsWith"https://"):
       openDefaultBrowser(a)
     else:
-      requests.send cmd
+      requests.send(ThreadTask(cwd: t.cwd, cmd: cmd))
       t.processRunning = true
       swap(t.process, cmd)
       if t.process notin t.hist:
@@ -443,7 +451,7 @@ proc update*(t: var Terminal) =
 
 proc sendBreak*(t: var Terminal) =
   if t.processRunning:
-    requests.send EndToken
+    requests.send(ThreadTask(cwd: "", cmd: EndToken))
 
 # ---------------------------------------------------------------------------
 # Initialization
@@ -456,7 +464,8 @@ proc createTerminal*(font: Font; theme = catppuccinMocha()): Terminal =
     files: @[],
     prefix: "",
     aliases: @[],
-    process: "")
+    process: "",
+    cwd: os.getCurrentDir())
   result.ed.lang = langConsole
   result.hist[""] = CmdHistory(cmds: @[], suggested: -1)
   result.insertPrompt()
