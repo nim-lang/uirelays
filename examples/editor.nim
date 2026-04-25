@@ -13,6 +13,7 @@ SynEdit instances with different configurations:
 ]##
 
 import std/[tables, os]
+from std/strutils import toLowerAscii
 from std/cmdline import paramCount, paramStr
 import uirelays
 import uirelays/layout
@@ -33,6 +34,7 @@ type
     age: int
 
 proc greet(p: Person) =
+  # accent color: #abc000
   echo "Hello, " & p.name & "! You are " & $p.age & " years old."
 
 proc main() =
@@ -50,6 +52,16 @@ when isMainModule:
 const
   PathChars = {'a'..'z', 'A'..'Z', '0'..'9', '_', '.', '/', '\\',
                '-', '~', '\128'..'\255'}
+  DefaultFontSize = 16
+  MinFontSize = 8
+  MaxFontSize = 56
+
+proc fontForSize(fonts: var Table[int, Font]; size: int): Font =
+  let clamped = clamp(size, MinFontSize, MaxFontSize)
+  if clamped notin fonts:
+    var metrics: FontMetrics
+    fonts[clamped] = openFont("", clamped, metrics)
+  result = fonts[clamped]
 
 proc extractPath(s: SynEdit; pos: int): tuple[path: string, a, b: int] =
   ## Extract the file path around buffer position `pos`.
@@ -108,7 +120,11 @@ proc openFile(buffers: var seq[BufferEntry]; font: Font;
       return i
   var ed = createSynEdit(font)
   ed.showLineNumbers = true
-  ed.lang = fileExtToLanguage(path.splitFile.ext)
+  let ext = path.splitFile.ext.toLowerAscii
+  ed.lang = fileExtToLanguage(ext)
+  ed.flags = {rfColorLiterals}
+  if ext == ".md" or ext == ".markdown":
+    ed.flags.incl rfMarkdownImages
   ed.loadFromFile(path)
   if line >= 0: ed.gotoLine(line, max(col, 0))
   buffers.add BufferEntry(ed: ed, path: path)
@@ -178,14 +194,47 @@ proc tryOpenFile(arg: string; buffers: var seq[BufferEntry];
     os.setCurrentDir(path)
     setWindowTitle("SynEdit Demo - " & path)
 
+proc adjustFocusedFontSize(
+    focus: string; delta: int;
+    fonts: var Table[int, Font];
+    title, files, history: var SynEdit;
+    term, status: var Terminal;
+    buffers: var seq[BufferEntry]; current: int;
+    titleFontSize, filesFontSize, historyFontSize,
+    terminalFontSize, statusFontSize, editorFontSize: var int) =
+  case focus
+  of "title":
+    titleFontSize = clamp(titleFontSize + delta, MinFontSize, MaxFontSize)
+    title.setFont(fonts.fontForSize(titleFontSize))
+  of "files":
+    filesFontSize = clamp(filesFontSize + delta, MinFontSize, MaxFontSize)
+    files.setFont(fonts.fontForSize(filesFontSize))
+  of "history":
+    historyFontSize = clamp(historyFontSize + delta, MinFontSize, MaxFontSize)
+    history.setFont(fonts.fontForSize(historyFontSize))
+  of "terminal":
+    terminalFontSize = clamp(terminalFontSize + delta, MinFontSize, MaxFontSize)
+    term.ed.setFont(fonts.fontForSize(terminalFontSize))
+  of "status":
+    statusFontSize = clamp(statusFontSize + delta, MinFontSize, MaxFontSize)
+    status.ed.setFont(fonts.fontForSize(statusFontSize))
+  of "editor":
+    editorFontSize = clamp(editorFontSize + delta, MinFontSize, MaxFontSize)
+    let newFont = fonts.fontForSize(editorFontSize)
+    for i in 0 ..< buffers.len:
+      buffers[i].ed.setFont(newFont)
+  else:
+    discard
+
 
 proc main =
   let screen = createWindow(1100, 700)
   var width = screen.width
   var height = screen.height
 
-  var fm: FontMetrics
-  let font = openFont("", 16, fm)
+  var fonts: Table[int, Font]
+  let font = fonts.fontForSize(DefaultFontSize)
+  var fm = getFontMetrics(font)
   setWindowTitle("SynEdit Demo")
 
   var title = createSynEdit(font)
@@ -193,6 +242,12 @@ proc main =
   var history = createSynEdit(font)
   var term = createTerminal(font)
   var status = createTerminal(font)
+  var titleFontSize = DefaultFontSize
+  var filesFontSize = DefaultFontSize
+  var historyFontSize = DefaultFontSize
+  var terminalFontSize = DefaultFontSize
+  var statusFontSize = DefaultFontSize
+  var editorFontSize = DefaultFontSize
 
   title.setLabel("SynEdit Demo")
 
@@ -200,11 +255,12 @@ proc main =
   var buffers: seq[BufferEntry]
   var current = 0
   if paramCount() >= 1:
-    current = buffers.openFile(font, paramStr(1), -1, -1)
+    current = buffers.openFile(fonts.fontForSize(editorFontSize), paramStr(1), -1, -1)
   else:
-    var ed = createSynEdit(font)
+    var ed = createSynEdit(fonts.fontForSize(editorFontSize))
     ed.lang = langNim
     ed.showLineNumbers = true
+    ed.flags = {rfColorLiterals, rfMarkdownImages}
     ed.setText(sampleCode)
     buffers.add BufferEntry(ed: ed, path: "")
 
@@ -234,6 +290,13 @@ proc main =
       if cmd and e.key == KeyS:
         if buffers[current].path.len > 0:
           buffers[current].ed.saveToFile(buffers[current].path)
+        e = default Event  # consume the event
+      elif cmd and (e.key == KeyEqual or e.key == KeyPlus or e.key == KeyMinus):
+        let delta = if e.key == KeyMinus: -1 else: 1
+        adjustFocusedFontSize(focus, delta, fonts, title, files, history,
+                              term, status, buffers, current,
+                              titleFontSize, filesFontSize, historyFontSize,
+                              terminalFontSize, statusFontSize, editorFontSize)
         e = default Event  # consume the event
     else: discard
 
@@ -278,7 +341,7 @@ proc main =
     case termAct.kind
     of openFile:
       if fileExists(termAct.file):
-        current = buffers.openFile(font, termAct.file, -1, -1)
+        current = buffers.openFile(fonts.fontForSize(editorFontSize), termAct.file, -1, -1)
         setWindowTitle("SynEdit - " & termAct.file.extractFilename)
         focus = "editor"
     of saveFile:
@@ -290,7 +353,7 @@ proc main =
     of ctrlClick:
       term.ed.underline(-1, -1)
       handleTermCtrlClick(term.ed, termAct.pos, buffers, current,
-                          font, term, focus)
+                          fonts.fontForSize(editorFontSize), term, focus)
     of noAction:
       term.ed.underline(-1, -1)
 
@@ -300,7 +363,8 @@ proc main =
     let statusAct = status.draw(e, cells["status"], focus == "status")
     case statusAct.kind
     of openFile:
-      tryOpenFile(statusAct.file, buffers, current, font, focus)
+      tryOpenFile(statusAct.file, buffers, current,
+                  fonts.fontForSize(editorFontSize), focus)
       updateStatus(status, buffers[current].ed, buffers[current].path)
     of saveFile:
       if buffers[current].path.len > 0:
@@ -311,7 +375,8 @@ proc main =
 
     refresh()
 
-  closeFont(font)
+  for _, f in fonts:
+    closeFont(f)
   shutdown()
 
 main()
