@@ -165,7 +165,9 @@ const
   VK_CAPITAL = 0x14'u32
   VK_F1 = 0x70'u32
   VK_F12 = 0x7B'u32
+  VK_OEM_PLUS = 0xBB'u32
   VK_OEM_COMMA = 0xBC'u32
+  VK_OEM_MINUS = 0xBD'u32
   VK_OEM_PERIOD = 0xBE'u32
   VK_SHIFT = 0x10'u32
   VK_CONTROL = 0x11'u32
@@ -410,6 +412,8 @@ proc translateVK(vk: WPARAM): input.KeyCode =
   of VK_OEM_COMMA: KeyComma
   of VK_OEM_PERIOD: KeyPeriod
   of VK_OEM_2: KeySlash
+  of VK_OEM_MINUS: KeyMinus
+  of VK_OEM_PLUS: KeyEqual
   else: KeyNone
 
 proc getModifiers(): set[Modifier] =

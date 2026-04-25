@@ -46,6 +46,10 @@ type
     langNone, langNim, langCpp, langCsharp, langC, langJava, langJs,
     langXml, langHtml, langConsole
 
+  RenderFlag* = enum
+    rfMarkdownImages,   ## Render Markdown image lines: ![alt](path)
+    rfColorLiterals     ## Draw color chips for #RGB/#RRGGBB/#RRGGBBAA
+
 const
   Letters* = {'a'..'z', 'A'..'Z', '0'..'9', '_', '\128'..'\255'}
   TabWidth = 2
@@ -123,6 +127,10 @@ type
     of ctrlHover, ctrlClick:
       pos*: int         ## buffer offset
 
+  ImageCacheEntry = object
+    path: string
+    img: Image
+
   SynEdit* = object
     # Gap buffer
     front, back: seq[Cell]
@@ -142,6 +150,7 @@ type
     # Rendering
     font: Font
     theme*: Theme
+    flags*: set[RenderFlag]
     showLineNumbers*: bool
     cursorVisible: bool
     lastBlinkTick: int
@@ -172,6 +181,8 @@ type
     markers: seq[Marker]
     # Line decorations (breakpoints, active execution line, etc.)
     lineDecorations: seq[LineDecoration]
+    # Cached images for rich markdown rendering
+    imageCache: seq[ImageCacheEntry]
     # Cache
     offsetToLineCache: array[20, tuple[version, offset, line: int]]
 
@@ -183,6 +194,11 @@ proc currentLine*(s: SynEdit): int {.inline.} = s.currentLine.int
 proc currentCol*(s: SynEdit): int {.inline.} = s.desiredCol.int
 proc changed*(s: SynEdit): bool {.inline.} = s.changed
 proc cursor*(s: SynEdit): int {.inline.} = s.cursor.int
+proc getFont*(s: SynEdit): Font {.inline.} = s.font
+proc setFont*(s: var SynEdit; f: Font) {.inline.} = s.font = f
+proc setRenderFlag*(s: var SynEdit; flag: RenderFlag; enabled = true) =
+  if enabled: s.flags.incl flag
+  else: s.flags.excl flag
 
 # ---------------------------------------------------------------------------
 # Gap buffer access
@@ -1552,6 +1568,10 @@ proc fullText*(s: SynEdit): string =
   for i in countdown(s.back.len - 1, 0): result.add s.back[i].c
 
 proc clear*(s: var SynEdit) =
+  for entry in s.imageCache:
+    if entry.img != Image(0):
+      freeImage(entry.img)
+  s.imageCache.setLen 0
   inc s.cacheId
   s.front.setLen 0
   s.back.setLen 0
@@ -1627,7 +1647,7 @@ proc createSynEdit*(font: Font; theme = catppuccinMocha()): SynEdit =
   result = SynEdit(front: @[], back: @[], actions: @[], cursor: 0,
     selected: (-1, -1), bracketA: -1, bracketB: -1, hotLink: (-1, -1),
     readOnly: -1, tabSize: TabWidth, lang: langNim,
-    font: font, theme: theme,
+    font: font, theme: theme, flags: {},
     showLineNumbers: false, cursorVisible: true, lastBlinkTick: 0)
 
 # ---------------------------------------------------------------------------
@@ -1636,6 +1656,133 @@ proc createSynEdit*(font: Font; theme = catppuccinMocha()): SynEdit =
 
 proc textWidth(font: Font; text: string): int =
   measureText(font, text).w
+
+proc hexDigitValue(c: char): int {.inline.} =
+  case c
+  of '0'..'9': ord(c) - ord('0')
+  of 'a'..'f': ord(c) - ord('a') + 10
+  of 'A'..'F': ord(c) - ord('A') + 10
+  else: -1
+
+proc isHexDigit(c: char): bool {.inline.} =
+  c in {'0'..'9', 'a'..'f', 'A'..'F'}
+
+proc tryParseHexColor(text: string; start: int; c: var Color; consumed: var int): bool =
+  ## Parse #RGB/#RRGGBB/#RRGGBBAA from text[start..].
+  if start < 0 or start >= text.len or text[start] != '#':
+    return
+  var j = start + 1
+  while j < text.len and isHexDigit(text[j]) and (j - start) <= 8:
+    inc j
+  let n = j - (start + 1)
+  if not (n == 3 or n == 6 or n == 8):
+    return
+
+  template pairVal(pos: int): int =
+    ((hexDigitValue(text[pos]) shl 4) or hexDigitValue(text[pos + 1]))
+
+  if n == 3:
+    let r = hexDigitValue(text[start + 1])
+    let g = hexDigitValue(text[start + 2])
+    let b = hexDigitValue(text[start + 3])
+    if r < 0 or g < 0 or b < 0:
+      return
+    c = color(uint8(r * 17), uint8(g * 17), uint8(b * 17))
+  else:
+    let r = pairVal(start + 1)
+    let g = pairVal(start + 3)
+    let b = pairVal(start + 5)
+    if r < 0 or g < 0 or b < 0:
+      return
+    if n == 8:
+      let a = pairVal(start + 7)
+      if a < 0: return
+      c = color(uint8(r), uint8(g), uint8(b), uint8(a))
+    else:
+      c = color(uint8(r), uint8(g), uint8(b))
+  consumed = n + 1
+  result = true
+
+proc getCachedImage(s: var SynEdit; path: string): Image =
+  for e in s.imageCache:
+    if e.path == path:
+      return e.img
+  let img = loadImage(path)
+  s.imageCache.add ImageCacheEntry(path: path, img: img)
+  result = img
+
+proc parseMarkdownImagePath(line: string; path: var string): bool =
+  ## Parse a full-line markdown image: ![alt](path)
+  var i = 0
+  while i < line.len and line[i] in {' ', '\t'}: inc i
+  if i + 1 >= line.len or line[i] != '!' or line[i + 1] != '[':
+    return
+  var closeBracket = -1
+  var k = i + 2
+  while k < line.len:
+    if line[k] == ']':
+      closeBracket = k
+      break
+    inc k
+  if closeBracket < 0 or closeBracket + 1 >= line.len or line[closeBracket + 1] != '(':
+    return
+  var closeParen = -1
+  k = closeBracket + 2
+  while k < line.len:
+    if line[k] == ')':
+      closeParen = k
+      break
+    inc k
+  if closeParen < 0:
+    return
+  var tail = closeParen + 1
+  while tail < line.len and line[tail] in {' ', '\t'}: inc tail
+  if tail != line.len:
+    return
+  path = line[(closeBracket + 2) ..< closeParen]
+  result = path.len > 0
+
+proc renderMarkdownImageLine(
+    s: var SynEdit; lineStart: int; dim: var Rect;
+    endX, endY, lineH: int; showCursor: bool;
+    nextIndex, consumedRows: var int): bool =
+  ## Render markdown image block for a single source line.
+  var j = lineStart
+  while j < s.len and s[j] != '\L': inc j
+
+  var line = newStringOfCap(max(0, j - lineStart))
+  for p in lineStart ..< j:
+    line.add s[p]
+
+  var imgPath = ""
+  if not parseMarkdownImagePath(line, imgPath):
+    return
+
+  # Keep source visible while actively editing this line.
+  if showCursor and lineStart <= s.cursor.int and s.cursor.int <= j:
+    return
+
+  let maxW = endX - dim.x - 4
+  let maxH = endY - dim.y - 2
+  if maxW <= 16 or maxH < lineH:
+    return
+
+  let imgH = min(max(lineH * 6, lineH * 2), maxH)
+  let dst = rect(dim.x, dim.y + 1, maxW, imgH)
+  let img = s.getCachedImage(imgPath)
+  if img != Image(0):
+    drawImage(img, rect(0, 0, dst.w, dst.h), dst)
+  else:
+    # Backends without image relays still show a useful placeholder.
+    fillRect(dst, color(52, 56, 64))
+    drawLine(dst.x, dst.y, dst.x + dst.w - 1, dst.y + dst.h - 1, color(140, 146, 172))
+    drawLine(dst.x + dst.w - 1, dst.y, dst.x, dst.y + dst.h - 1, color(140, 146, 172))
+    discard drawText(s.font, dst.x + 6, dst.y + 4, imgPath, color(220, 220, 220), color(52, 56, 64))
+
+  dim.y += imgH + 2
+  nextIndex = j + 1
+  consumedRows = max(1, (imgH + lineH - 1) div lineH)
+  result = true
 
 proc spaceForLines(s: SynEdit): int =
   if s.showLineNumbers:
@@ -1765,6 +1912,30 @@ proc drawSubtoken(db: var DrawBuf; ra, rb: int; fg, bg: Color) =
   if isLink:
     let ulY = d.y + db.lineH - 1
     drawLine(d.x, ulY, d.x + textWidth(db.font, db.tempStr), ulY, fgColor)
+  if rfColorLiterals in db.s[].flags:
+    var idx = 0
+    while idx < db.tempStr.len:
+      if db.tempStr[idx] == '#':
+        var chipColor: Color
+        var consumed = 0
+        if tryParseHexColor(db.tempStr, idx, chipColor, consumed):
+          var prefix = ""
+          if idx > 0:
+            prefix = db.tempStr[0 ..< idx]
+          let prefixW = textWidth(db.font, prefix)
+          let chipToken = db.tempStr[idx ..< idx + consumed]
+          let tokenW = textWidth(db.font, chipToken)
+          let chipSize = max(6, db.lineH - 6)
+          let chipX = d.x + prefixW + tokenW + 2
+          let chipY = d.y + (db.lineH - chipSize) div 2
+          if chipX + chipSize <= db.dim.w:
+            fillRect(rect(chipX, chipY, chipSize, chipSize), chipColor)
+            drawLine(chipX, chipY, chipX + chipSize, chipY, color(30, 30, 30))
+            drawLine(chipX, chipY, chipX, chipY + chipSize, color(30, 30, 30))
+            drawLine(chipX + chipSize, chipY, chipX + chipSize, chipY + chipSize, color(30, 30, 30))
+            drawLine(chipX, chipY + chipSize, chipX + chipSize, chipY + chipSize, color(30, 30, 30))
+          break
+      inc idx
 
 proc drawToken(db: var DrawBuf; fg, bg: Color) =
   if db.dim.y + db.lineH > db.maxY: return
@@ -1979,8 +2150,17 @@ proc render*(s: var SynEdit; area: Rect; showCursor: bool) =
           break
       discard drawText(s.font, area.x + 2, dim.y, num, numColor, numBg)
 
+    var nextI = i
+    var consumedRows = 1
+    if rfMarkdownImages in s.flags:
+      if s.renderMarkdownImageLine(i, dim, endX, endY, lineH, showCursor, nextI, consumedRows):
+        i = nextI
+        inc s.span, consumedRows
+        inc renderLine
+        continue
+
     i = s.drawTextLine(i, dim, blink)
-    inc s.span
+    inc s.span, consumedRows
     inc renderLine
 
   while dim.y + fontSize < endY:
