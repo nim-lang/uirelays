@@ -31,6 +31,7 @@
 
 import ../uirelays/[coords, screen, input]
 import ./theme
+import std/strutils
 from strutils import Whitespace
 export theme
 
@@ -44,7 +45,7 @@ const
 type
   SourceLanguage* = enum
     langNone, langNim, langCpp, langCsharp, langC, langJava, langJs,
-    langXml, langHtml, langConsole
+    langXml, langHtml, langConsole, langPython, langRust, langMarkdown
 
 const
   Letters* = {'a'..'z', 'A'..'Z', '0'..'9', '_', '\128'..'\255'}
@@ -60,7 +61,10 @@ const
     langJs: {'(', '[', '{'},
     langXml: {'>'},
     langHtml: {'>'},
-    langConsole: {}]
+    langConsole: {},
+    langPython: {':'},
+    langRust: {'(', '[', '{'},
+    langMarkdown: {}]
 
 proc fileExtToLanguage*(ext: string): SourceLanguage =
   case ext
@@ -72,6 +76,9 @@ proc fileExtToLanguage*(ext: string): SourceLanguage =
   of ".cs": langCsharp
   of ".xml": langXml
   of ".html", ".htm": langHtml
+  of ".py", ".pyw": langPython
+  of ".rs": langRust
+  of ".md", ".markdown": langMarkdown
   else: langNone
 
 # ---------------------------------------------------------------------------
@@ -182,7 +189,9 @@ type
 proc currentLine*(s: SynEdit): int {.inline.} = s.currentLine.int
 proc currentCol*(s: SynEdit): int {.inline.} = s.desiredCol.int
 proc changed*(s: SynEdit): bool {.inline.} = s.changed
+proc markChanged*(s: var SynEdit) = s.changed = true
 proc cursor*(s: SynEdit): int {.inline.} = s.cursor.int
+proc cacheId*(s: SynEdit): int {.inline.} = s.cacheId
 
 # ---------------------------------------------------------------------------
 # Gap buffer access
@@ -261,9 +270,104 @@ const
     "ptr", "raise", "ref", "return", "shl", "shr", "static",
     "template", "try", "tuple", "type", "using", "var", "when", "while", "with",
     "without", "xor", "yield"]
+  nimControlFlow = ["if", "elif", "else", "case", "of", "when", "while", "for",
+    "break", "continue", "block", "return", "yield", "raise", "try",
+    "except", "finally", "defer"]
+  nimBuiltins = ["int", "int8", "int16", "int32", "int64", "uint", "uint8",
+    "uint16", "uint32", "uint64", "float", "float32", "float64", "bool",
+    "char", "string", "cstring", "pointer", "void", "auto", "any", "typed",
+    "typedesc", "untyped", "untypedesc", "seq", "array", "set", "openarray",
+    "varargs", "lent", "owned", "sink", "proc", "func", "iterator",
+    "converter", "template", "macro", "method", "concept", "distinct",
+    "ref", "ptr", "addr", "nil", "true", "false"]
+
+  cKeywords = ["_Bool", "_Complex", "_Imaginary", "auto",
+    "break", "case", "char", "const", "continue", "default", "do", "double",
+    "else", "enum", "extern", "float", "for", "goto", "if", "inline", "int",
+    "long", "register", "restrict", "return", "short", "signed", "sizeof",
+    "static", "struct", "switch", "typedef", "union", "unsigned", "void",
+    "volatile", "while"]
+  cControlFlow = ["if", "else", "for", "while", "break", "continue", "return",
+    "switch", "case", "default", "goto"]
+  cBuiltins = ["char", "int", "long", "float", "double", "void", "short",
+    "signed", "unsigned", "bool"]
+
+  cppKeywords = ["asm", "auto", "break", "case", "catch",
+    "char", "class", "const", "continue", "default", "delete", "do", "double",
+    "else", "enum", "extern", "false", "float", "for", "friend", "goto", "if",
+    "inline", "int", "long", "mutable", "namespace", "new", "operator",
+    "private", "protected", "public", "register", "return", "short", "signed",
+    "sizeof", "static", "struct", "switch", "template", "this", "throw", "true",
+    "try", "typedef", "typename", "union", "unsigned", "using", "virtual",
+    "void", "volatile", "while"]
+  cppControlFlow = ["if", "else", "switch", "case", "default", "for", "while",
+    "do", "break", "continue", "return", "goto", "try", "catch", "throw"]
+  cppBuiltins = ["bool", "char", "int", "long", "float", "double", "void",
+    "short", "signed", "unsigned", "size_t", "nullptr", "true", "false"]
+
+  jsKeywords = ["abstract", "arguments", "boolean", "break", "byte",
+    "case", "catch", "char", "class", "const", "continue", "debugger",
+    "default", "delete", "do", "double", "else", "enum", "eval", "export",
+    "extends", "false", "final", "finally", "float", "for", "function",
+    "goto", "if", "implements", "import", "in", "instanceof", "int",
+    "interface", "let", "long", "native", "new", "null",
+    "package", "private", "protected", "public", "return",
+    "short", "static", "super", "switch", "synchronized",
+    "this", "throw", "throws", "transient", "true", "try", "typeof",
+    "var", "void", "volatile", "while", "with", "yield"]
+  jsControlFlow = ["if", "else", "for", "while", "break", "continue", "return",
+    "switch", "case", "default", "try", "catch", "finally", "throw"]
+  jsBuiltins = ["true", "false", "null", "undefined", "NaN", "Infinity"]
+
+  pythonKeywords = ["False", "None", "True", "and", "as", "assert", "async",
+    "await", "break", "class", "continue", "def", "del", "elif", "else",
+    "except", "finally", "for", "from", "global", "if", "import", "in",
+    "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return",
+    "try", "while", "with", "yield"]
+  pythonControlFlow = ["if", "elif", "else", "for", "while", "break", "continue",
+    "try", "except", "finally", "with", "return", "yield", "raise"]
+  pythonBuiltins = ["int", "float", "str", "bool", "list", "dict", "tuple",
+    "set", "frozenset", "bytes", "bytearray", "memoryview", "object",
+    "type", "range", "len", "print", "input", "open", "super"]
+
+  rustKeywords = ["as", "break", "const", "continue", "crate", "else", "enum",
+    "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop",
+    "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self",
+    "static", "struct", "super", "trait", "true", "type", "unsafe", "use",
+    "where", "while"]
+  rustControlFlow = ["if", "else", "for", "while", "loop", "break", "continue",
+    "return", "match"]
+  rustBuiltins = ["i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16",
+    "u32", "u64", "u128", "usize", "f32", "f64", "bool", "char", "str",
+    "String", "Vec", "Option", "Result", "Box", "Rc", "Arc"]
 
   OpChars = {'+', '-', '*', '/', '\\', '<', '>', '!', '?', '^', '.',
              '|', '=', '%', '&', '$', '@', '~', ':', '\x80'..'\xFF'}
+
+proc contains(a: openArray[string]; val: string): bool =
+  for x in a:
+    if x == val: return true
+  false
+
+proc classifyNim(id: string; pos: int; buf: ptr SynEdit): TokenClass =
+  if nimControlFlow.contains(id): return TokenClass.ControlFlow
+  if nimKeywords.contains(id): return TokenClass.Keyword
+  if nimBuiltins.contains(id): return TokenClass.Builtin
+  if id == "result": return TokenClass.ControlFlow
+  if id.len > 0 and id[0] in {'A'..'Z'}: return TokenClass.Type
+  if id.len > 0 and id[0] in {'a'..'z'}:
+    var lookAhead = pos
+    while lookAhead < buf.len and buf[lookAhead] in {' ', '\t'}: inc lookAhead
+    if lookAhead < buf.len and buf[lookAhead] in {'(', '*'}:
+      return TokenClass.ProcName
+  return TokenClass.Identifier
+
+proc classifyClike(id: string; keywords, controlFlow, builtins: openArray[string]): TokenClass =
+  if controlFlow.contains(id): return TokenClass.ControlFlow
+  if keywords.contains(id): return TokenClass.Keyword
+  if builtins.contains(id): return TokenClass.Builtin
+  if id.len > 0 and id[0] in {'A'..'Z'}: return TokenClass.Type
+  return TokenClass.Identifier
 
 proc nimGetKeyword(id: string): TokenClass =
   for k in nimKeywords:
@@ -395,7 +499,7 @@ proc nimNextToken(g: var GeneralTokenizer) =
             inc(pos)
           if g.buf[pos] == '\"': inc(pos)
       else:
-        g.kind = nimGetKeyword(id)
+        g.kind = classifyNim(id, pos, g.buf)
     of '0':
       inc(pos)
       case g.buf[pos]
@@ -440,6 +544,8 @@ proc nimNextToken(g: var GeneralTokenizer) =
       if g.buf[pos+1] in {')', ']', '}'}:
         inc(pos, 2); g.kind = TokenClass.Punctuation
       else: g.kind = TokenClass.Operator; inc pos
+    of '*':
+      inc(pos); g.kind = TokenClass.ExportMark
     else:
       if g.buf[pos] in OpChars:
         g.kind = TokenClass.Operator
@@ -450,7 +556,7 @@ proc nimNextToken(g: var GeneralTokenizer) =
   g.length = pos - g.pos
   g.pos = pos
 
-proc clikeNextToken(g: var GeneralTokenizer; keywords: openArray[string]) =
+proc clikeNextToken(g: var GeneralTokenizer; keywords, controlFlow, builtins: openArray[string]) =
   const
     hexChars = {'0'..'9', 'A'..'F', 'a'..'f'}
     octChars = {'0'..'7'}
@@ -470,7 +576,7 @@ proc clikeNextToken(g: var GeneralTokenizer; keywords: openArray[string]) =
         else: inc(pos)
         break
       of '\L': g.state = TokenClass.None; break
-      of '\"': inc(pos); g.state = TokenClass.None; break
+      of '"': inc(pos); g.state = TokenClass.None; break
       else: inc(pos)
   elif g.state == TokenClass.LongComment:
     var nested = 0
@@ -505,9 +611,7 @@ proc clikeNextToken(g: var GeneralTokenizer; keywords: openArray[string]) =
     of 'a'..'z', 'A'..'Z', '_', '\x80'..'\xFF':
       var id = ""
       while g.buf[pos] in symChars: add(id, g.buf[pos]); inc(pos)
-      g.kind = TokenClass.Identifier
-      for kw in keywords:
-        if kw == id: g.kind = TokenClass.Keyword; break
+      g.kind = classifyClike(id, keywords, controlFlow, builtins)
     of '0':
       inc(pos)
       case g.buf[pos]
@@ -525,11 +629,11 @@ proc clikeNextToken(g: var GeneralTokenizer; keywords: openArray[string]) =
       inc(pos)
       while g.buf[pos] notin {'\L', '\''}: inc(pos)
       if g.buf[pos] == '\'': inc(pos)
-    of '\"':
+    of '"':
       inc(pos); g.kind = TokenClass.StringLit
       while pos < g.buf.len:
         case g.buf[pos]
-        of '\"': inc(pos); break
+        of '"': inc(pos); break
         of '\\': g.state = g.kind; break
         else: inc(pos)
     of '(', ')', '[', ']', '{', '}', ':', ',', ';', '.':
@@ -544,51 +648,234 @@ proc clikeNextToken(g: var GeneralTokenizer; keywords: openArray[string]) =
   g.length = pos - g.pos
   g.pos = pos
 
-const
-  cKeywords = ["_Bool", "_Complex", "_Imaginary", "auto",
-    "break", "case", "char", "const", "continue", "default", "do", "double",
-    "else", "enum", "extern", "float", "for", "goto", "if", "inline", "int",
-    "long", "register", "restrict", "return", "short", "signed", "sizeof",
-    "static", "struct", "switch", "typedef", "union", "unsigned", "void",
-    "volatile", "while"]
-  cppKeywords = ["asm", "auto", "break", "case", "catch",
-    "char", "class", "const", "continue", "default", "delete", "do", "double",
-    "else", "enum", "extern", "float", "for", "friend", "goto", "if",
-    "inline", "int", "long", "new", "operator", "private", "protected",
-    "public", "register", "return", "short", "signed", "sizeof", "static",
-    "struct", "switch", "template", "this", "throw", "try", "typedef",
-    "union", "unsigned", "virtual", "void", "volatile", "while"]
-  jsKeywords = ["abstract", "arguments", "boolean", "break", "byte",
-    "case", "catch", "char", "class", "const", "continue", "debugger",
-    "default", "delete", "do", "double", "else", "enum", "eval", "export",
-    "extends", "false", "final", "finally", "float", "for", "function",
-    "goto", "if", "implements", "import", "in", "instanceof", "int",
-    "interface", "let", "long", "native", "new", "null",
-    "package", "private", "protected", "public", "return",
-    "short", "static", "super", "switch", "synchronized",
-    "this", "throw", "throws", "transient", "true", "try", "typeof",
-    "var", "void", "volatile", "while", "with", "yield"]
+proc pythonNextToken(g: var GeneralTokenizer) =
+  const
+    hexChars = {'0'..'9', 'A'..'F', 'a'..'f'}
+    symChars = {'A'..'Z', 'a'..'z', '0'..'9', '_', '\x80'..'\xFF'}
+  var pos = g.pos
+  g.start = g.pos
+  if g.state == TokenClass.StringLit:
+    g.kind = TokenClass.StringLit
+    while true:
+      case g.buf[pos]
+      of '\\':
+        g.kind = TokenClass.EscapeSequence; inc(pos)
+        case g.buf[pos]
+        of 'x', 'X': inc(pos); (if g.buf[pos] in hexChars: inc(pos)); (if g.buf[pos] in hexChars: inc(pos))
+        of '0'..'9': (while g.buf[pos] in {'0'..'9'}: inc(pos))
+        else: inc(pos)
+        break
+      of '\L': g.state = TokenClass.None; break
+      of '"', '\'': inc(pos); g.state = TokenClass.None; break
+      else: inc(pos)
+  else:
+    case g.buf[pos]
+    of ' ', '\x09'..'\x0D':
+      g.kind = TokenClass.Whitespace
+      while pos < g.buf.len and g.buf[pos] in {' ', '\x09'..'\x0D'}: inc(pos)
+    of '#':
+      g.kind = TokenClass.Comment
+      while g.buf[pos] != '\L': inc(pos)
+    of 'a'..'z', 'A'..'Z', '_', '\x80'..'\xFF':
+      var id = ""
+      while g.buf[pos] in symChars: add(id, g.buf[pos]); inc(pos)
+      g.kind = classifyClike(id, pythonKeywords, pythonControlFlow, pythonBuiltins)
+    of '0':
+      inc(pos)
+      case g.buf[pos]
+      of 'x', 'X': inc(pos); (while g.buf[pos] in hexChars: inc(pos))
+      of '0'..'9':
+        g.kind = TokenClass.DecNumber
+        while g.buf[pos] in {'0'..'9'}: inc(pos)
+      else:
+        g.kind = TokenClass.DecNumber
+        while g.buf[pos] in {'0'..'9'}: inc(pos)
+    of '1'..'9':
+      g.kind = TokenClass.DecNumber
+      while g.buf[pos] in {'0'..'9'}: inc(pos)
+    of '"', '\'':
+      inc(pos); g.kind = TokenClass.StringLit
+      while pos < g.buf.len:
+        case g.buf[pos]
+        of '"', '\'': inc(pos); break
+        of '\\': g.state = g.kind; break
+        else: inc(pos)
+    of '(', ')', '[', ']', '{', '}', ':', ',', ';', '.':
+      inc(pos); g.kind = TokenClass.Punctuation
+    else:
+      if g.buf[pos] in OpChars:
+        g.kind = TokenClass.Operator
+        while g.buf[pos] in OpChars: inc(pos)
+      else:
+        if pos < g.buf.len: inc(pos)
+        g.kind = TokenClass.None
+  g.length = pos - g.pos
+  g.pos = pos
+
+proc rustNextToken(g: var GeneralTokenizer) =
+  const
+    hexChars = {'0'..'9', 'A'..'F', 'a'..'f'}
+    symChars = {'A'..'Z', 'a'..'z', '0'..'9', '_', '\x80'..'\xFF'}
+  var pos = g.pos
+  g.start = g.pos
+  if g.state == TokenClass.StringLit:
+    g.kind = TokenClass.StringLit
+    while true:
+      case g.buf[pos]
+      of '\\':
+        g.kind = TokenClass.EscapeSequence; inc(pos)
+        case g.buf[pos]
+        of 'x', 'X': inc(pos); (if g.buf[pos] in hexChars: inc(pos)); (if g.buf[pos] in hexChars: inc(pos))
+        of '0'..'9': (while g.buf[pos] in {'0'..'9'}: inc(pos))
+        else: inc(pos)
+        break
+      of '\L': g.state = TokenClass.None; break
+      of '"': inc(pos); g.state = TokenClass.None; break
+      else: inc(pos)
+  else:
+    case g.buf[pos]
+    of ' ', '\x09'..'\x0D':
+      g.kind = TokenClass.Whitespace
+      while pos < g.buf.len and g.buf[pos] in {' ', '\x09'..'\x0D'}: inc(pos)
+    of '/':
+      inc(pos)
+      if g.buf[pos] == '/':
+        g.kind = TokenClass.Comment
+        while g.buf[pos] != '\L': inc(pos)
+      elif g.buf[pos] == '*':
+        g.kind = TokenClass.LongComment; inc(pos)
+        while pos < g.buf.len:
+          case g.buf[pos]
+          of '*': inc(pos); (if g.buf[pos] == '/': inc(pos); break)
+          else: inc(pos)
+      else: g.kind = TokenClass.Operator
+    of 'a'..'z', 'A'..'Z', '_', '\x80'..'\xFF':
+      var id = ""
+      while g.buf[pos] in symChars: add(id, g.buf[pos]); inc(pos)
+      g.kind = classifyClike(id, rustKeywords, rustControlFlow, rustBuiltins)
+    of '0':
+      inc(pos)
+      case g.buf[pos]
+      of 'x', 'X': inc(pos); (while g.buf[pos] in hexChars: inc(pos))
+      else:
+        g.kind = TokenClass.DecNumber
+        while g.buf[pos] in {'0'..'9'}: inc(pos)
+    of '1'..'9':
+      g.kind = TokenClass.DecNumber
+      while g.buf[pos] in {'0'..'9'}: inc(pos)
+    of '\'':
+      g.kind = TokenClass.CharLit
+      inc(pos)
+      while g.buf[pos] notin {'\L', '\''}: inc(pos)
+      if g.buf[pos] == '\'': inc(pos)
+    of '"':
+      inc(pos); g.kind = TokenClass.StringLit
+      while pos < g.buf.len:
+        case g.buf[pos]
+        of '"': inc(pos); break
+        of '\\': g.state = g.kind; break
+        else: inc(pos)
+    of '(', ')', '[', ']', '{', '}', ':', ',', ';', '.':
+      inc(pos); g.kind = TokenClass.Punctuation
+    else:
+      if g.buf[pos] in OpChars:
+        g.kind = TokenClass.Operator
+        while g.buf[pos] in OpChars: inc(pos)
+      else:
+        if pos < g.buf.len: inc(pos)
+        g.kind = TokenClass.None
+  g.length = pos - g.pos
+  g.pos = pos
 
 proc getNextToken(g: var GeneralTokenizer; lang: SourceLanguage) =
   case lang
   of langNone, langConsole:
-    # no highlighting, consume one char
     g.start = g.pos
     if g.pos < g.buf.len: inc g.pos
     g.kind = TokenClass.None
     g.length = g.pos - g.start
   of langNim: nimNextToken(g)
-  of langCpp: clikeNextToken(g, cppKeywords)
-  of langC: clikeNextToken(g, cKeywords)
-  of langJs: clikeNextToken(g, jsKeywords)
-  of langJava: clikeNextToken(g, jsKeywords)   # close enough
-  of langCsharp: clikeNextToken(g, cppKeywords) # close enough
+  of langCpp: clikeNextToken(g, cppKeywords, cppControlFlow, cppBuiltins)
+  of langC: clikeNextToken(g, cKeywords, cControlFlow, cBuiltins)
+  of langJs: clikeNextToken(g, jsKeywords, jsControlFlow, jsBuiltins)
+  of langJava: clikeNextToken(g, jsKeywords, jsControlFlow, jsBuiltins)
+  of langCsharp: clikeNextToken(g, cppKeywords, cppControlFlow, cppBuiltins)
+  of langPython: pythonNextToken(g)
+  of langRust: rustNextToken(g)
   of langXml, langHtml:
-    # minimal: no highlighting
     g.start = g.pos
     if g.pos < g.buf.len: inc g.pos
     g.kind = TokenClass.None
     g.length = g.pos - g.start
+  of langMarkdown:
+    g.start = g.pos
+    if g.pos < g.buf.len: inc g.pos
+    g.kind = TokenClass.Text
+    g.length = g.pos - g.start
+
+proc strToLanguage*(s: string): SourceLanguage =
+  case s.toLowerAscii()
+  of "nim", "nims", "nimble": langNim
+  of "c": langC
+  of "cpp", "cxx", "c++", "hpp": langCpp
+  of "cs", "csharp", "c#": langCsharp
+  of "java": langJava
+  of "js", "javascript", "jsx": langJs
+  of "py", "python": langPython
+  of "rs", "rust": langRust
+  of "xml": langXml
+  of "html", "htm": langHtml
+  of "md", "markdown": langMarkdown
+  else: langNone
+
+proc highlightMarkdown(s: var SynEdit; first, last: int) =
+  var insideFence = false
+  var fenceLang = langNone
+  var pos = first
+  while pos > 0 and s[pos-1] != '\L': dec pos
+  while pos <= last:
+    var lineStart = pos
+    var lineEnd = pos
+    while lineEnd <= last and s[lineEnd] != '\L': inc lineEnd
+    
+    var lineText = ""
+    for j in lineStart..<lineEnd:
+      lineText.add s[j]
+    
+    let stripped = lineText.strip(leading = true, trailing = false)
+    if stripped.startsWith("```") or stripped.startsWith("~~~"):
+      for j in lineStart..<min(lineEnd, last+1):
+        s.setCellStyle(j, TokenClass.MarkdownFence)
+      let rest = stripped[3..^1].strip
+      if rest.len > 0 and not insideFence:
+        fenceLang = strToLanguage(rest)
+        insideFence = true
+      elif insideFence:
+        insideFence = false
+        fenceLang = langNone
+    elif insideFence and fenceLang != langNone:
+      var g: GeneralTokenizer
+      g.buf = addr s
+      g.kind = low(TokenClass)
+      g.start = lineStart
+      g.length = 0
+      g.state = TokenClass.None
+      g.pos = lineStart
+      while g.pos < lineEnd and g.pos <= last:
+        getNextToken(g, fenceLang)
+        if g.length == 0: break
+        for k in 0 ..< g.length:
+          if g.start + k <= last:
+            s.setCellStyle(g.start + k, g.kind)
+      if lineEnd <= last:
+        s.setCellStyle(lineEnd, TokenClass.None)
+    else:
+      for j in lineStart..<min(lineEnd, last+1):
+        s.setCellStyle(j, TokenClass.Text)
+      if lineEnd <= last:
+        s.setCellStyle(lineEnd, TokenClass.None)
+    
+    pos = lineEnd + 1
 
 proc highlight(s: var SynEdit; first, last: int; initialState: TokenClass) =
   var g: GeneralTokenizer
@@ -606,6 +893,9 @@ proc highlight(s: var SynEdit; first, last: int; initialState: TokenClass) =
 
 proc highlightLine(s: var SynEdit; oldCursor: Natural) =
   if s.lang == langNone: return
+  if s.lang == langMarkdown:
+    s.highlightMarkdown(0, s.len - 1)
+    return
   var i = oldCursor.int
   while i >= 1 and s[i-1] != '\L': dec i
   let first = i
@@ -616,11 +906,18 @@ proc highlightLine(s: var SynEdit; oldCursor: Natural) =
   s.highlight(first, last, initialState)
 
 proc highlightEverything(s: var SynEdit) =
-  if s.lang != langNone:
+  if s.lang == langNone: return
+  if s.lang == langMarkdown:
+    s.highlightMarkdown(0, s.len - 1)
+  else:
     s.highlight(0, s.len - 1, TokenClass.None)
 
 proc highlightIncrementally(s: var SynEdit) =
   if s.lang == langNone or s.highlighter.version == s.version: return
+  if s.lang == langMarkdown:
+    s.highlightMarkdown(0, s.len - 1)
+    s.highlighter.version = s.version
+    return
   const charsToIndex = 40 * 40
   if s.highlighter.currentlyIndexing != s.version:
     s.highlighter.currentlyIndexing = s.version
@@ -1404,10 +1701,8 @@ proc textWidth(font: Font; text: string): int =
 
 proc spaceForLines(s: SynEdit): int =
   if s.showLineNumbers:
-    var n = s.numberOfLines + 1
-    var digits = 1
-    while n >= 10: n = n div 10; inc digits
-    result = digits * textWidth(s.font, " ") + 8
+    let n = s.numberOfLines + 1
+    result = textWidth(s.font, $n) + 8
   else:
     result = 0
 

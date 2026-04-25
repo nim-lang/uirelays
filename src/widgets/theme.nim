@@ -7,13 +7,15 @@ import ../uirelays/screen
 type
   TokenClass* {.pure.} = enum
     None, Whitespace, DecNumber, BinNumber, HexNumber,
-    OctNumber, FloatNumber, Identifier, Keyword, StringLit,
-    LongStringLit, CharLit, Backticks,
+    OctNumber, FloatNumber, Identifier, Keyword, ControlFlow,
+    StringLit, LongStringLit, CharLit, Backticks,
     EscapeSequence,
     Operator, Punctuation, Comment, LongComment, RegularExpression,
     TagStart, TagStandalone, TagEnd, Key, Value, RawData, Assembler,
     Preprocessor, Directive, Command, Rule, Link, Label,
-    Reference, Text, Other, Green, Yellow, Red
+    Reference, Text, Other, Green, Yellow, Red,
+    Function, Type, Builtin, ProcName, ExportMark,
+    MarkdownFence, MarkdownLanguage
 
   Theme* = object
     fg*: array[TokenClass, Color]   ## per-token foreground colors
@@ -32,6 +34,7 @@ proc catppuccinMocha*(): Theme =
   for tc in TokenClass:
     result.fg[tc] = fg
   result.fg[TokenClass.Keyword] = color(203, 166, 247)     # mauve
+  result.fg[TokenClass.ControlFlow] = color(195, 110, 181) # magenta
   result.fg[TokenClass.StringLit] = color(166, 227, 161)   # green
   result.fg[TokenClass.LongStringLit] = color(166, 227, 161)
   result.fg[TokenClass.CharLit] = color(166, 227, 161)
@@ -51,6 +54,13 @@ proc catppuccinMocha*(): Theme =
   result.fg[TokenClass.Green] = color(166, 227, 161)
   result.fg[TokenClass.Yellow] = color(249, 226, 175)
   result.fg[TokenClass.Red] = color(243, 139, 168)
+  result.fg[TokenClass.Function] = color(220, 220, 170)    # yellow
+  result.fg[TokenClass.ProcName] = color(220, 220, 170)    # yellow
+  result.fg[TokenClass.Type] = color(78, 201, 176)         # teal
+  result.fg[TokenClass.Builtin] = color(78, 201, 176)      # teal
+  result.fg[TokenClass.ExportMark] = color(199, 146, 234)  # purple
+  result.fg[TokenClass.MarkdownFence] = color(128, 128, 128)
+  result.fg[TokenClass.MarkdownLanguage] = color(86, 156, 214)
   result.bg = color(30, 30, 46)
   result.selBg = color(88, 91, 112)
   result.bracketBg = color(69, 71, 90)
