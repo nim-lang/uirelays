@@ -136,9 +136,9 @@ type
     front, back: seq[Cell]
     cursor: Natural
     # Line tracking
-    firstLine, currentLine, numberOfLines: Natural
+    firstLine*, currentLine*, numberOfLines: Natural
     firstLineOffset: Natural
-    span: int
+    span*: int
     desiredCol: Natural
     # Selection
     selected: tuple[a, b: int]
@@ -172,6 +172,8 @@ type
     probeResult*: int               ## resolved buffer offset after render; -1 if none
     # Mouse
     mouseX, mouseY, clicks: int
+    mouseDragging: bool
+    dragStartPos: int
     # Scrollbar
     scrollGrabbed: bool
     scrollGrabOffset: int
@@ -1422,6 +1424,7 @@ proc createSynEdit*(font: Font; theme = catppuccinMocha()): SynEdit =
 proc textWidth(font: Font; text: string): int =
   measureText(font, text).w
 
+proc spaceForLines*(s: SynEdit): int =
 proc hexDigitValue(c: char): int {.inline.} =
   case c
   of '0'..'9': ord(c) - ord('0')
@@ -1656,6 +1659,14 @@ proc drawSubtoken(db: var DrawBuf; ra, rb: int; fg, bg: Color) =
       db.s[].setCurrentLine()
       db.s[].clicks = 0
       db.s[].cursorMoved()
+      if db.s[].mouseDragging:
+        if db.s[].dragStartPos < 0:
+          db.s[].dragStartPos = db.s[].cursor.int
+        else:
+          let a = min(db.s[].dragStartPos, db.s[].cursor.int)
+          let b = max(db.s[].dragStartPos, db.s[].cursor.int)
+          if a == b: db.s[].selected = (a, -1)
+          else: db.s[].selected = (a, b - 1)
   # Ctrl+hover probe: resolve screen coords to buffer position
   if db.s[].probeActive and db.s[].probeResult < 0:
     let p = point(db.s[].probeX, db.s[].probeY)
@@ -1828,18 +1839,20 @@ proc mouseSelectCurrentToken(s: var SynEdit) =
       inc last
   s.cursor = first.Natural
   s.selected = (first, last)
+  s.clicks = 0
   s.cursorMoved()
 
 proc mouseSelectWholeLine(s: var SynEdit) =
   var first = s.cursor.int
   while first > 0 and s[first - 1] != '\L': dec first
   s.selected = (first, s.cursor.int)
+  s.clicks = 0
 
 proc setCursorFromMouse(s: var SynEdit; x, y, clickCount: int) =
   s.mouseX = x
   s.mouseY = y
   s.clicks = clickCount
-  if clickCount < 2:
+  if clickCount < 2 and not s.mouseDragging:
     s.selected.b = -1
 
 # ---------------------------------------------------------------------------
@@ -1909,9 +1922,9 @@ proc render*(s: var SynEdit; area: Rect; showCursor: bool) =
       var numBg = s.theme.bg
       for ld in s.lineDecorations:
         if ld.line == renderLine.int:
-          numBg = ld.color
-          let dotSize = max(lineH - 4, 4)
-          fillRect(rect(area.x, dim.y + 2, dotSize, dotSize), ld.color)
+          # Draw a thin vertical bar on the left edge instead of a square.
+          # This matches standard editors (VS Code, etc.) and avoids jagged edges.
+          fillRect(rect(area.x, dim.y, 3, lineH), ld.color)
           break
       discard drawText(s.font, area.x + 2, dim.y, num, numColor, numBg)
 
@@ -1937,6 +1950,13 @@ proc render*(s: var SynEdit; area: Rect; showCursor: bool) =
     s.setCurrentLine()
     s.clicks = 0
     s.cursorMoved()
+    if s.mouseDragging:
+      if s.dragStartPos < 0: s.dragStartPos = s.cursor.int
+      else:
+        let a = min(s.dragStartPos, s.cursor.int)
+        let b = max(s.dragStartPos, s.cursor.int)
+        if a == b: s.selected = (a, -1)
+        else: s.selected = (a, b - 1)
 
   # draw scrollbar
   if hasScrollBar:
@@ -2052,9 +2072,12 @@ proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
         s.mouseSelectCurrentToken()
       else:
         s.setCursorFromMouse(e.x, e.y, e.clicks)
+        s.mouseDragging = true
+        s.dragStartPos = -1
 
   of MouseUpEvent:
     s.scrollGrabbed = false
+    s.mouseDragging = false
 
   of MouseMoveEvent:
     if (LinkMod in e.mods) and area.contains(point(e.x, e.y)):
@@ -2062,9 +2085,15 @@ proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
       s.probeY = e.y
       s.probeActive = true
       s.probeResult = -1
+      if s.mouseDragging:
+        s.mouseX = e.x
+        s.mouseY = e.y
+        s.clicks = 1
     else:
       s.probeActive = false
       s.probeResult = -1
+      if s.mouseDragging:
+        s.mouseDragging = false
     if s.scrollGrabbed and hasScrollBar:
       let trackH = float(area.h - 2)
       let totalLines = s.numberOfLines.int + s.span
@@ -2097,4 +2126,6 @@ proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
     result = EditAction(kind: ctrlClick, pos: s.cursor.int)
   elif s.probeActive and s.probeResult >= 0:
     result = EditAction(kind: ctrlHover, pos: s.probeResult)
+  elif s.probeActive and s.probeResult < 0:
+    discard
 
