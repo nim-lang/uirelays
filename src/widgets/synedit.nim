@@ -32,7 +32,6 @@
 import ../uirelays/[coords, screen, input]
 import ./theme
 import std/strutils
-from strutils import Whitespace
 export theme
 
 const
@@ -270,16 +269,6 @@ const
     "ptr", "raise", "ref", "return", "shl", "shr", "static",
     "template", "try", "tuple", "type", "using", "var", "when", "while", "with",
     "without", "xor", "yield"]
-  nimControlFlow = ["if", "elif", "else", "case", "of", "when", "while", "for",
-    "break", "continue", "block", "return", "yield", "raise", "try",
-    "except", "finally", "defer"]
-  nimBuiltins = ["int", "int8", "int16", "int32", "int64", "uint", "uint8",
-    "uint16", "uint32", "uint64", "float", "float32", "float64", "bool",
-    "char", "string", "cstring", "pointer", "void", "auto", "any", "typed",
-    "typedesc", "untyped", "untypedesc", "seq", "array", "set", "openarray",
-    "varargs", "lent", "owned", "sink", "proc", "func", "iterator",
-    "converter", "template", "macro", "method", "concept", "distinct",
-    "ref", "ptr", "addr", "nil", "true", "false"]
 
   cKeywords = ["_Bool", "_Complex", "_Imaginary", "auto",
     "break", "case", "char", "const", "continue", "default", "do", "double",
@@ -287,10 +276,6 @@ const
     "long", "register", "restrict", "return", "short", "signed", "sizeof",
     "static", "struct", "switch", "typedef", "union", "unsigned", "void",
     "volatile", "while"]
-  cControlFlow = ["if", "else", "for", "while", "break", "continue", "return",
-    "switch", "case", "default", "goto"]
-  cBuiltins = ["char", "int", "long", "float", "double", "void", "short",
-    "signed", "unsigned", "bool"]
 
   cppKeywords = ["asm", "auto", "break", "case", "catch",
     "char", "class", "const", "continue", "default", "delete", "do", "double",
@@ -300,10 +285,6 @@ const
     "sizeof", "static", "struct", "switch", "template", "this", "throw", "true",
     "try", "typedef", "typename", "union", "unsigned", "using", "virtual",
     "void", "volatile", "while"]
-  cppControlFlow = ["if", "else", "switch", "case", "default", "for", "while",
-    "do", "break", "continue", "return", "goto", "try", "catch", "throw"]
-  cppBuiltins = ["bool", "char", "int", "long", "float", "double", "void",
-    "short", "signed", "unsigned", "size_t", "nullptr", "true", "false"]
 
   jsKeywords = ["abstract", "arguments", "boolean", "break", "byte",
     "case", "catch", "char", "class", "const", "continue", "debugger",
@@ -315,59 +296,21 @@ const
     "short", "static", "super", "switch", "synchronized",
     "this", "throw", "throws", "transient", "true", "try", "typeof",
     "var", "void", "volatile", "while", "with", "yield"]
-  jsControlFlow = ["if", "else", "for", "while", "break", "continue", "return",
-    "switch", "case", "default", "try", "catch", "finally", "throw"]
-  jsBuiltins = ["true", "false", "null", "undefined", "NaN", "Infinity"]
 
   pythonKeywords = ["False", "None", "True", "and", "as", "assert", "async",
     "await", "break", "class", "continue", "def", "del", "elif", "else",
     "except", "finally", "for", "from", "global", "if", "import", "in",
     "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return",
     "try", "while", "with", "yield"]
-  pythonControlFlow = ["if", "elif", "else", "for", "while", "break", "continue",
-    "try", "except", "finally", "with", "return", "yield", "raise"]
-  pythonBuiltins = ["int", "float", "str", "bool", "list", "dict", "tuple",
-    "set", "frozenset", "bytes", "bytearray", "memoryview", "object",
-    "type", "range", "len", "print", "input", "open", "super"]
 
   rustKeywords = ["as", "break", "const", "continue", "crate", "else", "enum",
     "extern", "false", "fn", "for", "if", "impl", "in", "let", "loop",
     "match", "mod", "move", "mut", "pub", "ref", "return", "self", "Self",
     "static", "struct", "super", "trait", "true", "type", "unsafe", "use",
     "where", "while"]
-  rustControlFlow = ["if", "else", "for", "while", "loop", "break", "continue",
-    "return", "match"]
-  rustBuiltins = ["i8", "i16", "i32", "i64", "i128", "isize", "u8", "u16",
-    "u32", "u64", "u128", "usize", "f32", "f64", "bool", "char", "str",
-    "String", "Vec", "Option", "Result", "Box", "Rc", "Arc"]
 
   OpChars = {'+', '-', '*', '/', '\\', '<', '>', '!', '?', '^', '.',
              '|', '=', '%', '&', '$', '@', '~', ':', '\x80'..'\xFF'}
-
-proc contains(a: openArray[string]; val: string): bool =
-  for x in a:
-    if x == val: return true
-  false
-
-proc classifyNim(id: string; pos: int; buf: ptr SynEdit): TokenClass =
-  if nimControlFlow.contains(id): return TokenClass.ControlFlow
-  if nimKeywords.contains(id): return TokenClass.Keyword
-  if nimBuiltins.contains(id): return TokenClass.Builtin
-  if id == "result": return TokenClass.ControlFlow
-  if id.len > 0 and id[0] in {'A'..'Z'}: return TokenClass.Type
-  if id.len > 0 and id[0] in {'a'..'z'}:
-    var lookAhead = pos
-    while lookAhead < buf.len and buf[lookAhead] in {' ', '\t'}: inc lookAhead
-    if lookAhead < buf.len and buf[lookAhead] in {'(', '*'}:
-      return TokenClass.ProcName
-  return TokenClass.Identifier
-
-proc classifyClike(id: string; keywords, controlFlow, builtins: openArray[string]): TokenClass =
-  if controlFlow.contains(id): return TokenClass.ControlFlow
-  if keywords.contains(id): return TokenClass.Keyword
-  if builtins.contains(id): return TokenClass.Builtin
-  if id.len > 0 and id[0] in {'A'..'Z'}: return TokenClass.Type
-  return TokenClass.Identifier
 
 proc nimGetKeyword(id: string): TokenClass =
   for k in nimKeywords:
@@ -499,7 +442,7 @@ proc nimNextToken(g: var GeneralTokenizer) =
             inc(pos)
           if g.buf[pos] == '\"': inc(pos)
       else:
-        g.kind = classifyNim(id, pos, g.buf)
+        g.kind = nimGetKeyword(id)
     of '0':
       inc(pos)
       case g.buf[pos]
@@ -544,8 +487,6 @@ proc nimNextToken(g: var GeneralTokenizer) =
       if g.buf[pos+1] in {')', ']', '}'}:
         inc(pos, 2); g.kind = TokenClass.Punctuation
       else: g.kind = TokenClass.Operator; inc pos
-    of '*':
-      inc(pos); g.kind = TokenClass.ExportMark
     else:
       if g.buf[pos] in OpChars:
         g.kind = TokenClass.Operator
@@ -556,7 +497,7 @@ proc nimNextToken(g: var GeneralTokenizer) =
   g.length = pos - g.pos
   g.pos = pos
 
-proc clikeNextToken(g: var GeneralTokenizer; keywords, controlFlow, builtins: openArray[string]) =
+proc clikeNextToken(g: var GeneralTokenizer; keywords: openArray[string]) =
   const
     hexChars = {'0'..'9', 'A'..'F', 'a'..'f'}
     octChars = {'0'..'7'}
@@ -611,7 +552,9 @@ proc clikeNextToken(g: var GeneralTokenizer; keywords, controlFlow, builtins: op
     of 'a'..'z', 'A'..'Z', '_', '\x80'..'\xFF':
       var id = ""
       while g.buf[pos] in symChars: add(id, g.buf[pos]); inc(pos)
-      g.kind = classifyClike(id, keywords, controlFlow, builtins)
+      g.kind = TokenClass.Identifier
+      for kw in keywords:
+        if kw == id: g.kind = TokenClass.Keyword; break
     of '0':
       inc(pos)
       case g.buf[pos]
@@ -679,7 +622,9 @@ proc pythonNextToken(g: var GeneralTokenizer) =
     of 'a'..'z', 'A'..'Z', '_', '\x80'..'\xFF':
       var id = ""
       while g.buf[pos] in symChars: add(id, g.buf[pos]); inc(pos)
-      g.kind = classifyClike(id, pythonKeywords, pythonControlFlow, pythonBuiltins)
+      g.kind = TokenClass.Identifier
+      for kw in pythonKeywords:
+        if kw == id: g.kind = TokenClass.Keyword; break
     of '0':
       inc(pos)
       case g.buf[pos]
@@ -752,7 +697,9 @@ proc rustNextToken(g: var GeneralTokenizer) =
     of 'a'..'z', 'A'..'Z', '_', '\x80'..'\xFF':
       var id = ""
       while g.buf[pos] in symChars: add(id, g.buf[pos]); inc(pos)
-      g.kind = classifyClike(id, rustKeywords, rustControlFlow, rustBuiltins)
+      g.kind = TokenClass.Identifier
+      for kw in rustKeywords:
+        if kw == id: g.kind = TokenClass.Keyword; break
     of '0':
       inc(pos)
       case g.buf[pos]
@@ -795,11 +742,11 @@ proc getNextToken(g: var GeneralTokenizer; lang: SourceLanguage) =
     g.kind = TokenClass.None
     g.length = g.pos - g.start
   of langNim: nimNextToken(g)
-  of langCpp: clikeNextToken(g, cppKeywords, cppControlFlow, cppBuiltins)
-  of langC: clikeNextToken(g, cKeywords, cControlFlow, cBuiltins)
-  of langJs: clikeNextToken(g, jsKeywords, jsControlFlow, jsBuiltins)
-  of langJava: clikeNextToken(g, jsKeywords, jsControlFlow, jsBuiltins)
-  of langCsharp: clikeNextToken(g, cppKeywords, cppControlFlow, cppBuiltins)
+  of langCpp: clikeNextToken(g, cppKeywords)
+  of langC: clikeNextToken(g, cKeywords)
+  of langJs: clikeNextToken(g, jsKeywords)
+  of langJava: clikeNextToken(g, jsKeywords)
+  of langCsharp: clikeNextToken(g, cppKeywords)
   of langPython: pythonNextToken(g)
   of langRust: rustNextToken(g)
   of langXml, langHtml:
