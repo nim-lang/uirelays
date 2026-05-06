@@ -169,6 +169,7 @@ const
   VK_OEM_COMMA = 0xBC'u32
   VK_OEM_MINUS = 0xBD'u32
   VK_OEM_PERIOD = 0xBE'u32
+  VK_OEM_2 = 0xBF'u32
   VK_SHIFT = 0x10'u32
   VK_CONTROL = 0x11'u32
   VK_MENU = 0x12'u32   # Alt
@@ -411,6 +412,7 @@ proc translateVK(vk: WPARAM): input.KeyCode =
   of VK_CAPITAL: KeyCapslock
   of VK_OEM_COMMA: KeyComma
   of VK_OEM_PERIOD: KeyPeriod
+  of VK_OEM_2: KeySlash
   of VK_OEM_MINUS: KeyMinus
   of VK_OEM_PLUS: KeyEqual
   else: KeyNone
