@@ -81,6 +81,10 @@ proc cFillRect(x, y, w, h: cint; r, g, b, a: cint) {.importc: "cocoa_fillRect", 
 proc cDrawLine(x1, y1, x2, y2: cint; r, g, b, a: cint) {.importc: "cocoa_drawLine", cdecl.}
 proc cDrawPoint(x, y: cint; r, g, b, a: cint) {.importc: "cocoa_drawPoint", cdecl.}
 
+proc cLoadImage(path: cstring): cint {.importc: "cocoa_loadImage", cdecl.}
+proc cDrawImage(handle, srcX, srcY, srcW, srcH, dstX, dstY, dstW, dstH: cint)
+  {.importc: "cocoa_drawImage", cdecl.}
+
 proc cSetClipRect(x, y, w, h: cint) {.importc: "cocoa_setClipRect", cdecl.}
 proc cSaveState() {.importc: "cocoa_saveState", cdecl.}
 proc cRestoreState() {.importc: "cocoa_restoreState", cdecl.}
@@ -114,6 +118,15 @@ proc cocoaRestoreState() = cRestoreState()
 
 proc cocoaSetClipRect(r: Rect) =
   cSetClipRect(r.x.cint, r.y.cint, r.w.cint, r.h.cint)
+
+proc cocoaLoadImage(path: string): Image =
+  let handle = cLoadImage(path.cstring)
+  result = Image(handle)
+
+proc cocoaDrawImage(img: Image; src, dst: Rect) =
+  cDrawImage(img.int.cint,
+             src.x.cint, src.y.cint, src.w.cint, src.h.cint,
+             dst.x.cint, dst.y.cint, dst.w.cint, dst.h.cint)
 
 proc cocoaOpenFont(path: string; size: int;
                    metrics: var FontMetrics): Font =
@@ -271,7 +284,8 @@ proc initCocoaDriver*() =
     drawText: cocoaDrawText)
   drawRelays = DrawRelays(
     fillRect: cocoaFillRect, drawLine: cocoaDrawLine,
-    drawPoint: cocoaDrawPoint)
+    drawPoint: cocoaDrawPoint,
+    loadImage: cocoaLoadImage, drawImage: cocoaDrawImage)
   inputRelays = InputRelays(
     pollEvent: cocoaPollEvent, waitEvent: cocoaWaitEvent,
     getTicks: cocoaGetTicks, sleep: cocoaDelay,

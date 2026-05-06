@@ -268,8 +268,11 @@ const
   XK_Home = 0xff50'u
   XK_End = 0xff57'u
   XK_Caps_Lock = 0xffe5'u
+  XK_plus = 0x2b'u
   XK_comma = 0x2c'u
   XK_period = 0x2e'u
+  XK_minus = 0x2d'u
+  XK_equal = 0x3d'u
 
 # ---- POSIX select for timeout waiting ----
 
@@ -295,6 +298,10 @@ proc xSelect(nfds: cint; readfds, writefds, exceptfds: ptr XFdSet;
 proc XOpenDisplay(name: cstring): pointer
   {.cdecl, dynlib: libX11, importc.}
 proc XDefaultScreen(dpy: pointer): cint
+  {.cdecl, dynlib: libX11, importc.}
+proc XDisplayWidth(dpy: pointer; screen: cint): cint
+  {.cdecl, dynlib: libX11, importc.}
+proc XDisplayHeight(dpy: pointer; screen: cint): cint
   {.cdecl, dynlib: libX11, importc.}
 proc XRootWindow(dpy: pointer; screen: cint): XID
   {.cdecl, dynlib: libX11, importc.}
@@ -502,8 +509,11 @@ proc translateKeySym(ks: XKeySym): input.KeyCode =
   of XK_Home: KeyHome
   of XK_End: KeyEnd
   of XK_Caps_Lock: KeyCapslock
+  of XK_plus: KeyPlus
   of XK_comma: KeyComma
   of XK_period: KeyPeriod
+  of XK_minus: KeyMinus
+  of XK_equal: KeyEqual
   else: KeyNone
 
 proc translateMods(state: cuint): set[Modifier] =
@@ -669,6 +679,10 @@ proc x11CreateWindow(layout: var ScreenLayout) =
   gVisual = XDefaultVisual(gDisplay, gScreen)
   gColormap = XDefaultColormap(gDisplay, gScreen)
   gDepth = XDefaultDepth(gDisplay, gScreen)
+
+  if layout.fullScreen:
+    layout.width = XDisplayWidth(gDisplay, gScreen)
+    layout.height = XDisplayHeight(gDisplay, gScreen)
 
   gWindow = XCreateSimpleWindow(gDisplay, XRootWindow(gDisplay, gScreen),
     0, 0, layout.width.cuint, layout.height.cuint, 0,

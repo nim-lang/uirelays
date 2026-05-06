@@ -14,6 +14,7 @@ template execBackend(cmd: string) =
 
 
 execBackend("")
-execBackend("-d:gtk4")
+when defined(linux):
+  execBackend("-d:gtk4")
 # execBackend("-d:sdl2")
 # execBackend("-d:sdl3")
