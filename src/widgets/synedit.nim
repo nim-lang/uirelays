@@ -1551,12 +1551,7 @@ proc toggleComment*(s: var SynEdit) =
     s.desiredCol = s.getColumn().Natural
     s.highlightLine(s.cursor)
 
-proc gotoMatchingBracket*(s: var SynEdit) =
-  let c = s[s.cursor]
-  if s.bracketA >= 0:
-    s.gotoPos(s.bracketA)
-  elif c in {'(', '[', '{', ')', ']', '}'}:
-    discard
+
 
 # ---------------------------------------------------------------------------
 # File I/O
