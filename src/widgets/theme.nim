@@ -7,13 +7,14 @@ import ../uirelays/screen
 type
   TokenClass* {.pure.} = enum
     None, Whitespace, DecNumber, BinNumber, HexNumber,
-    OctNumber, FloatNumber, Identifier, Keyword, StringLit,
-    LongStringLit, CharLit, Backticks,
+    OctNumber, FloatNumber, Identifier, Keyword,
+    StringLit, LongStringLit, CharLit, Backticks,
     EscapeSequence,
     Operator, Punctuation, Comment, LongComment, RegularExpression,
     TagStart, TagStandalone, TagEnd, Key, Value, RawData, Assembler,
     Preprocessor, Directive, Command, Rule, Link, Label,
-    Reference, Text, Other, Green, Yellow, Red
+    Reference, Text, Other, Green, Yellow, Red,
+    MarkdownFence
 
   Theme* = object
     fg*: array[TokenClass, Color]   ## per-token foreground colors
@@ -51,6 +52,7 @@ proc catppuccinMocha*(): Theme =
   result.fg[TokenClass.Green] = color(166, 227, 161)
   result.fg[TokenClass.Yellow] = color(249, 226, 175)
   result.fg[TokenClass.Red] = color(243, 139, 168)
+  result.fg[TokenClass.MarkdownFence] = color(128, 128, 128)
   result.bg = color(30, 30, 46)
   result.selBg = color(88, 91, 112)
   result.bracketBg = color(69, 71, 90)
