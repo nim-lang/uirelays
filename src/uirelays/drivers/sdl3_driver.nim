@@ -2,13 +2,15 @@
 
 import sdl3
 import sdl3_ttf
-import std/[hashes, os, tables]
+import std/[hashes, math, os, tables]
 import ../coords, ../input, ../screen
 
 # --- Font handle management ---
 
 type
   FontSlot = object
+    path: string
+    logicalSize: int
     ttfFont: sdl3_ttf.Font
     metrics: FontMetrics
 
@@ -27,12 +29,13 @@ type
 
   TextCacheEntry = object
     texture: sdl3.Texture
+    texW, texH: int
     extent: TextExtent
     lastUsed: int
 
   ClipState = object
     enabled: bool
-    rect: sdl3.Rect
+    rect: coords.Rect
 
 var fonts: seq[FontSlot]
 
@@ -83,6 +86,9 @@ var
   drawColor: screen.Color
   clipStack: seq[ClipState]
   currentClip: ClipState
+  pixelScaleX: float32 = 1.0'f32
+  pixelScaleY: float32 = 1.0'f32
+  currentLayout = ScreenLayout(scaleX: 1.0'f32, scaleY: 1.0'f32)
 
 proc clearMeasureCache() =
   measureCache.clear()
@@ -117,6 +123,37 @@ proc closeAllFonts() =
       slot.ttfFont = nil
   fonts.setLen(0)
 
+proc fontScale(): float32 {.inline.} =
+  max(pixelScaleX, pixelScaleY)
+
+proc logicalToPixel(value: int; scale: float32): float32 {.inline.} =
+  value.float32 * scale
+
+proc logicalToPixelRect(r: coords.Rect): FRect {.inline.} =
+  FRect(
+    x: logicalToPixel(r.x, pixelScaleX),
+    y: logicalToPixel(r.y, pixelScaleY),
+    w: logicalToPixel(r.w, pixelScaleX),
+    h: logicalToPixel(r.h, pixelScaleY))
+
+proc logicalToPixelClipRect(r: coords.Rect): sdl3.Rect {.inline.} =
+  sdl3.Rect(
+    x: floor(logicalToPixel(r.x, pixelScaleX).float64).cint,
+    y: floor(logicalToPixel(r.y, pixelScaleY).float64).cint,
+    w: ceil(logicalToPixel(r.w, pixelScaleX).float64).cint,
+    h: ceil(logicalToPixel(r.h, pixelScaleY).float64).cint)
+
+proc pixelExtentToLogical(value: int; scale: float32): int {.inline.} =
+  if value <= 0:
+    0
+  elif scale <= 0:
+    value
+  else:
+    max(1, ceil(value.float64 / scale.float64).int)
+
+proc scaledFontSize(size: int): float32 {.inline.} =
+  max(1.0, size.float64 * fontScale().float64).float32
+
 proc resetSdlState() =
   clearImageCache()
   clearTextCache()
@@ -126,6 +163,9 @@ proc resetSdlState() =
   clipStack.setLen(0)
   currentClip = ClipState()
   drawColorValid = false
+  pixelScaleX = 1.0'f32
+  pixelScaleY = 1.0'f32
+  currentLayout = ScreenLayout(scaleX: 1.0'f32, scaleY: 1.0'f32)
   if ren != nil:
     destroyRenderer(ren)
     ren = nil
@@ -144,9 +184,87 @@ proc applyClipState() =
   if ren == nil:
     return
   if currentClip.enabled:
-    discard setRenderClipRect(ren, addr currentClip.rect)
+    var rect = logicalToPixelClipRect(currentClip.rect)
+    discard setRenderClipRect(ren, addr rect)
   else:
     discard setRenderClipRect(ren, cast[ptr sdl3.Rect](nil))
+
+proc refreshFontMetrics(slot: var FontSlot) =
+  if slot.ttfFont == nil:
+    slot.metrics = FontMetrics()
+    return
+  let scale = fontScale()
+  slot.metrics = FontMetrics(
+    ascent: pixelExtentToLogical(sdl3_ttf.getFontAscent(slot.ttfFont), scale),
+    descent: pixelExtentToLogical(sdl3_ttf.getFontDescent(slot.ttfFont), scale),
+    lineHeight: pixelExtentToLogical(sdl3_ttf.getFontLineSkip(slot.ttfFont), scale))
+
+proc reopenFontSlot(slot: var FontSlot) =
+  if slot.ttfFont != nil:
+    sdl3_ttf.closeFont(slot.ttfFont)
+    slot.ttfFont = nil
+  if slot.path.len == 0:
+    slot.metrics = FontMetrics()
+    return
+  slot.ttfFont = sdl3_ttf.openFont(cstring(slot.path), scaledFontSize(slot.logicalSize))
+  if slot.ttfFont == nil:
+    slot.metrics = FontMetrics()
+    return
+  sdl3_ttf.setFontHinting(slot.ttfFont, sdl3_ttf.hintingLightSubpixel)
+  refreshFontMetrics(slot)
+
+proc refreshFontsForScaleChange() =
+  clearMeasureCache()
+  clearTextCache()
+  for slot in fonts.mitems:
+    if slot.path.len > 0:
+      reopenFontSlot(slot)
+
+proc syncWindowLayout(layout: var ScreenLayout) =
+  if win == nil:
+    return
+  var logicalW: cint = 0
+  var logicalH: cint = 0
+  var pixelW: cint = 0
+  var pixelH: cint = 0
+  discard getWindowSize(win, logicalW, logicalH)
+  discard getWindowSizeInPixels(win, pixelW, pixelH)
+  layout.width = logicalW
+  layout.height = logicalH
+
+  let prevScaleX = pixelScaleX
+  let prevScaleY = pixelScaleY
+  let fallbackScale = max(1.0'f32, getWindowDisplayScale(win))
+  let scaleX =
+    if logicalW > 0 and pixelW > 0: pixelW.float32 / logicalW.float32
+    else: fallbackScale
+  let scaleY =
+    if logicalH > 0 and pixelH > 0: pixelH.float32 / logicalH.float32
+    else: fallbackScale
+  pixelScaleX = max(1.0'f32, scaleX)
+  pixelScaleY = max(1.0'f32, scaleY)
+  layout.scaleX = pixelScaleX
+  layout.scaleY = pixelScaleY
+  currentLayout = layout
+
+  if abs(pixelScaleX - prevScaleX) > 0.001'f32 or
+     abs(pixelScaleY - prevScaleY) > 0.001'f32:
+    refreshFontsForScaleChange()
+    if currentClip.enabled:
+      applyClipState()
+
+proc sdlGetWindowLayout(): ScreenLayout =
+  if win != nil:
+    syncWindowLayout(currentLayout)
+  currentLayout
+
+proc syncWindowEvent(e: var input.Event) =
+  syncWindowLayout(currentLayout)
+  e.kind = WindowMetricsEvent
+  e.x = currentLayout.width
+  e.y = currentLayout.height
+  e.scaleX = currentLayout.scaleX
+  e.scaleY = currentLayout.scaleY
 
 proc nextTextCacheGeneration(): int =
   inc textCacheGeneration
@@ -204,17 +322,13 @@ proc resolveFontPath(path: string): string =
 proc sdlCreateWindow(layout: var ScreenLayout) =
   if ren != nil or win != nil:
     resetSdlState()
-  let winFlags = if layout.fullScreen: WINDOW_FULLSCREEN
-                 else: WINDOW_RESIZABLE
+  let winFlags =
+    if layout.fullScreen: WINDOW_FULLSCREEN or WINDOW_HIGH_PIXEL_DENSITY
+    else: WINDOW_RESIZABLE or WINDOW_HIGH_PIXEL_DENSITY
   discard createWindowAndRenderer(cstring"NimEdit",
     layout.width.cint, layout.height.cint, winFlags, win, ren)
   discard startTextInput(win)
-  var w, h: cint
-  discard getWindowSize(win, w, h)
-  layout.width = w
-  layout.height = h
-  layout.scaleX = 1
-  layout.scaleY = 1
+  syncWindowLayout(layout)
   currentClip = ClipState()
   applyClipState()
 
@@ -234,7 +348,7 @@ proc sdlRestoreState() =
 proc sdlSetClipRect(r: coords.Rect) =
   currentClip = ClipState(
     enabled: true,
-    rect: sdl3.Rect(x: r.x.cint, y: r.y.cint, w: r.w.cint, h: r.h.cint))
+    rect: r)
   applyClipState()
 
 proc sdlOpenFont(path: string; size: int;
@@ -242,13 +356,18 @@ proc sdlOpenFont(path: string; size: int;
   let resolvedPath = resolveFontPath(path)
   if resolvedPath.len == 0:
     return screen.Font(0)
-  let f = sdl3_ttf.openFont(cstring(resolvedPath), size.cfloat)
+  let f = sdl3_ttf.openFont(cstring(resolvedPath), scaledFontSize(size))
   if f == nil: return screen.Font(0)
   sdl3_ttf.setFontHinting(f, sdl3_ttf.hintingLightSubpixel)
-  metrics.ascent = sdl3_ttf.getFontAscent(f)
-  metrics.descent = sdl3_ttf.getFontDescent(f)
-  metrics.lineHeight = sdl3_ttf.getFontLineSkip(f)
-  fonts.add FontSlot(ttfFont: f, metrics: metrics)
+  let scale = fontScale()
+  metrics.ascent = pixelExtentToLogical(sdl3_ttf.getFontAscent(f), scale)
+  metrics.descent = pixelExtentToLogical(sdl3_ttf.getFontDescent(f), scale)
+  metrics.lineHeight = pixelExtentToLogical(sdl3_ttf.getFontLineSkip(f), scale)
+  fonts.add FontSlot(
+    path: resolvedPath,
+    logicalSize: size,
+    ttfFont: f,
+    metrics: metrics)
   clearMeasureCache()
   clearTextCache()
   result = screen.Font(fonts.len)
@@ -258,6 +377,9 @@ proc sdlCloseFont(f: screen.Font) =
   if idx >= 0 and idx < fonts.len and fonts[idx].ttfFont != nil:
     sdl3_ttf.closeFont(fonts[idx].ttfFont)
     fonts[idx].ttfFont = nil
+    fonts[idx].path.setLen(0)
+    fonts[idx].logicalSize = 0
+    fonts[idx].metrics = FontMetrics()
     clearMeasureCache()
     clearTextCache()
 
@@ -270,7 +392,10 @@ proc getCachedExtent(f: screen.Font; text: string): TextExtent =
     return measureCache[key]
   var w, h: cint
   discard sdl3_ttf.getStringSize(fp, cstring(text), 0, w, h)
-  result = TextExtent(w: w, h: h)
+  let scale = fontScale()
+  result = TextExtent(
+    w: pixelExtentToLogical(w, scale),
+    h: pixelExtentToLogical(h, scale))
   measureCache[key] = result
 
 proc sdlMeasureText(f: screen.Font; text: string): TextExtent =
@@ -295,6 +420,8 @@ proc getCachedTextEntry(f: screen.Font; text: string;
   discard setTextureBlendMode(tex, BLENDMODE_BLEND)
   let entry = TextCacheEntry(
     texture: tex,
+    texW: surf.w.int,
+    texH: surf.h.int,
     extent: getCachedExtent(f, text),
     lastUsed: nextTextCacheGeneration())
   destroySurface(surf)
@@ -308,13 +435,19 @@ proc sdlDrawText(f: screen.Font; x, y: int; text: string;
   if entry.texture == nil:
     return
   if bg.a != 0 and entry.extent.w > 0 and entry.extent.h > 0:
-    var bgRect = FRect(x: x.cfloat, y: y.cfloat,
-                       w: entry.extent.w.cfloat, h: entry.extent.h.cfloat)
+    var bgRect = FRect(
+      x: logicalToPixel(x, pixelScaleX),
+      y: logicalToPixel(y, pixelScaleY),
+      w: entry.texW.float32,
+      h: entry.texH.float32)
     ensureDrawColor(bg)
     discard renderFillRect(ren, addr bgRect)
-  var src = FRect(x: 0, y: 0, w: entry.extent.w.cfloat, h: entry.extent.h.cfloat)
-  var dst = FRect(x: x.cfloat, y: y.cfloat,
-                  w: entry.extent.w.cfloat, h: entry.extent.h.cfloat)
+  var src = FRect(x: 0, y: 0, w: entry.texW.float32, h: entry.texH.float32)
+  var dst = FRect(
+    x: logicalToPixel(x, pixelScaleX),
+    y: logicalToPixel(y, pixelScaleY),
+    w: entry.texW.float32,
+    h: entry.texH.float32)
   discard renderTexture(ren, entry.texture, addr src, addr dst)
   result = entry.extent
 
@@ -325,17 +458,21 @@ proc sdlGetFontMetrics(f: screen.Font): FontMetrics =
 
 proc sdlFillRect(r: coords.Rect; color: screen.Color) =
   ensureDrawColor(color)
-  var fr = FRect(x: r.x.cfloat, y: r.y.cfloat,
-                 w: r.w.cfloat, h: r.h.cfloat)
+  var fr = logicalToPixelRect(r)
   discard renderFillRect(ren, addr fr)
 
 proc sdlDrawLine(x1, y1, x2, y2: int; color: screen.Color) =
   ensureDrawColor(color)
-  discard renderLine(ren, x1.cfloat, y1.cfloat, x2.cfloat, y2.cfloat)
+  discard renderLine(
+    ren,
+    logicalToPixel(x1, pixelScaleX),
+    logicalToPixel(y1, pixelScaleY),
+    logicalToPixel(x2, pixelScaleX),
+    logicalToPixel(y2, pixelScaleY))
 
 proc sdlDrawPoint(x, y: int; color: screen.Color) =
   ensureDrawColor(color)
-  discard renderPoint(ren, x.cfloat, y.cfloat)
+  discard renderPoint(ren, logicalToPixel(x, pixelScaleX), logicalToPixel(y, pixelScaleY))
 
 proc getImageSlot(img: screen.Image): ptr ImageSlot {.inline.} =
   let idx = img.int - 1
@@ -377,9 +514,7 @@ proc sdlDrawImage(img: screen.Image; src, dst: coords.Rect) =
   var srcRect = FRect(
     x: src.x.cfloat, y: src.y.cfloat,
     w: src.w.cfloat, h: src.h.cfloat)
-  var dstRect = FRect(
-    x: dst.x.cfloat, y: dst.y.cfloat,
-    w: dst.w.cfloat, h: dst.h.cfloat)
+  var dstRect = logicalToPixelRect(dst)
   discard renderTexture(ren, slot[].texture, addr srcRect, addr dstRect)
 
 proc sdlSetCursor(c: CursorKind) =
@@ -511,10 +646,10 @@ proc translateEvent(sdlEvent: sdl3.Event; e: var input.Event) =
   let evType = uint32(sdlEvent.common.`type`)
   if evType == uint32(EVENT_QUIT):
     e.kind = QuitEvent
-  elif evType == uint32(EVENT_WINDOW_RESIZED):
-    e.kind = WindowResizeEvent
-    e.x = sdlEvent.window.data1
-    e.y = sdlEvent.window.data2
+  elif evType == uint32(EVENT_WINDOW_RESIZED) or
+       evType == uint32(EVENT_WINDOW_PIXEL_SIZE_CHANGED) or
+       evType == uint32(EVENT_WINDOW_DISPLAY_SCALE_CHANGED):
+    syncWindowEvent(e)
   elif evType == uint32(EVENT_WINDOW_CLOSE_REQUESTED):
     e.kind = WindowCloseEvent
   elif evType == uint32(EVENT_WINDOW_FOCUS_GAINED):
@@ -602,7 +737,8 @@ proc initSdl3Driver*() =
   if not sdl3_ttf.init():
     quit("TTF3 init failed")
   windowRelays = WindowRelays(
-    createWindow: sdlCreateWindow, refresh: sdlRefresh,
+    createWindow: sdlCreateWindow, getWindowLayout: sdlGetWindowLayout,
+    refresh: sdlRefresh,
     saveState: sdlSaveState, restoreState: sdlRestoreState,
     setClipRect: sdlSetClipRect, setCursor: sdlSetCursor,
     setWindowTitle: sdlSetWindowTitle)

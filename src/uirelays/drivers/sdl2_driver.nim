@@ -21,7 +21,7 @@ proc toSdlColor(c: screen.Color): sdl2.Color =
   result.a = c.a
 
 proc toSdlRect(r: coords.Rect): sdl2.Rect {.inline.} =
-  (r.x, r.y, r.w, r.h)
+  (r.x.cint, r.y.cint, r.w.cint, r.h.cint)
 
 proc getFontPtr(f: Font): FontPtr {.inline.} =
   let idx = f.int - 1
@@ -33,6 +33,7 @@ proc getFontPtr(f: Font): FontPtr {.inline.} =
 var
   window: WindowPtr
   renderer: RendererPtr
+  currentLayout = ScreenLayout(scaleX: 1.0'f32, scaleY: 1.0'f32)
 
 # --- Screen hook implementations ---
 
@@ -50,9 +51,18 @@ proc sdlCreateWindow(layout: var ScreenLayout) =
   window.getSize(w, h)
   layout.width = w
   layout.height = h
-  layout.scaleX = 1
-  layout.scaleY = 1
+  layout.scaleX = 1.0'f32
+  layout.scaleY = 1.0'f32
+  currentLayout = layout
   sdl2.startTextInput()
+
+proc sdlGetWindowLayout(): ScreenLayout =
+  if window != nil:
+    var w, h: cint
+    window.getSize(w, h)
+    currentLayout.width = w
+    currentLayout.height = h
+  currentLayout
 
 proc sdlRefresh() =
   renderer.present()
@@ -83,25 +93,25 @@ proc sdlCloseFont(f: Font) =
     close(fonts[idx].sdlFont)
     fonts[idx].sdlFont = nil
 
-proc sdlMeasureText(f: Font; text: cstring): TextExtent =
+proc sdlMeasureText(f: Font; text: string): TextExtent =
   let fp = getFontPtr(f)
-  if fp != nil and text[0] != '\0':
+  if fp != nil and text.len > 0:
     var w, h: cint
-    discard sizeUtf8(fp, text, addr w, addr h)
+    discard sizeUtf8(fp, cstring(text), addr w, addr h)
     result = TextExtent(w: w, h: h)
 
-proc sdlDrawTextShaded(f: Font; x, y: cint; text: cstring;
+proc sdlDrawTextShaded(f: Font; x, y: int; text: string;
                        fg, bg: screen.Color): TextExtent =
   let fp = getFontPtr(f)
-  if fp == nil or text[0] == '\0': return
-  let surf = renderUtf8Shaded(fp, text, toSdlColor(fg), toSdlColor(bg))
+  if fp == nil or text.len == 0: return
+  let surf = renderUtf8Shaded(fp, cstring(text), toSdlColor(fg), toSdlColor(bg))
   if surf == nil: return
   let tex = renderer.createTextureFromSurface(surf)
   if tex == nil:
     freeSurface(surf)
     return
   var src: sdl2.Rect = (0.cint, 0.cint, surf.w, surf.h)
-  var dst: sdl2.Rect = (x, y, surf.w, surf.h)
+  var dst: sdl2.Rect = (x.cint, y.cint, surf.w, surf.h)
   renderer.copy(tex, addr src, addr dst)
   result = TextExtent(w: surf.w, h: surf.h)
   freeSurface(surf)
@@ -117,13 +127,13 @@ proc sdlFillRect(r: coords.Rect; color: screen.Color) =
   var sdlRect = toSdlRect(r)
   discard renderer.fillRect(sdlRect)
 
-proc sdlDrawLine(x1, y1, x2, y2: cint; color: screen.Color) =
+proc sdlDrawLine(x1, y1, x2, y2: int; color: screen.Color) =
   renderer.setDrawColor(color.r, color.g, color.b, color.a)
-  renderer.drawLine(x1, y1, x2, y2)
+  renderer.drawLine(x1.cint, y1.cint, x2.cint, y2.cint)
 
-proc sdlDrawPoint(x, y: cint; color: screen.Color) =
+proc sdlDrawPoint(x, y: int; color: screen.Color) =
   renderer.setDrawColor(color.r, color.g, color.b, color.a)
-  renderer.drawPoint(x, y)
+  renderer.drawPoint(x.cint, y.cint)
 
 proc sdlSetCursor(c: CursorKind) =
   let sdlCursor = case c
@@ -243,9 +253,13 @@ proc sdlPollEvent(e: var input.Event; flags: set[InputFlag]): bool =
     let wev = sdlEvent.window
     case wev.event
     of WindowEvent_Resized, WindowEvent_SizeChanged:
-      e.kind = WindowResizeEvent
+      e.kind = WindowMetricsEvent
       e.x = wev.data1
       e.y = wev.data2
+      e.scaleX = currentLayout.scaleX
+      e.scaleY = currentLayout.scaleY
+      currentLayout.width = wev.data1
+      currentLayout.height = wev.data2
     of WindowEvent_Close:
       e.kind = WindowCloseEvent
     of WindowEvent_FocusGained:
@@ -327,7 +341,8 @@ proc initSdl2Driver*() =
   if ttfInit() != SdlSuccess:
     quit("TTF init failed")
   windowRelays = WindowRelays(
-    createWindow: sdlCreateWindow, refresh: sdlRefresh,
+    createWindow: sdlCreateWindow, getWindowLayout: sdlGetWindowLayout,
+    refresh: sdlRefresh,
     saveState: sdlSaveState, restoreState: sdlRestoreState,
     setClipRect: sdlSetClipRect, setCursor: sdlSetCursor,
     setWindowTitle: sdlSetWindowTitle)

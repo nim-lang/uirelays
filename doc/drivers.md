@@ -34,7 +34,8 @@ will compile and run -- it just won't do anything for the missing parts.
 
 | Field | Signature | Notes |
 |-------|-----------|-------|
-| `createWindow` | `proc (layout: var ScreenLayout)` | Create and show the window. Read `layout.width/height` for the requested size, write back the actual size. |
+| `createWindow` | `proc (layout: var ScreenLayout)` | Create and show the window. Read `layout.width/height` for the requested size, write back the actual logical size plus the current `scaleX/scaleY`. |
+| `getWindowLayout` | `proc (): ScreenLayout` | Return the current logical window size and current scale factors. Use this after resize or monitor changes if scale can change at runtime. |
 | `refresh` | `proc ()` | Present the current frame. For double-buffered drivers this means copying the back buffer to the window. |
 | `saveState` | `proc ()` | Push the current graphics state (clip rect). |
 | `restoreState` | `proc ()` | Pop the graphics state. |
@@ -112,7 +113,9 @@ into `Event` values. Key points:
   set `e.button` and `e.clicks` (track double/triple clicks yourself).
 - **Scroll**: `MouseWheelEvent` with `e.y` as the scroll direction
   (+1 up, -1 down).
-- **Window**: Emit `WindowResizeEvent` with the new size in `e.x`, `e.y`.
+- **Window**: Emit `WindowMetricsEvent` with the new logical size in `e.x`, `e.y`
+  and the current scale in `e.scaleX`, `e.scaleY`. `WindowResizeEvent` remains
+  available for older drivers but should be treated as legacy.
   Emit `WindowCloseEvent` when the user clicks the close button (don't
   destroy the window -- let the app decide). Emit `QuitEvent` for
   platform quit signals.

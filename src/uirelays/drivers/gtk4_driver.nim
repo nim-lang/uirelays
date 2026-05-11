@@ -111,6 +111,7 @@ proc gtk_widget_grab_focus(w: pointer) {.importc, nodecl, cdecl.}
 proc gtk_widget_set_cursor(w, cursor: pointer) {.importc, nodecl, cdecl.}
 proc gtk_widget_get_width(w: pointer): gint {.importc, nodecl, cdecl.}
 proc gtk_widget_get_height(w: pointer): gint {.importc, nodecl, cdecl.}
+proc gtk_widget_get_scale_factor(w: pointer): gint {.importc, nodecl, cdecl.}
 proc gtk_widget_set_focusable(w: pointer; focusable: gboolean) {.importc, nodecl, cdecl.}
 proc gtk_widget_set_hexpand(w: pointer; expand: gboolean) {.importc, nodecl, cdecl.}
 proc gtk_widget_set_vexpand(w: pointer; expand: gboolean) {.importc, nodecl, cdecl.}
@@ -230,6 +231,8 @@ var
   backingSurf: pointer
   backingCr: pointer
   backingW, backingH: int
+  backingPixW, backingPixH: int
+  backingScale: int = 1
   imContext: pointer
   eventQueue: seq[Event]
   modState: set[Modifier]
@@ -309,10 +312,21 @@ proc enqueueTextFromUtf8(s: string) =
       ev.text[i] = '\0'
     pushEvent ev
 
+proc currentScaleFactor(): int {.inline.} =
+  if drawingArea != nil:
+    max(1, gtk_widget_get_scale_factor(drawingArea).int)
+  else:
+    1
+
+proc currentWindowMetricsEvent(width, height: int): Event {.inline.} =
+  let scale = currentScaleFactor().float32
+  Event(kind: WindowMetricsEvent, x: width, y: height, scaleX: scale, scaleY: scale)
+
 proc recreateBacking(w, h: int) =
   ## GTK can emit resize with a transient 0 width or height; do not destroy a good buffer then bail.
   if w <= 0 or h <= 0:
     return
+  let scale = currentScaleFactor()
   if backingCr != nil:
     cairo_destroy(backingCr)
     backingCr = nil
@@ -321,14 +335,32 @@ proc recreateBacking(w, h: int) =
     backingSurf = nil
   backingW = w
   backingH = h
-  backingSurf = cairo_image_surface_create(gint(CAIRO_FORMAT_ARGB32), gint(w), gint(h))
+  backingScale = scale
+  backingPixW = w * scale
+  backingPixH = h * scale
+  backingSurf = cairo_image_surface_create(
+    gint(CAIRO_FORMAT_ARGB32), gint(backingPixW), gint(backingPixH))
   backingCr = cairo_create(backingSurf)
+  cairo_scale(backingCr, gdouble(scale), gdouble(scale))
   cairo_set_source_rgba(backingCr, 1, 1, 1, 1)
   cairo_rectangle(backingCr, 0, 0, gdouble(w), gdouble(h))
   cairo_fill(backingCr)
   cairo_surface_flush(backingSurf)
 
+proc syncBackingScale() =
+  if drawingArea == nil:
+    return
+  let scale = currentScaleFactor()
+  if scale == backingScale:
+    return
+  let width = max(1, gtk_widget_get_width(drawingArea).int)
+  let height = max(1, gtk_widget_get_height(drawingArea).int)
+  if width > 0 and height > 0:
+    recreateBacking(width, height)
+    pushEvent(currentWindowMetricsEvent(width, height))
+
 proc ensureBackingCr() =
+  syncBackingScale()
   if backingCr == nil and win != nil and drawingArea != nil:
     let w = gtk_widget_get_width(drawingArea).int
     let h = gtk_widget_get_height(drawingArea).int
@@ -343,7 +375,7 @@ proc onCloseRequest(self: pointer; data: pointer): gboolean {.cdecl.} =
 
 proc onResize(area: pointer; width, height: gint; data: pointer) {.cdecl.} =
   recreateBacking(width.int, height.int)
-  pushEvent(Event(kind: WindowResizeEvent, x: width.int, y: height.int))
+  pushEvent(currentWindowMetricsEvent(width.int, height.int))
 
 proc onDraw(area: ptr GtkDrawingArea; cr: ptr cairo_t; width, height: gint;
     data: pointer) {.cdecl.} =
@@ -358,9 +390,9 @@ proc onDraw(area: ptr GtkDrawingArea; cr: ptr cairo_t; width, height: gint;
   cairo_surface_flush(backingSurf)
   let crp = cast[pointer](cr)
   cairo_save(crp)
-  if backingW != w or backingH != h:
-    cairo_scale(crp, gdouble(w) / gdouble(max(1, backingW)),
-      gdouble(h) / gdouble(max(1, backingH)))
+  if backingPixW != w or backingPixH != h:
+    cairo_scale(crp, gdouble(w) / gdouble(max(1, backingPixW)),
+      gdouble(h) / gdouble(max(1, backingPixH)))
   cairo_set_source_surface(crp, backingSurf, 0, 0)
   cairo_paint(crp)
   cairo_restore(crp)
@@ -512,12 +544,19 @@ proc gtkCreateWindow(layout: var ScreenLayout) =
     inc guard
   layout.width = max(1, gtk_drawing_area_get_content_width(da).int)
   layout.height = max(1, gtk_drawing_area_get_content_height(da).int)
-  layout.scaleX = 1
-  layout.scaleY = 1
+  let scale = if drawingArea != nil: max(1, gtk_widget_get_scale_factor(drawingArea).int) else: 1
+  layout.scaleX = scale.float32
+  layout.scaleY = scale.float32
   recreateBacking(layout.width, layout.height)
   gtk_widget_set_focusable(drawingArea, G_TRUE)
   gtk_widget_grab_focus(drawingArea)
   gtk_im_context_focus_in(imContext)
+
+proc gtkGetWindowLayout(): ScreenLayout =
+  let width = if drawingArea != nil: max(1, gtk_widget_get_width(drawingArea).int) else: 0
+  let height = if drawingArea != nil: max(1, gtk_widget_get_height(drawingArea).int) else: 0
+  let scale = if drawingArea != nil: max(1, gtk_widget_get_scale_factor(drawingArea).int) else: 1
+  ScreenLayout(width: width, height: height, scaleX: scale.float32, scaleY: scale.float32)
 
 proc gtkRefresh() =
   if backingSurf != nil:
@@ -748,7 +787,8 @@ proc gtkQuitRequest() =
 
 proc initGtk4Driver*() =
   windowRelays = WindowRelays(
-    createWindow: gtkCreateWindow, refresh: gtkRefresh,
+    createWindow: gtkCreateWindow, getWindowLayout: gtkGetWindowLayout,
+    refresh: gtkRefresh,
     saveState: gtkSaveState, restoreState: gtkRestoreState,
     setClipRect: gtkSetClipRect, setCursor: gtkSetCursor,
     setWindowTitle: gtkSetWindowTitle)
