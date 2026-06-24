@@ -21,7 +21,7 @@ proc main =
   var height = layout.height
   setWindowTitle("Paint - uirelays example")
 
-  var strokes: seq[Stroke]
+  var strokes = default(seq[Stroke])
   var brushSize = 4
   var brushColor = color(137, 180, 250)
   var painting = false
@@ -37,7 +37,7 @@ proc main =
   ]
 
   while running:
-    var e: Event
+    var e = Event()
     while pollEvent(e):
       case e.kind
       of QuitEvent, WindowCloseEvent:
