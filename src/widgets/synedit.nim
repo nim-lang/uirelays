@@ -803,11 +803,11 @@ proc highlightMarkdown(s: var SynEdit; first, last: int) =
     var lineStart = pos
     var lineEnd = pos
     while lineEnd <= last and s[lineEnd] != '\L': inc lineEnd
-    
+
     var lineText = ""
     for j in lineStart..<lineEnd:
       lineText.add s[j]
-    
+
     let stripped = lineText.strip(leading = true, trailing = false)
     if stripped.startsWith("```") or stripped.startsWith("~~~"):
       for j in lineStart..<min(lineEnd, last+1):
@@ -840,7 +840,7 @@ proc highlightMarkdown(s: var SynEdit; first, last: int) =
         s.setCellStyle(j, TokenClass.Text)
       if lineEnd <= last:
         s.setCellStyle(lineEnd, TokenClass.None)
-    
+
     pos = lineEnd + 1
 
 proc highlight(s: var SynEdit; first, last: int; initialState: TokenClass) =
@@ -1899,7 +1899,6 @@ proc createSynEdit*(font: Font; theme = catppuccinMocha()): SynEdit =
 proc textWidth(font: Font; text: string): int =
   measureText(font, text).w
 
-proc spaceForLines*(s: SynEdit): int =
 proc hexDigitValue(c: char): int {.inline.} =
   case c
   of '0'..'9': ord(c) - ord('0')

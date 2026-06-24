@@ -29,8 +29,9 @@ type
     scrollTrackColor*: Color        ## scrollbar track background
 
 proc catppuccinMocha*(): Theme =
+  result = default(Theme)
   let fg = color(205, 214, 244)
-  for tc in TokenClass:
+  for tc in low(TokenClass)..high(TokenClass):
     result.fg[tc] = fg
   result.fg[TokenClass.Keyword] = color(203, 166, 247)     # mauve
   result.fg[TokenClass.StringLit] = color(166, 227, 161)   # green
