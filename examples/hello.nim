@@ -14,7 +14,7 @@ proc main =
   var width = layout.width
   var height = layout.height
 
-  var fm: FontMetrics
+  var fm = FontMetrics()
   let font = openFont("", 18, fm)  # empty path = platform default font
   setWindowTitle("Hello uirelays")
 
@@ -24,7 +24,7 @@ proc main =
 
   while running:
     # --- process events ---
-    var e: Event
+    var e = Event()
     while pollEvent(e):
       case e.kind
       of QuitEvent, WindowCloseEvent:

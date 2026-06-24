@@ -4,8 +4,40 @@
 
 import ../coords, ../input, ../screen
 import std/[strutils, os]
+when defined(nimony):
+  {.feature: "lenientnils".}
+  import std/syncio  # for `quit`
 
-{.passL: "-lX11 -lXft".}
+# All X11/Xft entry points below are loaded at runtime via the `dynlib`
+# pragma (dlopen of libX11.so / libXft.so), so no link-time `-lX11 -lXft`
+# is required and the dev packages need not be installed to build.
+
+# ---- Cross-compiler helpers ----
+# Nimony needs `toCString` for runtime string -> cstring; Nim uses the
+# `cstring` converter.
+
+proc cstr(s: var string): cstring =
+  when defined(nimony): toCString(s)
+  else: s.cstring
+
+# ---- POSIX timing (libc; works under Nim and Nimony) ----
+
+type
+  ClockId {.importc: "clockid_t", header: "<time.h>".} = distinct cint
+  Timespec {.importc: "struct timespec", header: "<time.h>".} = object
+    tv_sec: clong
+    tv_nsec: clong
+
+proc clock_gettime(clk: ClockId; tp: var Timespec): cint
+  {.importc, header: "<time.h>".}
+proc nanosleep(req: var Timespec; rem: var Timespec): cint
+  {.importc, header: "<time.h>".}
+
+proc sleepMs(ms: int) =
+  var req = Timespec(tv_sec: clong(ms div 1000),
+                     tv_nsec: clong((ms mod 1000) * 1_000_000))
+  var rem = Timespec(tv_sec: 0, tv_nsec: 0)
+  discard nanosleep(req, rem)
 
 # ---- X11 type definitions ----
 
@@ -420,12 +452,13 @@ proc XftDrawSetClip(draw: pointer; region: pointer): XBool
 # ---- Helpers ----
 
 proc toXftColor(c: screen.Color): XftColor =
-  result.pixel = (c.r.culong shl 16) or (c.g.culong shl 8) or c.b.culong
-  result.color = XRenderColor(
-    red: c.r.cushort * 257,
-    green: c.g.cushort * 257,
-    blue: c.b.cushort * 257,
-    alpha: c.a.cushort * 257)
+  result = XftColor(
+    pixel: (c.r.culong shl 16) or (c.g.culong shl 8) or c.b.culong,
+    color: XRenderColor(
+      red: c.r.cushort * 257,
+      green: c.g.cushort * 257,
+      blue: c.b.cushort * 257,
+      alpha: c.a.cushort * 257))
 
 proc toPixel(c: screen.Color): culong {.inline.} =
   (c.r.culong shl 16) or (c.g.culong shl 8) or c.b.culong
@@ -517,6 +550,7 @@ proc translateKeySym(ks: XKeySym): input.KeyCode =
   else: KeyNone
 
 proc translateMods(state: cuint): set[Modifier] =
+  result = {}
   if (state and ShiftMask) != 0: result.incl ShiftPressed
   if (state and ControlMask) != 0: result.incl CtrlPressed
   if (state and Mod1Mask) != 0: result.incl AltPressed
@@ -532,7 +566,7 @@ proc translateButton(button: cuint): MouseButton =
 # ---- Clipboard handling ----
 
 proc handleSelectionRequest(req: XSelectionRequestEvent) =
-  var ev: XEvent
+  var ev {.noinit.}: XEvent
   zeroMem(addr ev, sizeof(XEvent))
   ev.xselection.theType = SelectionNotify
   ev.xselection.requestor = req.requestor
@@ -543,7 +577,7 @@ proc handleSelectionRequest(req: XSelectionRequestEvent) =
   if req.target == gUtf8String or req.target == XA_STRING:
     discard XChangeProperty(gDisplay, req.requestor, req.property,
       gUtf8String, 8, PropModeReplace,
-      cstring(gClipboardText), gClipboardText.len.cint)
+      cast[pointer](cstr(gClipboardText)), gClipboardText.len.cint)
     ev.xselection.property = req.property
   elif req.target == gTargets:
     var targets = [gUtf8String, XA_STRING, gTargets]
@@ -592,8 +626,8 @@ proc processXEvent(xev: XEvent) =
     pushEvent(input.Event(kind: WindowFocusLostEvent))
 
   of KeyPress:
-    var buf: array[8, char]
-    var ks: XKeySym
+    var buf {.noinit.}: array[8, char]
+    var ks {.noinit.}: XKeySym
     let textLen = XLookupString(unsafeAddr xev.xkey, cast[cstring](addr buf[0]),
       8, addr ks, nil)
     # Key event
@@ -609,7 +643,7 @@ proc processXEvent(xev: XEvent) =
       pushEvent(te)
 
   of KeyRelease:
-    var ks: XKeySym
+    var ks {.noinit.}: XKeySym
     discard XLookupString(unsafeAddr xev.xkey, nil, 0, addr ks, nil)
     var e = input.Event(kind: KeyUpEvent)
     e.key = translateKeySym(ks)
@@ -665,7 +699,7 @@ proc processXEvent(xev: XEvent) =
 
 proc drainXEvents() =
   while XPending(gDisplay) > 0:
-    var xev: XEvent
+    var xev {.noinit.}: XEvent
     discard XNextEvent(gDisplay, addr xev)
     processXEvent(xev)
 
@@ -737,36 +771,39 @@ proc x11SetClipRect(r: coords.Rect) =
 
 proc x11OpenFont(path: string; size: int;
                  metrics: var FontMetrics): screen.Font =
-  # Detect bold/italic from filename
+  # Detect bold/italic from filename.
+  # Note: `substr in str` is avoided on purpose -- Nimony's system `in`
+  # template early-binds `contains` and never sees strutils' string overload,
+  # so we call `.contains` explicitly here.
   let lpath = path.toLowerAscii()
-  let isBold = "bold" in lpath
-  let isItalic = "italic" in lpath or "oblique" in lpath
+  let isBold = lpath.contains("bold")
+  let isItalic = lpath.contains("italic") or lpath.contains("oblique")
 
   # Map known font filenames to fontconfig names
   var faceName = "monospace"  # safe default
   let baseName = path.extractFilename.toLowerAscii
-  if "dejavu" in baseName and "mono" in baseName:
+  if baseName.contains("dejavu") and baseName.contains("mono"):
     faceName = "DejaVu Sans Mono"
-  elif "dejavu" in baseName:
+  elif baseName.contains("dejavu"):
     faceName = "DejaVu Sans"
-  elif "consola" in baseName:
+  elif baseName.contains("consola"):
     faceName = "Consolas"
-  elif "courier" in baseName:
+  elif baseName.contains("courier"):
     faceName = "Courier New"
-  elif "arial" in baseName:
+  elif baseName.contains("arial"):
     faceName = "Arial"
-  elif "cascadia" in baseName:
-    if "mono" in baseName: faceName = "Cascadia Mono"
+  elif baseName.contains("cascadia"):
+    if baseName.contains("mono"): faceName = "Cascadia Mono"
     else: faceName = "Cascadia Code"
-  elif "hack" in baseName:
+  elif baseName.contains("hack"):
     faceName = "Hack"
-  elif "fira" in baseName and "code" in baseName:
+  elif baseName.contains("fira") and baseName.contains("code"):
     faceName = "Fira Code"
-  elif "roboto" in baseName and "mono" in baseName:
+  elif baseName.contains("roboto") and baseName.contains("mono"):
     faceName = "Roboto Mono"
-  elif "source" in baseName and "code" in baseName:
+  elif baseName.contains("source") and baseName.contains("code"):
     faceName = "Source Code Pro"
-  elif "jetbrains" in baseName:
+  elif baseName.contains("jetbrains"):
     faceName = "JetBrains Mono"
 
   # Build Xft/fontconfig pattern
@@ -774,7 +811,7 @@ proc x11OpenFont(path: string; size: int;
   if isBold: pattern &= ":weight=bold"
   if isItalic: pattern &= ":slant=italic"
 
-  let f = XftFontOpenName(gDisplay, gScreen, cstring(pattern))
+  let f = XftFontOpenName(gDisplay, gScreen, cstr(pattern))
   if f == nil: return screen.Font(0)
 
   metrics.ascent = f.ascent
@@ -790,19 +827,23 @@ proc x11CloseFont(f: screen.Font) =
     fonts[idx].xftFont = nil
 
 proc x11MeasureText(f: screen.Font; text: string): TextExtent =
+  result = TextExtent(w: 0, h: 0)
   let fp = getFontPtr(f)
   if fp != nil and text.len > 0:
-    var extents: XGlyphInfo
-    XftTextExtentsUtf8(gDisplay, fp, cstring(text), text.len.cint, addr extents)
+    var t = text
+    var extents {.noinit.}: XGlyphInfo
+    XftTextExtentsUtf8(gDisplay, fp, cstr(t), text.len.cint, addr extents)
     result = TextExtent(w: extents.xOff.int, h: fp.height.int)
 
 proc x11DrawText(f: screen.Font; x, y: int; text: string;
                  fg, bg: screen.Color): TextExtent =
+  result = TextExtent(w: 0, h: 0)
   let fp = getFontPtr(f)
   if fp == nil or text.len == 0: return
+  var t = text
   # Measure first for background fill
-  var extents: XGlyphInfo
-  XftTextExtentsUtf8(gDisplay, fp, cstring(text), text.len.cint, addr extents)
+  var extents {.noinit.}: XGlyphInfo
+  XftTextExtentsUtf8(gDisplay, fp, cstr(t), text.len.cint, addr extents)
   result = TextExtent(w: extents.xOff.int, h: fp.height.int)
   # Fill background
   var bgColor = toXftColor(bg)
@@ -811,7 +852,7 @@ proc x11DrawText(f: screen.Font; x, y: int; text: string;
   # Draw text (y is baseline, not top)
   var fgColor = toXftColor(fg)
   XftDrawStringUtf8(gXftDraw, addr fgColor, fp,
-    x.cint, (y + fp.ascent).cint, cstring(text), text.len.cint)
+    x.cint, (y + fp.ascent).cint, cstr(t), text.len.cint)
 
 proc x11GetFontMetrics(f: screen.Font): FontMetrics =
   let idx = f.int - 1
@@ -844,7 +885,8 @@ proc x11SetCursor(c: CursorKind) =
   discard XDefineCursor(gDisplay, gWindow, cur)
 
 proc x11SetWindowTitle(title: string) =
-  discard XStoreName(gDisplay, gWindow, cstring(title))
+  var t = title
+  discard XStoreName(gDisplay, gWindow, cstr(t))
 
 # ---- Input hook implementations ----
 
@@ -866,7 +908,7 @@ proc x11WaitEvent(e: var input.Event; timeoutMs: int;
 
   # Block on the X11 connection fd using select() with timeout.
   let xfd = ConnectionNumber(gDisplay)
-  var fds: XFdSet
+  var fds {.noinit.}: XFdSet
   xFdZero(addr fds)
   xFdSet(xfd, addr fds)
 
@@ -886,6 +928,7 @@ proc x11WaitEvent(e: var input.Event; timeoutMs: int;
   return false
 
 proc x11GetClipboardText(): string =
+  result = ""
   discard XConvertSelection(gDisplay, gClipboard, gUtf8String,
     gClipProperty, gWindow, CurrentTime)
   discard XFlush(gDisplay)
@@ -893,14 +936,15 @@ proc x11GetClipboardText(): string =
   let deadline = getTicks() + 500  # 500ms timeout
   while getTicks() < deadline:
     if XPending(gDisplay) > 0:
-      var xev: XEvent
+      var xev {.noinit.}: XEvent
       discard XNextEvent(gDisplay, addr xev)
       if xev.theType == SelectionNotify:
         if xev.xselection.property != None:
-          var actualType: Atom
-          var actualFormat: cint
-          var nitems, bytesAfter: culong
-          var data: pointer
+          var actualType {.noinit.}: Atom
+          var actualFormat {.noinit.}: cint
+          var nitems {.noinit.}: culong
+          var bytesAfter {.noinit.}: culong
+          var data {.noinit.}: pointer
           discard XGetWindowProperty(gDisplay, gWindow, gClipProperty,
             0, 1024*1024, 1, 0, # delete=True, AnyPropertyType
             addr actualType, addr actualFormat,
@@ -912,26 +956,15 @@ proc x11GetClipboardText(): string =
       else:
         processXEvent(xev)
     else:
-      os.sleep(5)
+      sleepMs(5)
 
 proc x11PutClipboardText(text: string) =
   gClipboardText = text
   discard XSetSelectionOwner(gDisplay, gClipboard, gWindow, CurrentTime)
 
-# ---- POSIX imports for getTicks ----
-
-type
-  ClockId {.importc: "clockid_t", header: "<time.h>".} = distinct cint
-  Timespec {.importc: "struct timespec", header: "<time.h>".} = object
-    tv_sec: clong
-    tv_nsec: clong
-
-proc clock_gettime(clk: ClockId; tp: var Timespec): cint
-  {.importc, header: "<time.h>".}
-
 proc x11GetTicks(): int =
   # Use POSIX clock
-  var ts: Timespec
+  var ts {.noinit.}: Timespec
   discard clock_gettime(0.ClockId, ts)  # CLOCK_REALTIME = 0
   result = int(ts.tv_sec.int64 * 1000 + ts.tv_nsec.int64 div 1_000_000)
 
@@ -942,7 +975,7 @@ proc x11Delay(ms: int) =
     let now = x11GetTicks()
     if now >= deadline: break
     drainXEvents()
-    os.sleep(min(deadline - now, 10))
+    sleepMs(min(deadline - now, 10))
 
 proc x11QuitRequest() =
   if gDisplay != nil:
