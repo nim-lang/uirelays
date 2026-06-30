@@ -2,3 +2,4 @@ nimcache/
 nimblecache/
 htmldocs/
 .vscode/
+tests/tester
