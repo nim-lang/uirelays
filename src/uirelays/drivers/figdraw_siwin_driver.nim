@@ -395,6 +395,7 @@ proc figCreateWindow(layout: var ScreenLayout) =
   if not siwinInitialized:
     renderer = newFigRenderer(atlasSize = 1024, backendState = SiwinRenderBackend())
     appWindow = newSiwinWindow(
+      renderer,
       size = ivec2(layout.width.int32, layout.height.int32),
       fullscreen = layout.fullScreen,
       title = "uirelays",
