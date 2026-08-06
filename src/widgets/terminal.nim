@@ -525,4 +525,4 @@ proc draw*(t: var Terminal; e: Event; area: Rect; focused: bool): TermAction =
     result = TermAction(kind: ctrlHover, pos: edAct.pos)
   of ctrlClick:
     result = TermAction(kind: ctrlClick, pos: edAct.pos)
-  of noAction: discard
+  of noAction, closeLine: discard

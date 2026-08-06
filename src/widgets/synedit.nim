@@ -34,8 +34,12 @@
 ## to the caller::
 ##
 ##   var tabs = createSynEdit(font)
-##   tabs.setActionLines(0, color(88, 91, 112))   # every line is clickable
-##   # explorer.setActionLines(1, ...) would leave line 0 as a normal field
+##   tabs.setActionLines(0, color(88, 91, 112))    # every line is clickable
+##   tabs.setCloseButtons(0, color(147, 153, 178)) # ... and closable
+##   # setActionLines(1, ...) would leave line 0 as a normal field
+##   # in your main loop:
+##   let act = tabs.draw(e, area, focused)
+##   if act.kind == closeLine: tabs.gotoLine(act.line + 1, 0); tabs.deleteLine()
 
 import ../uirelays/[coords, screen, input]
 import ./theme
@@ -133,13 +137,16 @@ type
   EditActionKind* = enum
     noAction,
     ctrlHover,          ## ctrl+mouse move over text
-    ctrlClick           ## ctrl+click on text
+    ctrlClick,          ## ctrl+click on text
+    closeLine           ## the (x) button of a line was clicked
 
   EditAction* = object
     case kind*: EditActionKind
     of noAction: discard
     of ctrlHover, ctrlClick:
       pos*: int         ## buffer offset
+    of closeLine:
+      line*: int        ## 0-based line whose (x) was clicked
 
   ImageCacheEntry = object
     path: string
@@ -201,6 +208,10 @@ type
     actionLines*: int               ## first line whose text is framed as
                                     ## clickable; -1 = none
     actionColor*: Color
+    # Close buttons -- see setCloseButtons()
+    closeLines*: int                ## first line with an (x) button; -1 = none
+    closeColor*: Color
+    closeHover: int                 ## line whose (x) the mouse is over; -1 = none
     # Cached images for rich markdown rendering
     imageCache: seq[ImageCacheEntry]
     # Cache
@@ -1902,6 +1913,7 @@ proc createSynEdit*(font: Font; theme = catppuccinMocha()): SynEdit =
     selected: (-1, -1), bracketA: -1, bracketB: -1, hotLink: (-1, -1),
     readOnly: -1, tabSize: TabWidth, lang: langNim,
     actionLines: -1, actionColor: theme.lineNumColor,
+    closeLines: -1, closeColor: theme.lineNumColor, closeHover: -1,
     font: font, theme: theme, flags: {},
     showLineNumbers: false, cursorVisible: true, lastBlinkTick: 0)
 
@@ -2104,6 +2116,17 @@ proc setActionLines*(s: var SynEdit; first: int; color: Color) =
   ## Survives `setText`, so a field can be declared clickable once.
   s.actionLines = first
   s.actionColor = color
+
+proc setCloseButtons*(s: var SynEdit; first: int; color: Color) =
+  ## Draw an (x) button at the right edge of every line from `first` on.
+  ## Clicking one yields `EditAction(kind: closeLine, line: ...)` and leaves
+  ## the cursor alone, so it does not double as an activating click.
+  ## Pass `first = -1` to disable. Survives `setText`.
+  s.closeLines = first
+  s.closeColor = color
+
+proc closeButtonWidth(s: SynEdit): int {.inline.} =
+  fontLineSkip(s.font) - 1
 
 proc drawFrame(r: Rect; color: Color) =
   if r.w <= 0 or r.h <= 0: return
@@ -2368,6 +2391,21 @@ const ScrollBarWidth* = 14
 proc scrollEnabled(s: SynEdit): bool {.inline.} =
   s.span > 0 and s.span.Natural <= s.numberOfLines
 
+proc closeButtonHit(s: SynEdit; area: Rect; x, y: int): int =
+  ## The line whose (x) button covers (x, y), or -1. The button column is
+  ## derived from the area alone, so this answers before the line is drawn.
+  result = -1
+  if s.closeLines < 0 or not area.contains(point(x, y)): return
+  let lineH = fontLineSkip(s.font)
+  if lineH <= 0: return
+  let endX = area.x + area.w -
+             (if s.scrollEnabled: ScrollBarWidth else: 0) - 1
+  if x < endX - s.closeButtonWidth or x > endX: return
+  let line = s.firstLine.int + (y - area.y) div lineH
+  if line < s.closeLines or line >= s.getLineCount(): return
+  if s.getLineText(line).len == 0: return   # an empty line has no button
+  result = line
+
 proc scrollGrip(s: SynEdit; area: Rect; lineH: int): Rect =
   ## Compute the scrollbar grip rectangle.
   if not s.scrollEnabled: return
@@ -2441,22 +2479,38 @@ proc render*(s: var SynEdit; area: Rect; showCursor: bool) =
         inc renderLine
         continue
 
-    let actionLine = s.actionLines >= 0 and renderLine.int >= s.actionLines
-    let lineX = dim.x
+    let thisLine = renderLine.int
+    let actionLine = s.actionLines >= 0 and thisLine >= s.actionLines
+    let closeLine = s.closeLines >= 0 and thisLine >= s.closeLines
     let lineY = dim.y
     let lineStart = i
     i = s.drawTextLine(i, dim, blink)
-    if actionLine:
-      # Framed after the text, so the per-token backgrounds cannot paint
-      # over the top and bottom edges.
-      var text = ""
-      var k = lineStart
-      while k < s.len and s[k] != '\L': text.add s[k]; inc k
-      if text.len > 0:
-        let fx = max(lineX - 2, area.x)
-        let fw = min(textWidth(s.font, text) + (lineX - fx) + 2, endX - fx)
-        # lineH - 1 keeps consecutive frames from sharing an edge.
-        drawFrame(rect(fx, lineY, fw, lineH - 1), s.actionColor)
+    if actionLine or closeLine:
+      # Drawn after the text, so the per-token backgrounds cannot paint over
+      # the frame's top and bottom edges -- and so the button occludes a
+      # name that is too long for the column.
+      let empty = lineStart >= s.len or s[lineStart] == '\L'
+      if not empty:
+        if closeLine:
+          let bw = s.closeButtonWidth
+          let br = rect(endX - bw, lineY, bw, lineH - 1)
+          let hovered = s.closeHover == thisLine
+          # The cross is drawn, not typed: no font has to have the glyph.
+          fillRect(br, if hovered: s.closeColor else: s.getBg(lineStart))
+          let fg = if hovered: s.theme.bg else: s.closeColor
+          let pad = max(3, bw div 4)
+          let x0 = br.x + pad
+          let x1 = br.x + br.w - 1 - pad
+          let y0 = br.y + pad
+          let y1 = br.y + br.h - 1 - pad
+          drawLine(x0, y0, x1, y1, fg)
+          drawLine(x1, y0, x0, y1, fg)
+        if actionLine:
+          # The frame outlines the whole row, so the row reads as one target
+          # -- and drawing it last puts its edges over the button's fill.
+          # lineH - 1 keeps consecutive frames from sharing an edge.
+          drawFrame(rect(area.x, lineY, endX - area.x + 1, lineH - 1),
+                    s.actionColor)
     inc s.span, consumedRows
     inc renderLine
 
@@ -2493,6 +2547,11 @@ proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
   let lineH = fontLineSkip(s.font)
   let grip = s.scrollGrip(area, lineH)
   let hasScrollBar = s.scrollEnabled
+  let closeHit =
+    if e.kind in {MouseDownEvent, MouseMoveEvent}:
+      s.closeButtonHit(area, e.x, e.y)
+    else: -1
+  if e.kind == MouseMoveEvent: s.closeHover = closeHit
 
   case e.kind
   of TextInputEvent:
@@ -2580,6 +2639,10 @@ proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
     if hasScrollBar and grip.contains(point(e.x, e.y)):
       s.scrollGrabbed = true
       s.scrollGrabOffset = e.y - grip.y
+    elif closeHit >= 0:
+      # Leave the cursor where it is: closing a line is not activating it.
+      s.render(area, showCursor = focused)
+      return EditAction(kind: closeLine, line: closeHit)
     elif area.contains(point(e.x, e.y)):
       if LinkMod in e.mods:
         s.setCursorFromMouse(e.x, e.y, 1)

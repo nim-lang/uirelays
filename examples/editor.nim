@@ -492,6 +492,7 @@ proc main =
   # field, so only the listing below it does.
   tabs.ed.setActionLines(0, color(88, 91, 112))
   explorer.ed.setActionLines(1, color(88, 91, 112))
+  tabs.ed.setCloseButtons(0, color(147, 153, 178))
   var titleFontSize = DefaultFontSize
   var panelFontSize = DefaultFontSize
   var historyFontSize = DefaultFontSize
@@ -594,9 +595,15 @@ proc main =
     # Tab list -- its lines ARE the open tabs
     if tabs.names != displayNames(buffers): renderTabs(tabs, buffers)
     decorateTabs(tabs, buffers, current)
-    discard tabs.ed.draw(e, cells["tabs"], focus == "tabs")
+    let tabAct = tabs.ed.draw(e, cells["tabs"], focus == "tabs")
+    if tabAct.kind == closeLine:
+      # The (x) deletes the line, so closing by button and closing by hand
+      # end up in the same undo stack.
+      tabs.ed.gotoLine(tabAct.line + 1, 0)
+      tabs.ed.deleteLine()
     applyTabEdits(tabs, buffers, current, fonts.fontForSize(editorFontSize))
-    if e.kind == MouseDownEvent and focus == "tabs":
+    if e.kind == MouseDownEvent and focus == "tabs" and
+       tabAct.kind != closeLine:
       let idx = tabs.ed.currentLine
       if idx < buffers.len:
         current = idx
@@ -633,6 +640,8 @@ proc main =
       discard # TODO: language server lookup at edAct.pos
     of ctrlHover:
       discard # TODO: underline identifier at edAct.pos
+    of closeLine:
+      discard # the editor has no close buttons
     of noAction:
       buffers[current].ed.underline(-1, -1)
 
