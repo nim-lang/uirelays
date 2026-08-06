@@ -10,19 +10,34 @@ SynEdit instances with different configurations:
 - **Terminal**: SynEdit wrapped with command execution, history, tab completion
 - **Cmd+click** (macOS) / **Ctrl+click** (other): clickable text -- the app
   decides what happens (open file, go to definition, navigate directory)
+
+Instead of a classical tab bar and a tree view there are two more edit fields,
+each with its own *flipped* edit semantics:
+
+- **Tab list**: every line is an open tab, and the line text is nothing but
+  the file name. Click or Enter activates, deleting a line closes the tab,
+  moving a line reorders the tabs, and undo (Ctrl+Z) reopens a closed tab --
+  all of it falls out of the ordinary editing operations. State that is not a
+  name (active, modified) lives in markers, never in the text, so that
+  delete/copy/paste keep operating on a clean list.
+- **Explorer**: a flat listing of one directory. Here it is the *first* line
+  that is editable: it doubles as the path field and as a filter. Typing
+  narrows the listing, Enter on a directory descends into it, and Enter on a
+  partial name accepts the first match -- so there is no need for a modal
+  "open file" dialog.
 ]##
 
-import std/[tables, os]
-from std/strutils import toLowerAscii
+import std/[tables, os, algorithm]
+from std/strutils import toLowerAscii, strip, endsWith, contains
 from std/cmdline import paramCount, paramStr
 import uirelays
 import uirelays/layout
 import widgets/[synedit, terminal]
 
 const appLayout = parseLayout("""
-| title, 1 line                                                   |
-| files, 120px | editor, 3* | history, 5 lines, 2* ; terminal, * |
-| status, 1 line                                                  |
+| title, 1 line                                                                     |
+| tabs, 6 lines, 200px ; explorer, * | editor, 3* | history, 5 lines, 2* ; terminal, * |
+| status, 1 line                                                                    |
 """)
 
 const sampleCode = """
@@ -111,13 +126,7 @@ type
     ed: SynEdit
     path: string        ## "" for scratch buffers
 
-proc openFile(buffers: var seq[BufferEntry]; font: Font;
-              path: string; line, col: int): int =
-  ## Open a file or switch to it if already open. Returns the buffer index.
-  for i, b in buffers:
-    if b.path == path:
-      if line >= 0: buffers[i].ed.gotoLine(line, max(col, 0))
-      return i
+proc newBuffer(font: Font; path: string): BufferEntry =
   var ed = createSynEdit(font)
   ed.showLineNumbers = true
   let ext = path.splitFile.ext.toLowerAscii
@@ -125,21 +134,251 @@ proc openFile(buffers: var seq[BufferEntry]; font: Font;
   ed.flags = {rfColorLiterals}
   if ext == ".md" or ext == ".markdown":
     ed.flags.incl rfMarkdownImages
-  ed.loadFromFile(path)
-  if line >= 0: ed.gotoLine(line, max(col, 0))
-  buffers.add BufferEntry(ed: ed, path: path)
+  # The explorer makes it easy to click anything at all, so a file that
+  # cannot be read must not take the editor down with it.
+  try:
+    ed.loadFromFile(path)
+    if ed.len == 0 and getFileSize(path) > 0:
+      # loadFromFile silently refuses binaries; say so instead of showing
+      # an empty buffer.
+      ed.lang = langNone
+      ed.setText(path.extractFilename & ": binary file, not shown")
+      ed.readOnly = ed.len - 1
+  except CatchableError:
+    ed.lang = langNone
+    ed.setText("cannot read " & path & ": " & getCurrentExceptionMsg())
+    ed.readOnly = ed.len - 1
+  result = BufferEntry(ed: ed, path: path)
+
+proc openFile(buffers: var seq[BufferEntry]; font: Font;
+              path: string; line, col: int): int =
+  ## Open a file or switch to it if already open. Returns the buffer index.
+  for i, b in buffers:
+    if b.path == path:
+      if line >= 0: buffers[i].ed.gotoLine(line, max(col, 0))
+      return i
+  buffers.add newBuffer(font, path)
+  if line >= 0: buffers[^1].ed.gotoLine(line, max(col, 0))
   result = buffers.high
 
-proc updateFilesPanel(files: var SynEdit; buffers: seq[BufferEntry];
-                      current: int) =
+# ---------------------------------------------------------------------------
+# Tab list -- an edit field whose lines ARE the open tabs
+# ---------------------------------------------------------------------------
+
+type
+  ClosedTab = object
+    name, path: string
+
+  TabList = object
+    ed: SynEdit
+    names: seq[string]     ## display name per buffer, as last rendered
+    closed: seq[ClosedTab] ## closed tabs, so that undo can reopen them
+    note: string           ## why the last close was refused ("" = nothing)
+
+proc displayNames(buffers: seq[BufferEntry]): seq[string] =
+  ## One unique name per buffer. Uniqueness matters: the name is the only
+  ## handle we have once the user has edited the list.
+  var base: seq[string] = @[]
+  for b in buffers:
+    base.add(if b.path.len > 0: b.path.extractFilename else: "[scratch]")
+  result = @[]
+  for i, n in base:
+    var dup = false
+    for j, m in base:
+      if i != j and n == m: dup = true
+    if dup and buffers[i].path.len > 0:
+      let parent = buffers[i].path.parentDir.lastPathPart
+      result.add(if parent.len > 0: parent & "/" & n else: n)
+    else:
+      result.add n
+  for i in 0 ..< result.len:
+    for j in 0 ..< i:
+      if result[i] == result[j]:
+        result[i] = result[i] & " #" & $(i + 1)
+
+proc renderTabs(tabs: var TabList; buffers: seq[BufferEntry]) =
+  ## Rebuild the buffer text from the model. This resets the undo stack, so
+  ## it must only run when the model changed behind the tab list's back --
+  ## never after an edit the user made *in* the tab list.
+  tabs.names = displayNames(buffers)
   var text = ""
-  for i, b in buffers:
-    let name = if b.path.len > 0: b.path.extractFilename else: "[scratch]"
-    let modified = if b.ed.changed: " *" else: ""
-    let marker = if i == current: " <" else: ""
-    text.add name & modified & marker
-    if i < buffers.high: text.add "\n"
-  files.setLabel(text)
+  for i, n in tabs.names:
+    if i > 0: text.add "\n"
+    text.add n
+  let line = tabs.ed.currentLine
+  tabs.ed.setText(text)
+  tabs.ed.gotoLine(min(line, max(0, tabs.names.len - 1)) + 1, 0)
+
+proc decorateTabs(tabs: var TabList; buffers: seq[BufferEntry]; current: int) =
+  ## Active and modified state as markers, not as text. Offsets are derived
+  ## from the names because the text is exactly `names` joined by newlines.
+  tabs.ed.clearMarkers()
+  var pos = 0
+  for i, n in tabs.names:
+    if i == current:
+      tabs.ed.addMarker(pos, pos + n.len - 1, color(69, 71, 90))
+    pos += n.len + 1
+  pos = 0
+  for i, n in tabs.names:
+    if i < buffers.len and buffers[i].ed.changed:
+      tabs.ed.addMarker(pos, pos + n.len - 1, color(62, 68, 43))
+    pos += n.len + 1
+
+proc applyTabEdits(tabs: var TabList; buffers: var seq[BufferEntry];
+                   current: var int; font: Font) =
+  ## Diff the buffer's lines against the model and apply the difference:
+  ##   line gone      -> close that tab
+  ##   lines reordered -> reorder the tabs
+  ##   line back again -> reopen it (this is what makes Ctrl+Z work)
+  if tabs.names.len != buffers.len: return
+  var lines: seq[string] = @[]
+  for i in 0 ..< tabs.ed.getLineCount():
+    let t = tabs.ed.getLineText(i).strip()
+    if t.len > 0: lines.add t
+  if lines == tabs.names:
+    # Blank lines are not tabs; drop them again.
+    if tabs.ed.getLineCount() != tabs.names.len: renderTabs(tabs, buffers)
+    return
+
+  tabs.note = ""
+  let currentName = if current < tabs.names.len: tabs.names[current] else: ""
+  var order: seq[BufferEntry] = @[]
+  var newNames: seq[string] = @[]
+  var taken = newSeq[bool](buffers.len)
+  for ln in lines:
+    var idx = -1
+    for i, n in tabs.names:
+      if not taken[i] and n == ln:
+        idx = i
+        break
+    if idx >= 0:
+      taken[idx] = true
+      order.add buffers[idx]
+      newNames.add ln
+    else:
+      # A line the model does not know: an undone close, or a pasted path.
+      var path = ""
+      for c in tabs.closed:
+        if c.name == ln: path = c.path
+      if path.len == 0:
+        let p = if isAbsolute(ln): ln else: os.getCurrentDir() / ln
+        if fileExists(p): path = p
+      if path.len > 0 and fileExists(path):
+        order.add newBuffer(font, path)
+        newNames.add ln
+
+  # Closing a tab must not silently drop unsaved work: put the line back.
+  for i in 0 ..< tabs.names.len:
+    if not taken[i] and buffers[i].ed.changed:
+      tabs.note = tabs.names[i] & ": unsaved changes, Ctrl+S first"
+      renderTabs(tabs, buffers)
+      return
+  if order.len == 0:
+    # The last tab stays open.
+    renderTabs(tabs, buffers)
+    return
+
+  for i in 0 ..< tabs.names.len:
+    if not taken[i] and buffers[i].path.len > 0:
+      tabs.closed.add ClosedTab(name: tabs.names[i], path: buffers[i].path)
+  buffers = order
+  tabs.names = newNames
+  current = clamp(current, 0, buffers.high)
+  for i, n in newNames:
+    if n == currentName: current = i
+
+# ---------------------------------------------------------------------------
+# Explorer -- a flat listing of one directory, with an editable path line
+# ---------------------------------------------------------------------------
+
+type
+  Explorer = object
+    ed: SynEdit
+    dir: string          ## the directory currently listed
+    base: string         ## anchor for resolving the path line; only explicit
+                         ## navigation moves it, so typing stays predictable
+    entries: seq[string] ## the lines below the header, in order
+    header: string       ## line 0, as last rendered
+
+proc normDir(dir: string): string =
+  result = dir
+  while result.len > 1 and result[^1] == DirSep:
+    result.setLen result.len - 1
+  if result.len == 0: result = $DirSep
+
+proc resolveIn(base, s: string): string =
+  ## Resolve the path line against `base`. A bare word like "syn" becomes
+  ## `base/syn`, whose parent is `base` -- which is what turns it into a
+  ## filter over the current listing.
+  let e = expandTilde(s.strip())
+  if e.len == 0: return ""
+  result = if isAbsolute(e): e else: base / e
+
+proc listDir(dir, filter: string): seq[string] =
+  ## ".." first, then directories, then files. Dotfiles are hidden.
+  var dirs: seq[string] = @[]
+  var files: seq[string] = @[]
+  let f = filter.toLowerAscii
+  for kind, path in walkDir(dir):
+    let name = path.extractFilename
+    if name.len == 0 or name[0] == '.': continue
+    if f.len > 0 and not name.toLowerAscii.contains(f): continue
+    case kind
+    of pcDir, pcLinkToDir: dirs.add name & $DirSep
+    else: files.add name
+  sort dirs
+  sort files
+  result = @[]
+  if filter.len == 0: result.add ".."
+  for d in dirs: result.add d
+  for x in files: result.add x
+
+proc renderExplorer(ex: var Explorer; header: string; cursorPos: int) =
+  ex.header = header
+  var text = header
+  for e in ex.entries: text.add "\n" & e
+  ex.ed.setText(text)
+  ex.ed.gotoPos(clamp(cursorPos, 0, text.len))
+
+proc showDir(ex: var Explorer; dir: string) =
+  if not dirExists(dir): return
+  ex.dir = normDir(dir)
+  ex.base = ex.dir
+  ex.entries = listDir(ex.dir, "")
+  let h = ex.dir & (if ex.dir.endsWith($DirSep): "" else: $DirSep)
+  ex.renderExplorer(h, h.len)
+
+proc applyHeader(ex: var Explorer; header: string) =
+  ## The path line doubles as "cd" and as a filter: an existing directory
+  ## switches the listing, anything else narrows it.
+  let full = resolveIn(ex.base, header)
+  var dir = ex.base
+  var filter = ""
+  if full.len > 0 and dirExists(full):
+    dir = full
+  elif full.len > 0:
+    let parent = full.parentDir
+    if parent.len > 0 and dirExists(parent):
+      dir = parent
+      filter = full.extractFilename
+  ex.dir = normDir(dir)
+  ex.entries = listDir(ex.dir, filter)
+  ex.renderExplorer(header, ex.ed.cursor)
+
+proc activateEntry(ex: var Explorer; name: string;
+                   buffers: var seq[BufferEntry]; current: var int;
+                   font: Font; focus: var string) =
+  if name == "..":
+    let up = ex.dir.parentDir
+    if up.len > 0: ex.showDir(up)
+  elif name.endsWith($DirSep):
+    ex.showDir(ex.dir / name[0 ..< name.len - 1])
+  else:
+    let p = ex.dir / name
+    if fileExists(p):
+      current = buffers.openFile(font, p, -1, -1)
+      setWindowTitle("SynEdit - " & name)
+      focus = "editor"
 
 proc handleTermCtrlClick(buf: SynEdit; pos: int;
                          buffers: var seq[BufferEntry]; current: var int;
@@ -161,11 +400,12 @@ proc handleTermCtrlClick(buf: SynEdit; pos: int;
     setWindowTitle("SynEdit - " & path.extractFilename)
     focus = "editor"
 
-proc updateStatus(status: var Terminal; ed: SynEdit; path: string) =
+proc updateStatus(status: var Terminal; ed: SynEdit; path, note: string) =
   let name = if path.len > 0: path.extractFilename else: "[scratch]"
   let info = name & "  Ln " & $(ed.currentLine + 1) &
              ", Col " & $(ed.currentCol + 1) &
-             (if ed.changed: "  *" else: "") & " > "
+             (if ed.changed: "  *" else: "") &
+             (if note.len > 0: "  " & note else: "") & " > "
   status.ed.clear()
   status.ed.lang = langConsole
   status.ed.appendOutput(info)
@@ -197,18 +437,21 @@ proc tryOpenFile(arg: string; buffers: var seq[BufferEntry];
 proc adjustFocusedFontSize(
     focus: string; delta: int;
     fonts: var Table[int, Font];
-    title, files, history: var SynEdit;
+    title, history: var SynEdit;
+    tabs: var TabList; explorer: var Explorer;
     term, status: var Terminal;
     buffers: var seq[BufferEntry]; current: int;
-    titleFontSize, filesFontSize, historyFontSize,
+    titleFontSize, panelFontSize, historyFontSize,
     terminalFontSize, statusFontSize, editorFontSize: var int) =
   case focus
   of "title":
     titleFontSize = clamp(titleFontSize + delta, MinFontSize, MaxFontSize)
     title.setFont(fonts.fontForSize(titleFontSize))
-  of "files":
-    filesFontSize = clamp(filesFontSize + delta, MinFontSize, MaxFontSize)
-    files.setFont(fonts.fontForSize(filesFontSize))
+  of "tabs", "explorer":
+    panelFontSize = clamp(panelFontSize + delta, MinFontSize, MaxFontSize)
+    let f = fonts.fontForSize(panelFontSize)
+    tabs.ed.setFont(f)
+    explorer.ed.setFont(f)
   of "history":
     historyFontSize = clamp(historyFontSize + delta, MinFontSize, MaxFontSize)
     history.setFont(fonts.fontForSize(historyFontSize))
@@ -238,12 +481,19 @@ proc main =
   setWindowTitle("SynEdit Demo")
 
   var title = createSynEdit(font)
-  var files = createSynEdit(font)
   var history = createSynEdit(font)
   var term = createTerminal(font)
   var status = createTerminal(font)
+  var tabs = TabList(ed: createSynEdit(font))
+  var explorer = Explorer(ed: createSynEdit(font))
+  tabs.ed.lang = langNone
+  explorer.ed.lang = langNone
+  # Every tab list line acts on click; in the explorer line 0 is the path
+  # field, so only the listing below it does.
+  tabs.ed.setActionLines(0, color(88, 91, 112))
+  explorer.ed.setActionLines(1, color(88, 91, 112))
   var titleFontSize = DefaultFontSize
-  var filesFontSize = DefaultFontSize
+  var panelFontSize = DefaultFontSize
   var historyFontSize = DefaultFontSize
   var terminalFontSize = DefaultFontSize
   var statusFontSize = DefaultFontSize
@@ -263,6 +513,12 @@ proc main =
     ed.flags = {rfColorLiterals, rfMarkdownImages}
     ed.setText(sampleCode)
     buffers.add BufferEntry(ed: ed, path: "")
+
+  renderTabs(tabs, buffers)
+  explorer.showDir(
+    if buffers[current].path.len > 0: buffers[current].path.parentDir
+    else: os.getCurrentDir())
+  var lastCurrent = current
 
   var focus = "editor"
 
@@ -290,26 +546,85 @@ proc main =
       if cmd and e.key == KeyS:
         if buffers[current].path.len > 0:
           buffers[current].ed.saveToFile(buffers[current].path)
+        tabs.note = ""
+        e = default Event  # consume the event
+      elif cmd and e.key == KeyW:
+        # Close the current tab by deleting its line, so that it goes through
+        # the tab list's undo stack like a hand-made deletion would.
+        tabs.ed.gotoLine(current + 1, 0)
+        tabs.ed.deleteLine()
         e = default Event  # consume the event
       elif cmd and (e.key == KeyEqual or e.key == KeyPlus or e.key == KeyMinus):
         let delta = if e.key == KeyMinus: -1 else: 1
-        adjustFocusedFontSize(focus, delta, fonts, title, files, history,
-                              term, status, buffers, current,
-                              titleFontSize, filesFontSize, historyFontSize,
+        adjustFocusedFontSize(focus, delta, fonts, title, history,
+                              tabs, explorer, term, status, buffers, current,
+                              titleFontSize, panelFontSize, historyFontSize,
                               terminalFontSize, statusFontSize, editorFontSize)
         e = default Event  # consume the event
+      elif e.key == KeyEnter and focus == "tabs":
+        # Enter activates a tab instead of inserting a newline.
+        let idx = tabs.ed.currentLine
+        if idx < buffers.len:
+          current = idx
+          focus = "editor"
+        e = default Event
+      elif e.key == KeyEnter and focus == "explorer":
+        let line = explorer.ed.currentLine
+        if line == 0:
+          let full = resolveIn(explorer.base, explorer.ed.getLineText(0))
+          if full.len > 0 and dirExists(full):
+            explorer.showDir(full)
+          elif full.len > 0 and fileExists(full):
+            current = buffers.openFile(fonts.fontForSize(editorFontSize),
+                                       full, -1, -1)
+            setWindowTitle("SynEdit - " & full.extractFilename)
+            focus = "editor"
+          elif explorer.entries.len > 0:
+            # A partial name accepts the first match.
+            explorer.activateEntry(explorer.entries[0], buffers, current,
+                                   fonts.fontForSize(editorFontSize), focus)
+        elif line - 1 < explorer.entries.len:
+          explorer.activateEntry(explorer.entries[line - 1], buffers, current,
+                                 fonts.fontForSize(editorFontSize), focus)
+        e = default Event
     else: discard
 
     discard title.draw(e, cells["title"], focus == "title")
 
-    # Files panel -- click to switch buffer
-    updateFilesPanel(files, buffers, current)
-    discard files.draw(e, cells["files"], focus == "files")
-    if e.kind == MouseDownEvent and focus == "files":
-      let idx = files.currentLine
+    # Tab list -- its lines ARE the open tabs
+    if tabs.names != displayNames(buffers): renderTabs(tabs, buffers)
+    decorateTabs(tabs, buffers, current)
+    discard tabs.ed.draw(e, cells["tabs"], focus == "tabs")
+    applyTabEdits(tabs, buffers, current, fonts.fontForSize(editorFontSize))
+    if e.kind == MouseDownEvent and focus == "tabs":
+      let idx = tabs.ed.currentLine
       if idx < buffers.len:
         current = idx
         focus = "editor"
+
+    # Explorer -- flat directory listing, line 0 is the path/filter field
+    let exFocused = focus == "explorer"
+    discard explorer.ed.draw(e, cells["explorer"], exFocused)
+    if exFocused:
+      if e.kind == MouseDownEvent:
+        let line = explorer.ed.currentLine
+        if line > 0 and line - 1 < explorer.entries.len:
+          explorer.activateEntry(explorer.entries[line - 1], buffers, current,
+                                 fonts.fontForSize(editorFontSize), focus)
+      else:
+        let header = explorer.ed.getLineText(0)
+        if header != explorer.header:
+          explorer.applyHeader(header)
+        elif explorer.ed.getLineCount() != explorer.entries.len + 1:
+          # The listing itself is not editable; put it back.
+          explorer.renderExplorer(explorer.header, explorer.ed.cursor)
+
+    # The explorer follows the directory of the active file.
+    if current != lastCurrent:
+      lastCurrent = current
+      let p = buffers[current].path
+      if p.len > 0 and normDir(p.parentDir) != explorer.dir:
+        explorer.showDir(p.parentDir)
 
     # Editor
     let edAct = buffers[current].ed.draw(e, cells["editor"], focus == "editor")
@@ -359,18 +674,18 @@ proc main =
 
     # Status bar / prompt -- update prefix when not focused
     if focus != "status":
-      updateStatus(status, buffers[current].ed, buffers[current].path)
+      updateStatus(status, buffers[current].ed, buffers[current].path, tabs.note)
     let statusAct = status.draw(e, cells["status"], focus == "status")
     case statusAct.kind
     of openFile:
       tryOpenFile(statusAct.file, buffers, current,
                   fonts.fontForSize(editorFontSize), focus)
-      updateStatus(status, buffers[current].ed, buffers[current].path)
+      updateStatus(status, buffers[current].ed, buffers[current].path, tabs.note)
     of saveFile:
       if buffers[current].path.len > 0:
         buffers[current].ed.saveToFile(buffers[current].path)
       focus = "editor"
-      updateStatus(status, buffers[current].ed, buffers[current].path)
+      updateStatus(status, buffers[current].ed, buffers[current].path, tabs.note)
     of ctrlHover, ctrlClick, noAction: discard
 
     refresh()

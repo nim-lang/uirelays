@@ -28,6 +28,14 @@
 ##   term.init(font)
 ##   term.lang = langConsole
 ##   term.appendOutput("$ ")   # user types after the prompt
+##
+## List of clickable lines -- a field where a click acts instead of just
+## placing the cursor. The frame is the affordance; what a click does is up
+## to the caller::
+##
+##   var tabs = createSynEdit(font)
+##   tabs.setActionLines(0, color(88, 91, 112))   # every line is clickable
+##   # explorer.setActionLines(1, ...) would leave line 0 as a normal field
 
 import ../uirelays/[coords, screen, input]
 import ./theme
@@ -189,6 +197,10 @@ type
     markers: seq[Marker]
     # Line decorations (breakpoints, active execution line, etc.)
     lineDecorations: seq[LineDecoration]
+    # Action lines -- see setActionLines()
+    actionLines*: int               ## first line whose text is framed as
+                                    ## clickable; -1 = none
+    actionColor*: Color
     # Cached images for rich markdown rendering
     imageCache: seq[ImageCacheEntry]
     # Cache
@@ -1889,6 +1901,7 @@ proc createSynEdit*(font: Font; theme = catppuccinMocha()): SynEdit =
   result = SynEdit(front: @[], back: @[], actions: @[], cursor: 0,
     selected: (-1, -1), bracketA: -1, bracketB: -1, hotLink: (-1, -1),
     readOnly: -1, tabSize: TabWidth, lang: langNim,
+    actionLines: -1, actionColor: theme.lineNumColor,
     font: font, theme: theme, flags: {},
     showLineNumbers: false, cursorVisible: true, lastBlinkTick: 0)
 
@@ -2079,6 +2092,25 @@ proc clearLineDecoration*(s: var SynEdit; line: int) =
 proc clearLineDecorations*(s: var SynEdit) =
   ## Remove all line decorations.
   s.lineDecorations.setLen 0
+
+# ---------------------------------------------------------------------------
+# Action lines -- lines that act on click instead of just taking the cursor
+# ---------------------------------------------------------------------------
+
+proc setActionLines*(s: var SynEdit; first: int; color: Color) =
+  ## Frame the text of every line from `first` on, marking it as clickable:
+  ## in such a field a click does something (activate, open, navigate)
+  ## rather than merely placing the cursor. Pass `first = -1` to disable.
+  ## Survives `setText`, so a field can be declared clickable once.
+  s.actionLines = first
+  s.actionColor = color
+
+proc drawFrame(r: Rect; color: Color) =
+  if r.w <= 0 or r.h <= 0: return
+  fillRect(rect(r.x, r.y, r.w, 1), color)
+  fillRect(rect(r.x, r.y + r.h - 1, r.w, 1), color)
+  fillRect(rect(r.x, r.y, 1, r.h), color)
+  fillRect(rect(r.x + r.w - 1, r.y, 1, r.h), color)
 
 const
   CharBufSize = 80
@@ -2409,7 +2441,22 @@ proc render*(s: var SynEdit; area: Rect; showCursor: bool) =
         inc renderLine
         continue
 
+    let actionLine = s.actionLines >= 0 and renderLine.int >= s.actionLines
+    let lineX = dim.x
+    let lineY = dim.y
+    let lineStart = i
     i = s.drawTextLine(i, dim, blink)
+    if actionLine:
+      # Framed after the text, so the per-token backgrounds cannot paint
+      # over the top and bottom edges.
+      var text = ""
+      var k = lineStart
+      while k < s.len and s[k] != '\L': text.add s[k]; inc k
+      if text.len > 0:
+        let fx = max(lineX - 2, area.x)
+        let fw = min(textWidth(s.font, text) + (lineX - fx) + 2, endX - fx)
+        # lineH - 1 keeps consecutive frames from sharing an edge.
+        drawFrame(rect(fx, lineY, fw, lineH - 1), s.actionColor)
     inc s.span, consumedRows
     inc renderLine
 
