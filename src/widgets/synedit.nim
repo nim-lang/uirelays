@@ -225,6 +225,9 @@ proc currentLine*(s: SynEdit): int {.inline.} = s.currentLine.int
 proc currentCol*(s: SynEdit): int {.inline.} = s.desiredCol.int
 proc changed*(s: SynEdit): bool {.inline.} = s.changed
 proc markChanged*(s: var SynEdit) = s.changed = true
+proc markSaved*(s: var SynEdit) = s.changed = false
+  ## Clear the changed flag without writing a file, for buffers whose content
+  ## has been consumed by something other than `saveToFile`.
 proc cursor*(s: SynEdit): int {.inline.} = s.cursor.int
 proc cacheId*(s: SynEdit): int {.inline.} = s.cacheId
 proc getFont*(s: SynEdit): Font {.inline.} = s.font

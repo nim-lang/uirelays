@@ -25,43 +25,31 @@ each with its own *flipped* edit semantics:
   narrows the listing, Enter on a directory descends into it, and Enter on a
   partial name accepts the first match -- so there is no need for a modal
   "open file" dialog.
+
+The same idea applied to the window itself: tab 0 is `[layout]`, and its text
+IS the layout table this app is built from. Editing it relayouts the window on
+the next frame, so there is no separate settings dialog either. Leaving a
+widget out of the table hides it without destroying it -- its buffer, cursor
+and scroll position are still there when a later layout lists it again. Only
+the `editor` cell has to stay, since it is where the layout gets typed. A table
+that does not parse is reported in the status bar and ignored, so the last good
+layout keeps the window usable.
+
+The layout and the list of open tabs are stored under `getConfigDir()` in
+`relayedit/layout.md` and `relayedit/tabs.txt`, so both survive a restart.
 ]##
 
 import std/[tables, os, algorithm]
-from std/strutils import toLowerAscii, strip, endsWith, contains
+from std/strutils import toLowerAscii, strip, endsWith, contains, splitLines
 from std/cmdline import paramCount, paramStr
 import uirelays
 import uirelays/layout
 import widgets/[synedit, terminal]
 
-const appLayout = parseLayout("""
+const defaultLayout = """
 | title, 1 line                                                                     |
 | tabs, 6 lines, 200px ; explorer, * | editor, 3* | history, 5 lines, 2* ; terminal, * |
 | status, 1 line                                                                    |
-""")
-
-const sampleCode = """
-import strutils, os
-
-type
-  Person = object
-    name: string
-    age: int
-
-proc greet(p: Person) =
-  # accent color: #abc000
-  echo "Hello, " & p.name & "! You are " & $p.age & " years old."
-
-proc main() =
-  let people = @[
-    Person(name: "Alice", age: 30),
-    Person(name: "Bob", age: 25),
-  ]
-  for p in people:
-    greet(p)
-
-when isMainModule:
-  main()
 """
 
 const
@@ -70,6 +58,28 @@ const
   DefaultFontSize = 16
   MinFontSize = 8
   MaxFontSize = 56
+  ## A layout may leave any widget out -- it is then simply not drawn, and
+  ## keeps its state until a later layout brings it back. Only the editor
+  ## has to stay: without it there is nowhere to type the layout back.
+  RequiredCells = ["editor"]
+  ConfigDirName = "relayedit"
+
+proc configPath(name: string): string =
+  getConfigDir() / ConfigDirName / name
+
+proc saveConfig(name, text: string) =
+  ## Best effort: an unwritable config dir must not take the editor down.
+  try:
+    createDir(getConfigDir() / ConfigDirName)
+    writeFile(configPath(name), text)
+  except CatchableError:
+    discard
+
+proc loadConfig(name: string): string =
+  try:
+    result = readFile(configPath(name))
+  except CatchableError:
+    result = ""
 
 proc fontForSize(fonts: var Table[int, Font]; size: int): Font =
   let clamped = clamp(size, MinFontSize, MaxFontSize)
@@ -124,7 +134,8 @@ proc extractFilePosition(s: SynEdit; pos: int):
 type
   BufferEntry = object
     ed: SynEdit
-    path: string        ## "" for scratch buffers
+    path: string        ## "" for generated buffers
+    isLayout: bool      ## this buffer's text IS the window layout
 
 proc newBuffer(font: Font; path: string): BufferEntry =
   var ed = createSynEdit(font)
@@ -149,6 +160,13 @@ proc newBuffer(font: Font; path: string): BufferEntry =
     ed.setText("cannot read " & path & ": " & getCurrentExceptionMsg())
     ed.readOnly = ed.len - 1
   result = BufferEntry(ed: ed, path: path)
+
+proc tabsText(buffers: seq[BufferEntry]): string =
+  ## The open tabs, in tab order. Generated buffers have no path and so are
+  ## not part of the session.
+  result = ""
+  for b in buffers:
+    if b.path.len > 0: result.add b.path & "\n"
 
 proc openFile(buffers: var seq[BufferEntry]; font: Font;
               path: string; line, col: int): int =
@@ -180,7 +198,10 @@ proc displayNames(buffers: seq[BufferEntry]): seq[string] =
   ## handle we have once the user has edited the list.
   var base: seq[string] = @[]
   for b in buffers:
-    base.add(if b.path.len > 0: b.path.extractFilename else: "[scratch]")
+    base.add(
+      if b.isLayout: "[layout]"
+      elif b.path.len > 0: b.path.extractFilename
+      else: "[scratch]")
   result = @[]
   for i, n in base:
     var dup = false
@@ -220,6 +241,8 @@ proc decorateTabs(tabs: var TabList; buffers: seq[BufferEntry]; current: int) =
     pos += n.len + 1
   pos = 0
   for i, n in tabs.names:
+    # The layout buffer never shows up here: the main loop consumes its changed
+    # flag on the very next frame, which is also when it gets stored.
     if i < buffers.len and buffers[i].ed.changed:
       tabs.ed.addMarker(pos, pos + n.len - 1, color(62, 68, 43))
     pos += n.len + 1
@@ -267,10 +290,18 @@ proc applyTabEdits(tabs: var TabList; buffers: var seq[BufferEntry];
         order.add newBuffer(font, path)
         newNames.add ln
 
-  # Closing a tab must not silently drop unsaved work: put the line back.
+  # Some tabs refuse to close: put their line back.
   for i in 0 ..< tabs.names.len:
-    if not taken[i] and buffers[i].ed.changed:
-      tabs.note = tabs.names[i] & ": unsaved changes, Ctrl+S first"
+    if not taken[i]:
+      if buffers[i].isLayout:
+        # Closing it would leave no way to edit the layout back.
+        tabs.note = "the layout buffer stays open"
+      elif buffers[i].path.len > 0 and buffers[i].ed.changed:
+        # A buffer without a path cannot be saved, so the guard would be
+        # a trap rather than a warning.
+        tabs.note = tabs.names[i] & ": unsaved changes, Ctrl+S first"
+      else:
+        continue
       renderTabs(tabs, buffers)
       return
   if order.len == 0:
@@ -286,6 +317,30 @@ proc applyTabEdits(tabs: var TabList; buffers: var seq[BufferEntry];
   current = clamp(current, 0, buffers.high)
   for i, n in newNames:
     if n == currentName: current = i
+
+proc reparseLayout(src: string; width, height, lineHeight: int;
+                   layout: var Layout; note: var string) =
+  ## The layout buffer's text IS the layout. A layout that does not parse,
+  ## or that loses a cell the app needs, is reported and dropped -- the last
+  ## good one keeps the window usable so the text can be corrected.
+  var parsed: Layout
+  try:
+    parsed = parseLayout(src)
+  except CatchableError:
+    note = "layout: " & getCurrentExceptionMsg()
+    return
+  var cells: Table[string, Rect]
+  try:
+    cells = parsed.resolve(width, height, lineHeight, gap = 2)
+  except CatchableError:
+    note = "layout: " & getCurrentExceptionMsg()
+    return
+  for name in RequiredCells:
+    if name notin cells:
+      note = "layout: no '" & name & "' cell"
+      return
+  layout = parsed
+  note = ""
 
 # ---------------------------------------------------------------------------
 # Explorer -- a flat listing of one directory, with an editable path line
@@ -500,20 +555,42 @@ proc main =
   var statusFontSize = DefaultFontSize
   var editorFontSize = DefaultFontSize
 
-  title.setLabel("SynEdit Demo")
+  title.setLabel("SynEdit Demo -- edit the [layout] tab to relayout this window")
 
-  # Buffer list
+  # The layout the window starts with: whatever was stored last time, unless
+  # it no longer works -- then the default, with the reason in the status bar.
+  var layout = parseLayout(defaultLayout)
+  var layoutNote = ""
+  var layoutText = loadConfig("layout.md")
+  if layoutText.len > 0:
+    reparseLayout(layoutText, width, height, fm.lineHeight, layout, layoutNote)
+    if layoutNote.len > 0:
+      layoutNote = "stored " & configPath("layout.md") & " ignored -- " &
+                   layoutNote
+      layoutText = defaultLayout
+  else:
+    layoutText = defaultLayout
+
+  # Buffer list. The layout buffer is tab 0: editing it relayouts the window
+  # on the next frame. The rest of the tabs are last session's.
   var buffers: seq[BufferEntry]
   var current = 0
+  block:
+    var ed = createSynEdit(fonts.fontForSize(editorFontSize))
+    ed.lang = langMarkdown
+    ed.showLineNumbers = true
+    ed.setText(layoutText)
+    buffers.add BufferEntry(ed: ed, path: "", isLayout: true)
+  for line in loadConfig("tabs.txt").splitLines:
+    let p = line.strip
+    if p.len > 0 and fileExists(p):
+      discard buffers.openFile(fonts.fontForSize(editorFontSize), p, -1, -1)
   if paramCount() >= 1:
     current = buffers.openFile(fonts.fontForSize(editorFontSize), paramStr(1), -1, -1)
-  else:
-    var ed = createSynEdit(fonts.fontForSize(editorFontSize))
-    ed.lang = langNim
-    ed.showLineNumbers = true
-    ed.flags = {rfColorLiterals, rfMarkdownImages}
-    ed.setText(sampleCode)
-    buffers.add BufferEntry(ed: ed, path: "")
+  elif buffers.len > 1:
+    current = 1
+
+  var savedTabs = tabsText(buffers)
 
   renderTabs(tabs, buffers)
   explorer.showDir(
@@ -525,7 +602,20 @@ proc main =
 
   var running = true
   while running:
-    let cells = appLayout.resolve(width, height, fm.lineHeight, gap = 2)
+    # Pick up edits to the layout buffer before resolving, so that the rects
+    # and the hit tests within one frame always come from the same layout.
+    # The buffer's own changed flag is the signal; consuming it here re-parses
+    # once per edit, whether the new table works out or not.
+    for b in buffers.mitems:
+      if b.isLayout and b.ed.changed:
+        let src = b.ed.fullText
+        reparseLayout(src, width, height, fm.lineHeight, layout, layoutNote)
+        if layoutNote.len == 0: saveConfig("layout.md", src)
+        b.ed.markSaved()
+
+    let cells = layout.resolve(width, height, fm.lineHeight, gap = 2)
+    # A layout may have dropped the cell that had the focus.
+    if focus notin cells: focus = "editor"
 
     # Fill background -- gaps between cells show this color as borders
     fillRect(rect(0, 0, width, height), color(200, 200, 200))
@@ -590,12 +680,19 @@ proc main =
         e = default Event
     else: discard
 
-    discard title.draw(e, cells["title"], focus == "title")
+    # Widgets the layout leaves out are simply not drawn. They keep their
+    # state, so they come back exactly as they were once a layout lists
+    # them again.
+    if "title" in cells:
+      discard title.draw(e, cells["title"], focus == "title")
 
-    # Tab list -- its lines ARE the open tabs
+    # Tab list -- its lines ARE the open tabs. The bookkeeping runs even when
+    # the list is hidden, because Ctrl+W still edits its buffer.
     if tabs.names != displayNames(buffers): renderTabs(tabs, buffers)
     decorateTabs(tabs, buffers, current)
-    let tabAct = tabs.ed.draw(e, cells["tabs"], focus == "tabs")
+    var tabAct = EditAction(kind: noAction)
+    if "tabs" in cells:
+      tabAct = tabs.ed.draw(e, cells["tabs"], focus == "tabs")
     if tabAct.kind == closeLine:
       # The (x) deletes the line, so closing by button and closing by hand
       # end up in the same undo stack.
@@ -611,20 +708,21 @@ proc main =
 
     # Explorer -- flat directory listing, line 0 is the path/filter field
     let exFocused = focus == "explorer"
-    discard explorer.ed.draw(e, cells["explorer"], exFocused)
-    if exFocused:
-      if e.kind == MouseDownEvent:
-        let line = explorer.ed.currentLine
-        if line > 0 and line - 1 < explorer.entries.len:
-          explorer.activateEntry(explorer.entries[line - 1], buffers, current,
-                                 fonts.fontForSize(editorFontSize), focus)
-      else:
-        let header = explorer.ed.getLineText(0)
-        if header != explorer.header:
-          explorer.applyHeader(header)
-        elif explorer.ed.getLineCount() != explorer.entries.len + 1:
-          # The listing itself is not editable; put it back.
-          explorer.renderExplorer(explorer.header, explorer.ed.cursor)
+    if "explorer" in cells:
+      discard explorer.ed.draw(e, cells["explorer"], exFocused)
+      if exFocused:
+        if e.kind == MouseDownEvent:
+          let line = explorer.ed.currentLine
+          if line > 0 and line - 1 < explorer.entries.len:
+            explorer.activateEntry(explorer.entries[line - 1], buffers, current,
+                                   fonts.fontForSize(editorFontSize), focus)
+        else:
+          let header = explorer.ed.getLineText(0)
+          if header != explorer.header:
+            explorer.applyHeader(header)
+          elif explorer.ed.getLineCount() != explorer.entries.len + 1:
+            # The listing itself is not editable; put it back.
+            explorer.renderExplorer(explorer.header, explorer.ed.cursor)
 
     # The explorer follows the directory of the active file.
     if current != lastCurrent:
@@ -646,22 +744,25 @@ proc main =
       buffers[current].ed.underline(-1, -1)
 
     # History panel -- click to re-run a command
-    updateHistory(history, term)
-    discard history.draw(e, cells["history"], focus == "history")
-    if e.kind == MouseDownEvent and focus == "history":
-      let idx = history.currentLine
-      let cmds = block:
-        var r: seq[string]
-        for _, h in term.hist:
-          for cmd in h.cmds: r.add cmd
-        r
-      if idx < cmds.len:
-        var cmd = cmds[idx]
-        discard term.runCommand(cmd)
-        focus = "terminal"
+    if "history" in cells:
+      updateHistory(history, term)
+      discard history.draw(e, cells["history"], focus == "history")
+      if e.kind == MouseDownEvent and focus == "history":
+        let idx = history.currentLine
+        let cmds = block:
+          var r: seq[string]
+          for _, h in term.hist:
+            for cmd in h.cmds: r.add cmd
+          r
+        if idx < cmds.len:
+          var cmd = cmds[idx]
+          discard term.runCommand(cmd)
+          focus = "terminal"
 
     # Terminal
-    let termAct = term.draw(e, cells["terminal"], focus == "terminal")
+    var termAct = TermAction(kind: noAction)
+    if "terminal" in cells:
+      termAct = term.draw(e, cells["terminal"], focus == "terminal")
     case termAct.kind
     of openFile:
       if fileExists(termAct.file):
@@ -682,20 +783,31 @@ proc main =
       term.ed.underline(-1, -1)
 
     # Status bar / prompt -- update prefix when not focused
+    # A broken layout is the more urgent of the two notes: it is what the
+    # user is looking at while typing in the [layout] tab.
+    let note = if layoutNote.len > 0: layoutNote else: tabs.note
     if focus != "status":
-      updateStatus(status, buffers[current].ed, buffers[current].path, tabs.note)
-    let statusAct = status.draw(e, cells["status"], focus == "status")
+      updateStatus(status, buffers[current].ed, buffers[current].path, note)
+    var statusAct = TermAction(kind: noAction)
+    if "status" in cells:
+      statusAct = status.draw(e, cells["status"], focus == "status")
     case statusAct.kind
     of openFile:
       tryOpenFile(statusAct.file, buffers, current,
                   fonts.fontForSize(editorFontSize), focus)
-      updateStatus(status, buffers[current].ed, buffers[current].path, tabs.note)
+      updateStatus(status, buffers[current].ed, buffers[current].path, note)
     of saveFile:
       if buffers[current].path.len > 0:
         buffers[current].ed.saveToFile(buffers[current].path)
       focus = "editor"
-      updateStatus(status, buffers[current].ed, buffers[current].path, tabs.note)
+      updateStatus(status, buffers[current].ed, buffers[current].path, note)
     of ctrlHover, ctrlClick, noAction: discard
+
+    # Persist the session once everything that could have changed it has run.
+    let tt = tabsText(buffers)
+    if tt != savedTabs:
+      savedTabs = tt
+      saveConfig("tabs.txt", tt)
 
     refresh()
 
