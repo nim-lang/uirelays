@@ -13,6 +13,10 @@ template execBackend(cmd: string) =
   exec "nim c " & cmd & " examples/todo.nim"
 
 
+# The lexer and the config parsers need no driver, so they are tested directly.
+exec "nim c -r tests/tinyniftest.nim"
+exec "nim c -r tests/configtest.nim"
+
 execBackend("")
 when defined(feature.uirelays.figDrawWindy):
   execBackend("--define:\"feature.uirelays.figDrawWindy\"")

@@ -26,17 +26,20 @@ each with its own *flipped* edit semantics:
   partial name accepts the first match -- so there is no need for a modal
   "open file" dialog.
 
-The same idea applied to the window itself: tab 0 is `[layout]`, and its text
-IS the layout table this app is built from. Editing it relayouts the window on
-the next frame, so there is no separate settings dialog either. Leaving a
-widget out of the table hides it without destroying it -- its buffer, cursor
-and scroll position are still there when a later layout lists it again. Only
-the `editor` cell has to stay, since it is where the layout gets typed. A table
-that does not parse is reported in the status bar and ignored, so the last good
-layout keeps the window usable.
+The same idea applied to the window itself: tab 0 is `[config]`, and its text
+IS the NIF `(config ...)` this app is built from -- the `(layout ...)` that
+places the widgets and the `(theme ...)` that colors them. Editing it
+relayouts and recolors the window on the next frame, so there is no separate
+settings dialog either. Leaving a widget out of the layout hides it without
+destroying it -- its buffer, cursor and scroll position are still there when a
+later layout lists it again. Only the `editor` cell has to stay, since it is
+where the config gets typed. A config that does not parse is reported in the
+status bar, with the line and column of the mistake, and ignored, so the last
+good one keeps the window usable; a theme whose text would be unreadable on
+its own background is refused the same way.
 
-The layout and the list of open tabs are stored under `getConfigDir()` in
-`relayedit/layout.md` and `relayedit/tabs.txt`, so both survive a restart.
+The config and the list of open tabs are stored under `getConfigDir()` in
+`relayedit/config.nif` and `relayedit/tabs.txt`, so both survive a restart.
 ]##
 
 import std/[tables, os, algorithm]
@@ -44,12 +47,29 @@ from std/strutils import toLowerAscii, strip, endsWith, contains, splitLines
 from std/cmdline import paramCount, paramStr
 import uirelays
 import uirelays/layout
-import widgets/[synedit, terminal]
+import widgets/[synedit, terminal, config]
 
-const defaultLayout = """
-| title, 1 line                                                                     |
-| tabs, 6 lines, 200px ; explorer, * | editor, 3* | history, 5 lines, 2* ; terminal, * |
-| status, 1 line                                                                    |
+const defaultConfig = """
+(config
+  (layout
+    (title (lines 1))
+    (cols
+      (rows (px 200)
+        (tabs (lines 6))
+        (explorer))
+      (editor (stretch 3))
+      (rows (stretch 2)
+        (history (lines 5))
+        (terminal)))
+    (status (lines 1)))
+  # Anything left out keeps the color it has; `doc/config.md` lists the fields.
+  (theme
+    (bg "15171B")
+    (fg "E6DFD1"
+      (Keyword "E5B94E")
+      (StringLit "2EC4B6")
+      (DecNumber "E8833A")
+      (Comment "7A7365"))))
 """
 
 const
@@ -146,7 +166,7 @@ type
   BufferEntry = object
     ed: SynEdit
     path: string        ## "" for generated buffers
-    isLayout: bool      ## this buffer's text IS the window layout
+    isConfig: bool      ## this buffer's text IS the window's config
 
 proc newBuffer(font: Font; path: string): BufferEntry =
   var ed = createSynEdit(font)
@@ -210,7 +230,7 @@ proc displayNames(buffers: seq[BufferEntry]): seq[string] =
   var base: seq[string] = @[]
   for b in buffers:
     base.add(
-      if b.isLayout: "[layout]"
+      if b.isConfig: "[config]"
       elif b.path.len > 0: b.path.extractFilename
       else: "[scratch]")
   result = @[]
@@ -305,9 +325,9 @@ proc applyTabEdits(tabs: var TabList; buffers: var seq[BufferEntry];
   # Some tabs refuse to close: put their line back.
   for i in 0 ..< tabs.names.len:
     if not taken[i]:
-      if buffers[i].isLayout:
-        # Closing it would leave no way to edit the layout back.
-        tabs.note = "the layout buffer stays open"
+      if buffers[i].isConfig:
+        # Closing it would leave no way to edit the config back.
+        tabs.note = "the config buffer stays open"
       elif buffers[i].path.len > 0 and buffers[i].ed.changed:
         # A buffer without a path cannot be saved, so the guard would be
         # a trap rather than a warning.
@@ -330,29 +350,25 @@ proc applyTabEdits(tabs: var TabList; buffers: var seq[BufferEntry];
   for i, n in newNames:
     if n == currentName: current = i
 
-proc reparseLayout(src: string; width, height, lineHeight: int;
-                   layout: var Layout; note: var string) =
-  ## The layout buffer's text IS the layout. A layout that does not parse,
-  ## or that loses a cell the app needs, is reported and dropped -- the last
-  ## good one keeps the window usable so the text can be corrected.
-  var parsed: Layout
-  try:
-    parsed = parseLayout(src)
-  except CatchableError:
-    note = "layout: " & getCurrentExceptionMsg()
+proc reparseConfig(src: string; width, height, lineHeight: int;
+                   layout: var Layout; theme: var Theme; note: var string) =
+  ## The config buffer's text IS the window. A config that does not parse, or
+  ## that loses a cell the app needs, is reported and dropped -- the last good
+  ## one keeps the window usable so the text can be corrected. A theme that
+  ## cannot be read is dropped by the parser in the same spirit, and says so in
+  ## `note` while the rest of the config is kept.
+  let parsed = parseConfig(src)
+  if parsed.error.len > 0:
+    note = "config: " & parsed.error
     return
-  var cells: Table[string, Rect]
-  try:
-    cells = parsed.resolve(width, height, lineHeight, gap = 2)
-  except CatchableError:
-    note = "layout: " & getCurrentExceptionMsg()
-    return
+  let cells = parsed.layout.resolve(width, height, lineHeight, gap = 2)
   for name in RequiredCells:
     if name notin cells:
-      note = "layout: no '" & name & "' cell"
+      note = "config: no '" & name & "' cell"
       return
-  layout = parsed
-  note = ""
+  layout = parsed.layout
+  theme = parsed.theme
+  note = parsed.note
 
 # ---------------------------------------------------------------------------
 # Explorer -- a flat listing of one directory, with an editable path line
@@ -577,32 +593,41 @@ proc main =
   var statusFontSize = DefaultFontSize
   var editorFontSize = DefaultFontSize
 
-  title.setLabel("SynEdit Demo -- edit the [layout] tab to relayout this window")
+  title.setLabel("SynEdit Demo -- edit the [config] tab to lay out and " &
+                 "color this window")
 
-  # The layout the window starts with: whatever was stored last time, unless
-  # it no longer works -- then the default, with the reason in the status bar.
-  var layout = parseLayout(defaultLayout)
-  var layoutNote = ""
-  var layoutText = loadConfig("layout.md")
-  if layoutText.len > 0:
-    reparseLayout(layoutText, width, height, fm.lineHeight, layout, layoutNote)
-    if layoutNote.len > 0:
-      layoutNote = "stored " & configPath("layout.md") & " ignored -- " &
-                   layoutNote
-      layoutText = defaultLayout
+  # The config the window starts with: whatever was stored last time, unless it
+  # no longer works -- then the default, with the reason in the status bar.
+  var layout = default(Layout)
+  var theme = defaultTheme()
+  var configNote = ""
+  reparseConfig(defaultConfig, width, height, fm.lineHeight, layout, theme,
+                configNote)
+  doAssert configNote.len == 0, configNote
+  var configText = loadConfig("config.nif")
+  if configText.len > 0:
+    reparseConfig(configText, width, height, fm.lineHeight, layout, theme,
+                  configNote)
+    if configNote.len > 0:
+      # Whatever was wrong with it, the stored text stays in the buffer: it is
+      # what has to be corrected. Until it parses the window runs on the
+      # default, which the call above left in place.
+      configNote = configPath("config.nif") & ": " & configNote
   else:
-    layoutText = defaultLayout
+    configText = defaultConfig
 
-  # Buffer list. The layout buffer is tab 0: editing it relayouts the window
-  # on the next frame. The rest of the tabs are last session's.
+  # Buffer list. The config buffer is tab 0: editing it relayouts and recolors
+  # the window on the next frame. The rest of the tabs are last session's.
   var buffers: seq[BufferEntry]
   var current = 0
   block:
     var ed = createSynEdit(fonts.fontForSize(editorFontSize))
-    ed.lang = langMarkdown
+    # NIF is close enough to Nim for the tokenizer: parentheses, names, numbers
+    # and '#' comments all land where they should.
+    ed.lang = langNim
     ed.showLineNumbers = true
-    ed.setText(layoutText)
-    buffers.add BufferEntry(ed: ed, path: "", isLayout: true)
+    ed.setText(configText)
+    buffers.add BufferEntry(ed: ed, path: "", isConfig: true)
   for line in loadConfig("tabs.txt").splitLines:
     let p = line.strip
     if p.len > 0 and fileExists(p):
@@ -624,23 +649,37 @@ proc main =
 
   var running = true
   while running:
-    # Pick up edits to the layout buffer before resolving, so that the rects
+    # Pick up edits to the config buffer before resolving, so that the rects
     # and the hit tests within one frame always come from the same layout.
     # The buffer's own changed flag is the signal; consuming it here re-parses
-    # once per edit, whether the new table works out or not.
+    # once per edit, whether the new config works out or not.
     for b in buffers.mitems:
-      if b.isLayout and b.ed.changed:
+      if b.isConfig and b.ed.changed:
         let src = b.ed.fullText
-        reparseLayout(src, width, height, fm.lineHeight, layout, layoutNote)
-        if layoutNote.len == 0: saveConfig("layout.md", src)
+        reparseConfig(src, width, height, fm.lineHeight, layout, theme,
+                      configNote)
+        if configNote.len == 0: saveConfig("config.nif", src)
         b.ed.markSaved()
+
+    # The theme goes out to every widget every frame. Buffers come and go and
+    # the colors can change with any keystroke in the config, so there is no
+    # single place to hook this that could not be forgotten later.
+    title.theme = theme
+    history.theme = theme
+    tabs.ed.theme = theme
+    explorer.ed.theme = theme
+    term.ed.theme = theme
+    status.ed.theme = theme
+    for b in buffers.mitems: b.ed.theme = theme
 
     let cells = layout.resolve(width, height, fm.lineHeight, gap = 2)
     # A layout may have dropped the cell that had the focus.
     if focus notin cells: focus = "editor"
 
-    # Fill background -- gaps between cells show this color as borders
-    fillRect(rect(0, 0, width, height), color(200, 200, 200))
+    # Fill background -- gaps between cells show this color as borders, so it
+    # comes from the theme: `actionColor` is what the theme already uses to
+    # frame things.
+    fillRect(rect(0, 0, width, height), theme.actionColor)
 
     var e = default Event
     discard waitEvent(e, 500, {WantTextInput})
@@ -827,9 +866,9 @@ proc main =
       term.ed.underline(-1, -1)
 
     # Status bar / prompt -- update prefix when not focused
-    # A broken layout is the more urgent of the two notes: it is what the
-    # user is looking at while typing in the [layout] tab.
-    let note = if layoutNote.len > 0: layoutNote else: tabs.note
+    # A broken config is the more urgent of the two notes: it is what the
+    # user is looking at while typing in the [config] tab.
+    let note = if configNote.len > 0: configNote else: tabs.note
     if focus != "status":
       updateStatus(status, buffers[current].ed, buffers[current].path, note)
     var statusAct = TermAction(kind: noAction)

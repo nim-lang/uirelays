@@ -9,7 +9,7 @@
 ## Usage::
 ##
 ##   var ed = createSynEdit(font)
-##   # uses catppuccin mocha theme by default
+##   # uses `defaultTheme()` by default
 ##   ed.setText("hello world")
 ##   # in your main loop:
 ##   ed.draw(e, rect(10, 10, 600, 400))
@@ -1909,7 +1909,7 @@ proc setLabel*(s: var SynEdit; text: string) =
 # Initialization
 # ---------------------------------------------------------------------------
 
-proc createSynEdit*(font: Font; theme = catppuccinMocha()): SynEdit =
+proc createSynEdit*(font: Font; theme = defaultTheme()): SynEdit =
   result = SynEdit(front: @[], back: @[], actions: @[], cursor: 0,
     selected: (-1, -1), bracketA: -1, bracketB: -1, hotLink: (-1, -1),
     readOnly: -1, tabSize: TabWidth, lang: langNim,

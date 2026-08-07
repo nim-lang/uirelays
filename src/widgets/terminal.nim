@@ -611,7 +611,7 @@ proc sendBreak*(t: var Terminal) =
 # Initialization
 # ---------------------------------------------------------------------------
 
-proc createTerminal*(font: Font; theme = catppuccinMocha()): Terminal =
+proc createTerminal*(font: Font; theme = defaultTheme()): Terminal =
   result = Terminal(
     ed: createSynEdit(font, theme),
     hist: initTable[string, CmdHistory](),

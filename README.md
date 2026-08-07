@@ -181,7 +181,7 @@ nim c --define:"feature.uirelays.figDrawSiwin" examples/hello.nim
 - [editor.nim](examples/editor.nim) -- Code editor with integrated terminal
 - [hello.nim](examples/hello.nim) -- Minimal window with text rendering
 - [paint.nim](examples/paint.nim) -- Simple drawing app with explicit submodule imports
-- [layout_demo.nim](examples/layout_demo.nim) -- Markdown table layout system demo
+- [layout_demo.nim](examples/layout_demo.nim) -- NIF layout system demo
 - [todo.nim](examples/todo.nim) -- Todo list app
 
 ## Architecture
@@ -216,6 +216,29 @@ allocation -- just plain proc pointers.
 
 See [Writing a custom driver](doc/drivers.md) for a guide on
 adding support for a new platform or graphics toolkit.
+
+## Layout and theme
+
+A window is described in [NIF](doc/config.md) -- where its widgets go and what
+they look like -- read by the dependency-free lexer in `uirelays/tinynif`:
+
+```
+(config
+  (layout
+    (toolbar (lines 2))
+    (cols
+      (sidebar (px 250))
+      (editor))
+    (status (lines 1)))
+  (theme
+    (bg "1E1E2E")
+    (fg "CDD6F4"
+      (Keyword "CBA6F7"))))
+```
+
+`resolve` turns the layout into a `Rect` per name, and every field of `Theme`
+can be set -- except a color combination nobody could read, which is refused
+with a note rather than applied. See [The config file](doc/config.md).
 
 ## License
 

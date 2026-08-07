@@ -12,10 +12,11 @@ const
   BaseFontSize = 15
 
   LayoutSpec = """
-  | header, 2 lines |
-  | composer, 2 lines |
-  | list, * |
-  | status, 1 line |
+(layout
+  (header (lines 2))
+  (composer (lines 2))
+  (list)
+  (status (lines 1)))
 """
 
   bgColor          = color(244, 243, 241)
@@ -205,6 +206,7 @@ proc main =
   setWindowTitle("Tasks")
 
   let parsedLayout = parseLayout(LayoutSpec)
+  doAssert parsedLayout.error.len == 0, parsedLayout.error
 
   var items = @[
     TodoItem(text: "Review this week's priorities", done: true),
