@@ -233,18 +233,19 @@ proc renderTabs(tabs: var TabList; buffers: seq[BufferEntry]) =
 proc decorateTabs(tabs: var TabList; buffers: seq[BufferEntry]; current: int) =
   ## Active and modified state as markers, not as text. Offsets are derived
   ## from the names because the text is exactly `names` joined by newlines.
+  let theme = tabs.ed.theme
   tabs.ed.clearMarkers()
   var pos = 0
   for i, n in tabs.names:
     if i == current:
-      tabs.ed.addMarker(pos, pos + n.len - 1, color(69, 71, 90))
+      tabs.ed.addMarker(pos, pos + n.len - 1, theme.activeLineBg)
     pos += n.len + 1
   pos = 0
   for i, n in tabs.names:
     # The layout buffer never shows up here: the main loop consumes its changed
     # flag on the very next frame, which is also when it gets stored.
     if i < buffers.len and buffers[i].ed.changed:
-      tabs.ed.addMarker(pos, pos + n.len - 1, color(62, 68, 43))
+      tabs.ed.addMarker(pos, pos + n.len - 1, theme.markerBg)
     pos += n.len + 1
 
 proc applyTabEdits(tabs: var TabList; buffers: var seq[BufferEntry];
@@ -545,9 +546,9 @@ proc main =
   explorer.ed.lang = langNone
   # Every tab list line acts on click; in the explorer line 0 is the path
   # field, so only the listing below it does.
-  tabs.ed.setActionLines(0, color(88, 91, 112))
-  explorer.ed.setActionLines(1, color(88, 91, 112))
-  tabs.ed.setCloseButtons(0, color(147, 153, 178))
+  tabs.ed.setActionLines(0)
+  explorer.ed.setActionLines(1)
+  tabs.ed.setCloseButtons(0)
   var titleFontSize = DefaultFontSize
   var panelFontSize = DefaultFontSize
   var historyFontSize = DefaultFontSize

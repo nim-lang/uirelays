@@ -34,9 +34,9 @@
 ## to the caller::
 ##
 ##   var tabs = createSynEdit(font)
-##   tabs.setActionLines(0, color(88, 91, 112))    # every line is clickable
-##   tabs.setCloseButtons(0, color(147, 153, 178)) # ... and closable
-##   # setActionLines(1, ...) would leave line 0 as a normal field
+##   tabs.setActionLines(0)     # every line is clickable
+##   tabs.setCloseButtons(0)    # ... and closable
+##   # setActionLines(1) would leave line 0 as a normal field
 ##   # in your main loop:
 ##   let act = tabs.draw(e, area, focused)
 ##   if act.kind == closeLine: tabs.gotoLine(act.line + 1, 0); tabs.deleteLine()
@@ -207,10 +207,8 @@ type
     # Action lines -- see setActionLines()
     actionLines*: int               ## first line whose text is framed as
                                     ## clickable; -1 = none
-    actionColor*: Color
     # Close buttons -- see setCloseButtons()
     closeLines*: int                ## first line with an (x) button; -1 = none
-    closeColor*: Color
     closeHover: int                 ## line whose (x) the mouse is over; -1 = none
     # Cached images for rich markdown rendering
     imageCache: seq[ImageCacheEntry]
@@ -1915,8 +1913,7 @@ proc createSynEdit*(font: Font; theme = catppuccinMocha()): SynEdit =
   result = SynEdit(front: @[], back: @[], actions: @[], cursor: 0,
     selected: (-1, -1), bracketA: -1, bracketB: -1, hotLink: (-1, -1),
     readOnly: -1, tabSize: TabWidth, lang: langNim,
-    actionLines: -1, actionColor: theme.lineNumColor,
-    closeLines: -1, closeColor: theme.lineNumColor, closeHover: -1,
+    actionLines: -1, closeLines: -1, closeHover: -1,
     font: font, theme: theme, flags: {},
     showLineNumbers: false, cursorVisible: true, lastBlinkTick: 0)
 
@@ -2112,21 +2109,21 @@ proc clearLineDecorations*(s: var SynEdit) =
 # Action lines -- lines that act on click instead of just taking the cursor
 # ---------------------------------------------------------------------------
 
-proc setActionLines*(s: var SynEdit; first: int; color: Color) =
+proc setActionLines*(s: var SynEdit; first: int) =
   ## Frame the text of every line from `first` on, marking it as clickable:
   ## in such a field a click does something (activate, open, navigate)
   ## rather than merely placing the cursor. Pass `first = -1` to disable.
   ## Survives `setText`, so a field can be declared clickable once.
+  ## The frame is drawn in `theme.actionColor`.
   s.actionLines = first
-  s.actionColor = color
 
-proc setCloseButtons*(s: var SynEdit; first: int; color: Color) =
+proc setCloseButtons*(s: var SynEdit; first: int) =
   ## Draw an (x) button at the right edge of every line from `first` on.
   ## Clicking one yields `EditAction(kind: closeLine, line: ...)` and leaves
   ## the cursor alone, so it does not double as an activating click.
   ## Pass `first = -1` to disable. Survives `setText`.
+  ## The button is drawn in `theme.closeColor`.
   s.closeLines = first
-  s.closeColor = color
 
 proc closeButtonWidth(s: SynEdit): int {.inline.} =
   fontLineSkip(s.font) - 1
@@ -2499,8 +2496,8 @@ proc render*(s: var SynEdit; area: Rect; showCursor: bool) =
           let br = rect(endX - bw, lineY, bw, lineH - 1)
           let hovered = s.closeHover == thisLine
           # The cross is drawn, not typed: no font has to have the glyph.
-          fillRect(br, if hovered: s.closeColor else: s.getBg(lineStart))
-          let fg = if hovered: s.theme.bg else: s.closeColor
+          fillRect(br, if hovered: s.theme.closeColor else: s.getBg(lineStart))
+          let fg = if hovered: s.theme.bg else: s.theme.closeColor
           let pad = max(3, bw div 4)
           let x0 = br.x + pad
           let x1 = br.x + br.w - 1 - pad
@@ -2513,7 +2510,7 @@ proc render*(s: var SynEdit; area: Rect; showCursor: bool) =
           # -- and drawing it last puts its edges over the button's fill.
           # lineH - 1 keeps consecutive frames from sharing an edge.
           drawFrame(rect(area.x, lineY, endX - area.x + 1, lineH - 1),
-                    s.actionColor)
+                    s.theme.actionColor)
     inc s.span, consumedRows
     inc renderLine
 

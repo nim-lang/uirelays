@@ -27,6 +27,9 @@ type
     scrollBarColor*: Color          ## scrollbar grip
     scrollBarActiveColor*: Color    ## scrollbar grip while dragging
     scrollTrackColor*: Color        ## scrollbar track background
+    activeLineBg*: Color            ## background of the current/active line
+    actionColor*: Color             ## frame around a line that acts on click
+    closeColor*: Color              ## the (x) button of such a line
 
 proc catppuccinMocha*(): Theme =
   result = default(Theme)
@@ -63,3 +66,6 @@ proc catppuccinMocha*(): Theme =
   result.scrollBarColor = color(69, 71, 90)
   result.scrollBarActiveColor = color(108, 112, 134)
   result.scrollTrackColor = color(36, 36, 54)
+  result.activeLineBg = color(69, 71, 90)        # surface1
+  result.actionColor = color(88, 91, 112)        # surface2
+  result.closeColor = color(147, 153, 178)       # subtext0
