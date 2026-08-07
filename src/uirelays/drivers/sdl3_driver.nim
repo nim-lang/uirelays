@@ -83,6 +83,7 @@ var
   drawColor: screen.Color
   clipStack: seq[ClipState]
   currentClip: ClipState
+  currentLayout = ScreenLayout(scaleX: 1, scaleY: 1, uiScale: 100)
 
 proc clearMeasureCache() =
   measureCache.clear()
@@ -126,6 +127,7 @@ proc resetSdlState() =
   clipStack.setLen(0)
   currentClip = ClipState()
   drawColorValid = false
+  currentLayout = ScreenLayout(scaleX: 1, scaleY: 1, uiScale: 100)
   if ren != nil:
     destroyRenderer(ren)
     ren = nil
@@ -201,20 +203,48 @@ proc resolveFontPath(path: string): string =
 
   ""
 
+proc syncWindowLayout(layout: var ScreenLayout) =
+  ## With `WINDOW_HIGH_PIXEL_DENSITY` and no logical presentation set on the
+  ## renderer, SDL's render coordinates are device pixels -- so the window size
+  ## is reported in pixels too, and the ratio against the logical size is
+  ## exactly how much bigger the app has to draw.
+  if win == nil: return
+  var logicalW, logicalH, pixelW, pixelH: cint
+  discard getWindowSize(win, logicalW, logicalH)
+  discard getWindowSizeInPixels(win, pixelW, pixelH)
+  layout.width = (if pixelW > 0: pixelW.int else: logicalW.int)
+  layout.height = (if pixelH > 0: pixelH.int else: logicalH.int)
+  layout.scaleX = 1
+  layout.scaleY = 1
+  layout.uiScale =
+    if logicalW > 0 and pixelW > 0:
+      max(100, pixelW.int * 100 div logicalW.int)
+    else:
+      # No window metrics yet; the display's own scale is the best guess.
+      max(100, int(getWindowDisplayScale(win).float * 100.0 + 0.5))
+  currentLayout = layout
+
+proc sdlGetWindowLayout(): ScreenLayout =
+  if win != nil:
+    syncWindowLayout(currentLayout)
+  currentLayout
+
+template toPixelCoord(v: untyped): int =
+  ## SDL reports mouse positions in logical window units while everything this
+  ## driver draws is in device pixels, so a click has to be converted or it
+  ## lands at a fraction of where it looked.
+  int(v.float * currentLayout.uiScale.float / 100.0 + 0.5)
+
 proc sdlCreateWindow(layout: var ScreenLayout) =
   if ren != nil or win != nil:
     resetSdlState()
-  let winFlags = if layout.fullScreen: WINDOW_FULLSCREEN
-                 else: WINDOW_RESIZABLE
+  let winFlags =
+    if layout.fullScreen: WINDOW_FULLSCREEN or WINDOW_HIGH_PIXEL_DENSITY
+    else: WINDOW_RESIZABLE or WINDOW_HIGH_PIXEL_DENSITY
   discard createWindowAndRenderer(cstring"NimEdit",
     layout.width.cint, layout.height.cint, winFlags, win, ren)
   discard startTextInput(win)
-  var w, h: cint
-  discard getWindowSize(win, w, h)
-  layout.width = w
-  layout.height = h
-  layout.scaleX = 1
-  layout.scaleY = 1
+  syncWindowLayout(layout)
   currentClip = ClipState()
   applyClipState()
 
@@ -512,10 +542,18 @@ proc translateEvent(sdlEvent: sdl3.Event; e: var input.Event) =
   let evType = uint32(sdlEvent.common.`type`)
   if evType == uint32(EVENT_QUIT):
     e.kind = QuitEvent
-  elif evType == uint32(EVENT_WINDOW_RESIZED):
-    e.kind = WindowResizeEvent
-    e.x = sdlEvent.window.data1
-    e.y = sdlEvent.window.data2
+  elif evType == uint32(EVENT_WINDOW_RESIZED) or
+       evType == uint32(EVENT_WINDOW_PIXEL_SIZE_CHANGED) or
+       evType == uint32(EVENT_WINDOW_DISPLAY_SCALE_CHANGED):
+    # `data1`/`data2` are logical units for RESIZED, so ignore them and ask
+    # SDL for both sizes -- that is also what catches a density change.
+    syncWindowLayout(currentLayout)
+    e.kind = WindowMetricsEvent
+    e.x = currentLayout.width
+    e.y = currentLayout.height
+    e.scaleX = currentLayout.scaleX
+    e.scaleY = currentLayout.scaleY
+    e.uiScale = currentLayout.uiScale
   elif evType == uint32(EVENT_WINDOW_CLOSE_REQUESTED):
     e.kind = WindowCloseEvent
   elif evType == uint32(EVENT_WINDOW_FOCUS_GAINED):
@@ -544,8 +582,8 @@ proc translateEvent(sdlEvent: sdl3.Event; e: var input.Event) =
         e.text[i] = sdlEvent.text.text[i]
   elif evType == uint32(EVENT_MOUSE_BUTTON_DOWN):
     e.kind = MouseDownEvent
-    e.x = sdlEvent.button.x.int
-    e.y = sdlEvent.button.y.int
+    e.x = toPixelCoord(sdlEvent.button.x)
+    e.y = toPixelCoord(sdlEvent.button.y)
     e.clicks = sdlEvent.button.clicks.int
     case sdlEvent.button.button
     of BUTTON_LEFT: e.button = LeftButton
@@ -554,8 +592,8 @@ proc translateEvent(sdlEvent: sdl3.Event; e: var input.Event) =
     else: e.button = LeftButton
   elif evType == uint32(EVENT_MOUSE_BUTTON_UP):
     e.kind = MouseUpEvent
-    e.x = sdlEvent.button.x.int
-    e.y = sdlEvent.button.y.int
+    e.x = toPixelCoord(sdlEvent.button.x)
+    e.y = toPixelCoord(sdlEvent.button.y)
     case sdlEvent.button.button
     of BUTTON_LEFT: e.button = LeftButton
     of BUTTON_RIGHT: e.button = RightButton
@@ -563,10 +601,11 @@ proc translateEvent(sdlEvent: sdl3.Event; e: var input.Event) =
     else: e.button = LeftButton
   elif evType == uint32(EVENT_MOUSE_MOTION):
     e.kind = MouseMoveEvent
-    e.x = sdlEvent.motion.x.int
-    e.y = sdlEvent.motion.y.int
+    e.x = toPixelCoord(sdlEvent.motion.x)
+    e.y = toPixelCoord(sdlEvent.motion.y)
   elif evType == uint32(EVENT_MOUSE_WHEEL):
     e.kind = MouseWheelEvent
+    # Scroll deltas, not positions: nothing to convert.
     e.x = sdlEvent.wheel.x.int
     e.y = sdlEvent.wheel.y.int
 
@@ -603,7 +642,8 @@ proc initSdl3Driver*() =
   if not sdl3_ttf.init():
     quit("TTF3 init failed")
   windowRelays = WindowRelays(
-    createWindow: sdlCreateWindow, refresh: sdlRefresh,
+    createWindow: sdlCreateWindow, getWindowLayout: sdlGetWindowLayout,
+    refresh: sdlRefresh,
     saveState: sdlSaveState, restoreState: sdlRestoreState,
     setClipRect: sdlSetClipRect, setCursor: sdlSetCursor,
     setWindowTitle: sdlSetWindowTitle)

@@ -55,6 +55,10 @@ const defaultLayout = """
 const
   PathChars = {'a'..'z', 'A'..'Z', '0'..'9', '_', '.', '/', '\\',
                '-', '~', '\128'..'\255'}
+  # Font sizes are *logical*: `fontForSize` turns them into physical ones with
+  # the display's `uiScale`, so 16 looks the same on a 4K laptop panel as on a
+  # 96 dpi monitor, and Ctrl+plus/minus steps by the same apparent amount on
+  # both.
   DefaultFontSize = 16
   MinFontSize = 8
   MaxFontSize = 56
@@ -81,11 +85,18 @@ proc loadConfig(name: string): string =
   except CatchableError:
     result = ""
 
+var gUiScale = 100
+  ## Percent to enlarge text by on this display, from `ScreenLayout.uiScale`.
+  ## A global because every `fontForSize` call needs it and none of them cares
+  ## about anything else the window knows.
+
 proc fontForSize(fonts: var Table[int, Font]; size: int): Font =
+  ## `size` and the cache key are logical; only what reaches `openFont` is
+  ## physical.
   let clamped = clamp(size, MinFontSize, MaxFontSize)
   if clamped notin fonts:
     var metrics: FontMetrics
-    fonts[clamped] = openFont("", clamped, metrics)
+    fonts[clamped] = openFont("", clamped * gUiScale div 100, metrics)
   result = fonts[clamped]
 
 proc extractPath(s: SynEdit; pos: int): tuple[path: string, a, b: int] =
@@ -466,18 +477,20 @@ proc updateStatus(status: var Terminal; ed: SynEdit; path, note: string) =
   status.ed.lang = langConsole
   status.ed.appendOutput(info)
 
-proc updateHistory(history: var SynEdit; term: Terminal) =
-  ## Show the most recent commands from all terminal history.
-  var cmds: seq[string]
-  for process, h in term.hist:
-    for cmd in h.cmds:
-      cmds.add cmd
-  # Show most recent last (bottom of the list, closest to terminal)
-  var text = ""
-  for i, cmd in cmds:
-    if i > 0: text.add "\n"
-    text.add cmd
-  history.setLabel(text)
+proc addHistoryLine(history: var SynEdit; cmd: string) =
+  ## Append a command to the history panel as an ordinary edit, so that the (x)
+  ## button, a hand-made deletion and Ctrl+Z all act on it the same way. An
+  ## existing copy moves to the end instead of being repeated -- the list is
+  ## there to save typing, not to record every repetition.
+  if cmd.len == 0: return
+  for i in 0 ..< history.getLineCount():
+    if history.getLineText(i) == cmd:
+      history.gotoLine(i + 1, 0)
+      history.deleteLine()
+      break
+  history.gotoPos(history.len)
+  # One insertText, so one Ctrl+Z takes the whole row back out again.
+  history.insertText(if history.len > 0: "\n" & cmd else: cmd)
 
 proc tryOpenFile(arg: string; buffers: var seq[BufferEntry];
                  current: var int; font: Font; focus: var string) =
@@ -530,6 +543,7 @@ proc main =
   let screen = createWindow(1100, 700)
   var width = screen.width
   var height = screen.height
+  gUiScale = screen.uiScale
 
   var fonts: Table[int, Font]
   let font = fonts.fontForSize(DefaultFontSize)
@@ -549,6 +563,13 @@ proc main =
   tabs.ed.setActionLines(0)
   explorer.ed.setActionLines(1)
   tabs.ed.setCloseButtons(0)
+  # The history panel is a list of commands to act on, exactly like the tab
+  # list, so it gets the same framed rows and the same (x) -- which here forgets
+  # the command and frees the row for a newer one. `langNone` for the same
+  # reason the tab list uses it: a row is a label, not code to colorize.
+  history.setActionLines(0)
+  history.setCloseButtons(0)
+  history.lang = langNone
   var titleFontSize = DefaultFontSize
   var panelFontSize = DefaultFontSize
   var historyFontSize = DefaultFontSize
@@ -626,9 +647,27 @@ proc main =
     case e.kind
     of QuitEvent, WindowCloseEvent:
       running = false
-    of WindowResizeEvent:
+    of WindowResizeEvent, WindowMetricsEvent:
       width = e.x
       height = e.y
+      if e.kind == WindowMetricsEvent and e.uiScale > 0 and e.uiScale != gUiScale:
+        # Dragged onto a display of another density. The logical sizes stay put
+        # and only their physical counterparts change, so every font that is
+        # already open has to be reopened at the new scale.
+        gUiScale = e.uiScale
+        for f in fonts.values: closeFont(f)
+        fonts.clear()
+        title.setFont(fonts.fontForSize(titleFontSize))
+        let panelFont = fonts.fontForSize(panelFontSize)
+        tabs.ed.setFont(panelFont)
+        explorer.ed.setFont(panelFont)
+        history.setFont(fonts.fontForSize(historyFontSize))
+        term.ed.setFont(fonts.fontForSize(terminalFontSize))
+        status.ed.setFont(fonts.fontForSize(statusFontSize))
+        let editorFont = fonts.fontForSize(editorFontSize)
+        for i in 0 ..< buffers.len:
+          buffers[i].ed.setFont(editorFont)
+        fm = getFontMetrics(fonts.fontForSize(DefaultFontSize))
     of MouseDownEvent:
       let hit = cells.hitTest(e.x, e.y)
       if hit.name.len > 0:
@@ -744,19 +783,23 @@ proc main =
     of noAction:
       buffers[current].ed.underline(-1, -1)
 
-    # History panel -- click to re-run a command
+    # History panel -- its lines ARE the command list, so a click re-runs a line
+    # and the (x) deletes one. The ingest runs even when the layout leaves the
+    # panel out, so nothing typed while it was hidden goes missing.
+    for cmd in term.ran: history.addHistoryLine(cmd)
+    term.ran.setLen 0
     if "history" in cells:
-      updateHistory(history, term)
-      discard history.draw(e, cells["history"], focus == "history")
-      if e.kind == MouseDownEvent and focus == "history":
-        let idx = history.currentLine
-        let cmds = block:
-          var r: seq[string]
-          for _, h in term.hist:
-            for cmd in h.cmds: r.add cmd
-          r
-        if idx < cmds.len:
-          var cmd = cmds[idx]
+      let histAct = history.draw(e, cells["history"], focus == "history")
+      if histAct.kind == closeLine:
+        # Same as the tab list: the button deletes the line, so closing by
+        # button and closing by hand share one undo stack.
+        history.gotoLine(histAct.line + 1, 0)
+        history.deleteLine()
+      elif e.kind == MouseDownEvent and focus == "history":
+        # Only a click on the row itself re-runs it: the (x) took the branch
+        # above and must not activate what it is removing.
+        var cmd = history.getLineText(history.currentLine)
+        if cmd.len > 0:
           discard term.runCommand(cmd)
           focus = "terminal"
 

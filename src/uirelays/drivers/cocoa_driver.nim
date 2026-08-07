@@ -62,6 +62,8 @@ const
 
 proc cCreateWindow(w, h: cint; outW, outH, outScaleX, outScaleY: ptr cint)
   {.importc: "cocoa_createWindow", cdecl.}
+proc cGetWindowLayout(outW, outH, outScaleX, outScaleY: ptr cint)
+  {.importc: "cocoa_getWindowLayout", cdecl.}
 proc cRefresh() {.importc: "cocoa_refresh", cdecl.}
 proc cPollEvent(ev: ptr NEEvent): cint {.importc: "cocoa_pollEvent", cdecl.}
 proc cWaitEvent(ev: ptr NEEvent; timeoutMs: cint): cint {.importc: "cocoa_waitEvent", cdecl.}
@@ -111,6 +113,16 @@ proc cocoaCreateWindow(layout: var ScreenLayout) =
   layout.height = h
   layout.scaleX = sx
   layout.scaleY = sy
+  # Cocoa coordinates are points and AppKit renders into a backing store of
+  # `scale` pixels per point, so text is already crisp and physically right at
+  # whatever size the app asked for: nothing for the app to enlarge.
+  layout.uiScale = 100
+
+proc cocoaGetWindowLayout(): ScreenLayout =
+  var w, h, sx, sy: cint
+  cGetWindowLayout(addr w, addr h, addr sx, addr sy)
+  ScreenLayout(width: w, height: h,
+               scaleX: max(1, sx.int), scaleY: max(1, sy.int), uiScale: 100)
 
 proc cocoaRefresh() = cRefresh()
 proc cocoaSaveState() = cSaveState()
@@ -195,9 +207,15 @@ proc translateNEEvent(ne: NEEvent; e: var input.Event) =
   of neQuit:
     e.kind = QuitEvent
   of neWindowResize:
-    e.kind = WindowResizeEvent
+    # A resize is also how a move between a Retina and a non-Retina display
+    # surfaces, so re-read the backing scale rather than trusting the last one.
+    let layout = cocoaGetWindowLayout()
+    e.kind = WindowMetricsEvent
     e.x = ne.x
     e.y = ne.y
+    e.scaleX = layout.scaleX
+    e.scaleY = layout.scaleY
+    e.uiScale = layout.uiScale
   of neWindowClose:
     e.kind = WindowCloseEvent
   of neWindowFocusGained:
@@ -274,7 +292,8 @@ proc cocoaShutdown() = cShutdown()
 
 proc initCocoaDriver*() =
   windowRelays = WindowRelays(
-    createWindow: cocoaCreateWindow, refresh: cocoaRefresh,
+    createWindow: cocoaCreateWindow, getWindowLayout: cocoaGetWindowLayout,
+    refresh: cocoaRefresh,
     saveState: cocoaSaveState, restoreState: cocoaRestoreState,
     setClipRect: cocoaSetClipRect, setCursor: cocoaSetCursor,
     setWindowTitle: cocoaSetWindowTitle)

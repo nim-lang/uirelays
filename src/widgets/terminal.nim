@@ -259,6 +259,10 @@ type
   Terminal* = object
     ed*: SynEdit
     hist*: Table[string, CmdHistory]
+    ran*: seq[string]   ## commands run since the host last emptied this.
+                        ## `Enter` is handled inside `draw`, so without this a
+                        ## host cannot tell that a command happened -- which it
+                        ## needs to keep a history list of its own.
     files: seq[string]
     prefix: string
     processRunning*: bool
@@ -375,6 +379,7 @@ proc runCommand*(t: var Terminal; cmd: var string): TermAction =
   result = TermAction(kind: noAction)
   t.files.setLen 0
   t.hist[t.process].addCmd(cmd)
+  t.ran.add cmd
   if t.processRunning:
     requests.send(ThreadTask(cwd: t.cwd, cmd: cmd))
     return

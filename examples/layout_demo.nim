@@ -29,7 +29,7 @@ proc main =
   var height = win.height
 
   var fm: FontMetrics
-  let font = openFont("", 16, fm)
+  let font = openFont("", win.scaled(16), fm)
   setWindowTitle("Layout Demo")
 
   let parsed = parseLayout(LayoutSpec)
@@ -44,7 +44,7 @@ proc main =
       case e.kind
       of QuitEvent, WindowCloseEvent:
         running = false
-      of WindowResizeEvent:
+      of WindowResizeEvent, WindowMetricsEvent:
         width = e.x
         height = e.y
       of MouseMoveEvent:

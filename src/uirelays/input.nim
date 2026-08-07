@@ -21,7 +21,7 @@ type
     NoEvent,
     KeyDownEvent, KeyUpEvent, TextInputEvent,
     MouseDownEvent, MouseUpEvent, MouseMoveEvent, MouseWheelEvent,
-    WindowResizeEvent, WindowCloseEvent,
+    WindowResizeEvent, WindowMetricsEvent, WindowCloseEvent,
     WindowFocusGainedEvent, WindowFocusLostEvent,
     QuitEvent
 
@@ -40,6 +40,11 @@ type
     mods*: set[Modifier]
     text*: array[4, char]  ## TextInputEvent: one UTF-8 codepoint, no alloc
     x*, y*: int            ## mouse position, scroll delta, or new window size
+    scaleX*, scaleY*: int  ## WindowMetricsEvent: device pixels per coordinate
+                           ## unit, as in `ScreenLayout`
+    uiScale*: int          ## WindowMetricsEvent: percent to enlarge the UI by,
+                           ## as in `ScreenLayout`. A change here means the
+                           ## window moved to a display of another density.
     button*: MouseButton   ## MouseDownEvent/MouseUpEvent: which button
     clicks*: int           ## number of consecutive clicks (double-click = 2)
 

@@ -408,10 +408,14 @@ proc figCreateWindow(layout: var ScreenLayout) =
         pushCurrentRenderRequest(),
       onResize: proc(e: ResizeEvent) =
         appWindow.refreshUiScale(useAutoScale)
+        let scale = currentScale().round().int
         queueEvent(input.Event(
-          kind: WindowResizeEvent,
+          kind: WindowMetricsEvent,
           x: toLogicalSize(e.size.x),
           y: toLogicalSize(e.size.y),
+          scaleX: scale,
+          scaleY: scale,
+          uiScale: 100,
         )),
       onStateBoolChanged: proc(e: StateBoolChangedEvent) =
         case e.kind
@@ -464,8 +468,19 @@ proc figCreateWindow(layout: var ScreenLayout) =
   let size = appWindow.logicalSize()
   layout.width = size.x.round().int
   layout.height = size.y.round().int
+  # FigDraw already rasterizes at the window's scale, fractional values
+  # included, so the app draws in logical units and enlarges nothing.
   layout.scaleX = currentScale().round().int
   layout.scaleY = currentScale().round().int
+  layout.uiScale = 100
+
+proc figGetWindowLayout(): ScreenLayout =
+  if appWindow.isNil:
+    return ScreenLayout(scaleX: 1, scaleY: 1, uiScale: 100)
+  let size = appWindow.logicalSize()
+  let scale = currentScale().round().int
+  ScreenLayout(width: size.x.round().int, height: size.y.round().int,
+               scaleX: scale, scaleY: scale, uiScale: 100)
 
 proc figRefresh() =
   if appWindow.isNil or appWindow.closed:
@@ -648,6 +663,7 @@ proc figShutdown() =
 proc initFigDrawSiwinDriver*() =
   windowRelays = WindowRelays(
     createWindow: figCreateWindow,
+    getWindowLayout: figGetWindowLayout,
     refresh: figRefresh,
     saveState: figSaveState,
     restoreState: figRestoreState,

@@ -34,7 +34,8 @@ will compile and run -- it just won't do anything for the missing parts.
 
 | Field | Signature | Notes |
 |-------|-----------|-------|
-| `createWindow` | `proc (layout: var ScreenLayout)` | Create and show the window. Read `layout.width/height` for the requested size, write back the actual size. |
+| `createWindow` | `proc (layout: var ScreenLayout)` | Create and show the window. Read `layout.width/height` for the requested size, write back the actual size plus `scaleX/scaleY` and `uiScale` (see [Display density](#display-density)). |
+| `getWindowLayout` | `proc (): ScreenLayout` | Return the current size and scale. Apps call this to re-read the density after the window may have moved to another monitor. |
 | `refresh` | `proc ()` | Present the current frame. For double-buffered drivers this means copying the back buffer to the window. |
 | `saveState` | `proc ()` | Push the current graphics state (clip rect). |
 | `restoreState` | `proc ()` | Pop the graphics state. |
@@ -112,10 +113,67 @@ into `Event` values. Key points:
   set `e.button` and `e.clicks` (track double/triple clicks yourself).
 - **Scroll**: `MouseWheelEvent` with `e.y` as the scroll direction
   (+1 up, -1 down).
-- **Window**: Emit `WindowResizeEvent` with the new size in `e.x`, `e.y`.
+- **Window**: Emit `WindowMetricsEvent` with the new size in `e.x`, `e.y` and
+  the current scale in `e.scaleX`, `e.scaleY`, `e.uiScale`. Emit it whenever
+  either the size *or* the density changes, so an app that only listens for
+  this one event stays correct on both. `WindowResizeEvent` is the older,
+  size-only event; it is still in the enum for drivers that have not been
+  updated, but no driver in this repo emits it any more.
   Emit `WindowCloseEvent` when the user clicks the close button (don't
   destroy the window -- let the app decide). Emit `QuitEvent` for
   platform quit signals.
+
+## Display density
+
+A driver reports what it knows about the display with two integers -- never a
+float, because a whole number of pixels per coordinate unit and a percentage
+both are integers, and 125% or 150% stay exact:
+
+| Field | Meaning |
+|-------|---------|
+| `scaleX`, `scaleY` | Device pixels the driver *already* puts per coordinate unit, so `width * scaleX` is the physical width. Informational: an app must not scale its own drawing by this. |
+| `uiScale` | Percent an app should enlarge fonts and hardcoded pixel sizes by. 100 means the driver or the platform already accounts for the display's density. |
+
+The distinction is the whole point, because the same scale factor means opposite
+things on different platforms. Cocoa hands you *points* and renders into a 2x
+backing store, so a 16pt font is already physically right: `scaleX = 2`,
+`uiScale = 100`. X11 hands you raw *pixels* and scales nothing, so that same 16
+is half the size it should be on a 192 dpi panel: `scaleX = 1`, `uiScale = 200`.
+An app that multiplies its font sizes by `uiScale` -- via
+`layout.scaled(size)` -- is correct on both, and gets crisp glyphs either way,
+since the font is rasterized at its true size rather than a smaller raster
+being blitted up.
+
+What each driver in this repo reports:
+
+| Driver | Coordinate unit | Density source | Reports |
+|--------|-----------------|----------------|---------|
+| `x11_driver` | device pixels | `Xft.dpi` resource | `scaleX = 1`, `uiScale = dpi * 100 / 96` |
+| `winapi_driver` | device pixels | `GetDpiForWindow` | `scaleX = 1`, `uiScale = dpi * 100 / 96` |
+| `cocoa_driver` | points | `backingScaleFactor` | `scaleX = 1` or `2`, `uiScale = 100` |
+| `gtk4_driver` | logical pixels | `gtk_widget_get_scale_factor` | `scaleX = scale factor`, `uiScale = 100` |
+| `sdl3_driver` | device pixels | pixel size / logical size | `scaleX = 1`, `uiScale` = that ratio |
+| `sdl2_driver` | device pixels | none | `scaleX = 1`, `uiScale = 100` |
+| `figdraw_*_driver` | logical pixels | `contentScale` | `scaleX` = rounded scale, `uiScale = 100` |
+
+The size an app passes to `createWindow` is in the driver's coordinate unit too,
+and a driver writes back what it actually got -- which may differ. On a 200%
+display, `sdl3_driver` turns a requested 1100 into a 2200 pixel window (SDL
+takes the request in logical units), while `x11_driver` gives you the 1100
+device pixels you asked for. So always read `layout.width/height` back instead
+of assuming the request was honoured.
+
+Two things worth knowing when writing a new driver:
+
+- **Do not report the physical density in `uiScale` if you already scale the
+  drawing yourself.** Doing both makes text twice as large as asked.
+- **The X server's advertised physical size is not a density source.** Xwayland
+  reports a flat 96 dpi no matter the monitor, which is why `x11_driver` reads
+  the `Xft.dpi` resource that the desktop environment writes instead.
+
+`sdl2_driver` is the one driver that cannot find out: `SDL_GetDisplayDPI`
+derives its answer from that same unreliable physical size, and SDL2 on Windows
+is not DPI aware at all. Use the SDL3 driver on a HiDPI display.
 
 ## Font path to face name
 

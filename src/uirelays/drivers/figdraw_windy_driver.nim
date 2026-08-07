@@ -409,10 +409,14 @@ proc figCreateWindow(layout: var ScreenLayout) =
     appWindow.onResize = proc() =
       setFigUiScale(appWindow.contentScale())
       let size = appWindow.size()
+      let scale = currentScale().round().int
       queueEvent(input.Event(
-        kind: WindowResizeEvent,
+        kind: WindowMetricsEvent,
         x: toLogicalSize(size.x),
         y: toLogicalSize(size.y),
+        scaleX: scale,
+        scaleY: scale,
+        uiScale: 100,
       ))
     appWindow.onFocusChange = proc() =
       queueEvent(input.Event(
@@ -482,8 +486,20 @@ proc figCreateWindow(layout: var ScreenLayout) =
   let size = appWindow.logicalSize()
   layout.width = size.x.round().int
   layout.height = size.y.round().int
+  # FigDraw already rasterizes at `contentScale`, fractional values included,
+  # so the app draws in logical units and enlarges nothing. `scaleX/scaleY` are
+  # the rounded report of that; `uiScale` is what an app acts on.
   layout.scaleX = currentScale().round().int
   layout.scaleY = currentScale().round().int
+  layout.uiScale = 100
+
+proc figGetWindowLayout(): ScreenLayout =
+  if appWindow.isNil:
+    return ScreenLayout(scaleX: 1, scaleY: 1, uiScale: 100)
+  let size = appWindow.logicalSize()
+  let scale = currentScale().round().int
+  ScreenLayout(width: size.x.round().int, height: size.y.round().int,
+               scaleX: scale, scaleY: scale, uiScale: 100)
 
 proc figRefresh() =
   renderQueuedOps()
@@ -663,6 +679,7 @@ proc figShutdown() =
 proc initFigDrawWindyDriver*() =
   windowRelays = WindowRelays(
     createWindow: figCreateWindow,
+    getWindowLayout: figGetWindowLayout,
     refresh: figRefresh,
     saveState: figSaveState,
     restoreState: figRestoreState,
