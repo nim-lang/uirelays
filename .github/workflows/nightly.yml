@@ -1,0 +1,296 @@
+name: focim nightly builds
+
+# Builds apps/focim -- the Focussed Nim Editor -- on a matrix of platforms and
+# publishes the binaries to this repo's GitHub Releases. Each run creates one
+# versioned release per commit (tag `nightly-<version>-<commit>`, version from
+# uirelays.nimble), so download URLs pin an exact revision. The library's own
+# build-and-test matrix lives in ci.yml and is intentionally kept separate:
+# this workflow ships a binary, that one checks the code.
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # 08:00 UTC daily.
+    - cron: '0 8 * * *'
+  push:
+    branches: [ master ]
+    # On top of the daily build, a push cuts a nightly when ANY commit in the
+    # push carries the marker `[rebuild]` in its message -- enforced by the
+    # `prepare` job's `if:`. This keeps ordinary pushes off the 4-platform
+    # build while still giving an on-demand force, e.g.:
+    #   git commit --allow-empty -m 'publish focim [rebuild]'
+    # or just run this workflow manually from the Actions tab.
+
+# Publishing to this repo's own Releases only needs contents:write, so the
+# built-in GITHUB_TOKEN suffices.
+permissions:
+  contents: write
+
+# Never let two nightly runs race on the same release.
+concurrency:
+  group: focim-nightly
+  cancel-in-progress: false
+
+jobs:
+  # ── Resolve the version/commit and create the release ──────────────────────
+  prepare:
+    runs-on: ubuntu-24.04
+    # Scheduled and manual runs always proceed; a push builds only when one of
+    # its commits opts in with the `[rebuild]` marker.
+    if: >-
+      github.event_name != 'push' ||
+      contains(join(github.event.commits.*.message), '[rebuild]')
+    outputs:
+      commit: ${{ steps.decide.outputs.commit }}
+      short: ${{ steps.decide.outputs.short }}
+      date: ${{ steps.decide.outputs.date }}
+      version: ${{ steps.decide.outputs.version }}
+      tag: ${{ steps.decide.outputs.tag }}
+      deploy: ${{ steps.decide.outputs.deploy }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Determine version/commit and deploy decision
+        id: decide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          commit='${{ github.sha }}'
+          short=${commit:0:9}
+          date=$(date -u +'%Y-%m-%d')
+
+          # The canonical version is the nimble file's, the same one `nimble
+          # install` reports.
+          version=$(grep -m1 '^version' uirelays.nimble | cut -d'"' -f2)
+          if [ -z "$version" ]; then
+            echo "Could not read version from uirelays.nimble" >&2
+            exit 1
+          fi
+
+          # One release per commit -- the tag carries the version and hash, so
+          # download URLs are versioned rather than rolling.
+          tag="nightly-$version-$short"
+
+          echo "commit=$commit"  >> "$GITHUB_OUTPUT"
+          echo "short=$short"    >> "$GITHUB_OUTPUT"
+          echo "date=$date"      >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag"        >> "$GITHUB_OUTPUT"
+
+          # Skip a scheduled run only when this exact commit is already fully
+          # published (all 4 platform assets present); a partial or failed
+          # earlier run has fewer assets and will retry. Manual and `[rebuild]`
+          # pushes always build -- uploads use --clobber, so re-publishing just
+          # refreshes the assets.
+          assets=0
+          if count=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets | length' 2>/dev/null); then
+            assets=$count
+          fi
+          deploy=true
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$assets" -ge 4 ]; then
+            echo "$tag already has $assets assets; nothing new to build."
+            deploy=false
+          fi
+          echo "deploy=$deploy" >> "$GITHUB_OUTPUT"
+
+      - name: Create the release for this commit
+        if: steps.decide.outputs.deploy == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag='${{ steps.decide.outputs.tag }}'
+          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "focim ${{ steps.decide.outputs.version }} nightly (${{ steps.decide.outputs.date }})" \
+              --prerelease \
+              --notes "Nightly build of apps/focim @ ${{ steps.decide.outputs.commit }} (version ${{ steps.decide.outputs.version }}, ${{ steps.decide.outputs.date }})."
+          fi
+
+  # ── Build + package focim per platform ─────────────────────────────────────
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.deploy == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: linux,   cpu: amd64, runner: ubuntu-24.04,     ext: tar.xz }
+          - { os: linux,   cpu: arm64, runner: ubuntu-24.04-arm, ext: tar.xz }
+          - { os: macos,   cpu: arm64, runner: macos-15,         ext: tar.xz }
+          - { os: windows, cpu: amd64, runner: windows-2025,     ext: zip }
+    name: '${{ matrix.os }}-${{ matrix.cpu }}'
+    runs-on: ${{ matrix.runner }}
+    env:
+      ASSET: focim-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.short }}-${{ matrix.os }}_${{ matrix.cpu }}.${{ matrix.ext }}
+    steps:
+      - name: Set `core.autocrlf` to false
+        run: |
+          git config --global core.autocrlf false
+          git config --global init.defaultBranch master
+
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 1
+
+      # No -dev packages: the X11 driver reaches libX11 and libXft through
+      # `dynlib`, so nothing X11 is needed to compile and the binary links
+      # only libc. What is installed here is what the smoke test needs to
+      # actually open a window -- the runtime libraries, a display and a font.
+      - name: Install what the Linux smoke test needs
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libx11-6 libxft2 fonts-dejavu-core
+
+      - name: Setup Nim
+        uses: alaviss/setup-nim@0.1.1
+        with:
+          path: 'nim'
+          version: devel
+          architecture: ${{ matrix.cpu }}
+
+      - name: Nim version
+        run: nim --version
+
+      - name: Build focim
+        shell: bash
+        run: |
+          set -euo pipefail
+          # apps/nim.cfg supplies --path:../src, so this works from the root.
+          nim c -d:release --hints:off apps/focim.nim
+
+      - name: Stage the package
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=focim
+          if [ "${{ runner.os }}" = "Windows" ]; then exe=focim.exe; fi
+          stage=staging/focim
+          mkdir -p "$stage"
+          cp "apps/$exe" "$stage/$exe"
+          cp README.md LICENSE.md "$stage/"
+          cp doc/config.md "$stage/config.md"
+
+          cat > "$stage/NIGHTLY.txt" <<EOF
+          focim -- the Focussed Nim Editor, nightly build
+          uirelays-commit: ${{ needs.prepare.outputs.commit }}
+          version:         ${{ needs.prepare.outputs.version }}
+          date:            ${{ needs.prepare.outputs.date }}
+          platform:        ${{ matrix.os }}_${{ matrix.cpu }}
+
+          Run ./$exe, optionally with a file to open. Tab 0 is [config]: its text
+          is the layout and the color theme, and editing it changes the window on
+          the next frame. See config.md.
+
+          The config and the list of open tabs are written to focim/ under your
+          config directory (~/.config/focim on Linux).
+
+          On Linux the binary links only libc; X11 is loaded at runtime, so
+          libX11.so.6 and libXft.so.2 have to be installed (apt install libx11-6
+          libxft2) along with at least one font fontconfig can find.
+          EOF
+
+      - name: Smoke test under Xvfb (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # focim opens a window and stays up, so "still running when the
+          # timeout kills it" is the pass. A driver that cannot open a display,
+          # a missing runtime library or a startup crash all exit early with a
+          # different code.
+          set +e
+          xvfb-run -a --server-args='-screen 0 1280x800x24' \
+            timeout 8 staging/focim/focim
+          code=$?
+          set -e
+          if [ "$code" != 124 ]; then
+            echo "focim exited with $code instead of running until killed" >&2
+            exit 1
+          fi
+          echo "focim stayed up for 8s under Xvfb"
+
+      - name: Check the binary (macOS, Windows)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # These runners have no display to open a window on, so the check is
+          # limited to the artifact itself.
+          exe=focim
+          if [ "${{ runner.os }}" = "Windows" ]; then exe=focim.exe; fi
+          test -f "staging/focim/$exe"
+          size=$(wc -c < "staging/focim/$exe")
+          echo "$exe is $size bytes"
+          if [ "$size" -lt 100000 ]; then
+            echo "suspiciously small for a linked binary" >&2
+            exit 1
+          fi
+          if [ "${{ runner.os }}" = "macOS" ]; then otool -L "staging/focim/$exe"; fi
+
+      - name: Create archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          if [ "${{ matrix.ext }}" = "zip" ]; then
+            ( cd staging && 7z a -tzip -mx=9 "${{ github.workspace }}/out/$ASSET" focim >/dev/null )
+          else
+            tar -C staging -cJf "out/$ASSET" focim
+          fi
+          ls -lh out
+
+      - name: Upload asset to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload '${{ needs.prepare.outputs.tag }}' "out/$ASSET" --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Upload asset as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET }}
+          path: out/${{ env.ASSET }}
+
+  # ── Fill in the release notes once every platform succeeded ────────────────
+  finalize:
+    needs: [ prepare, build ]
+    if: needs.prepare.outputs.deploy == 'true'
+    runs-on: ubuntu-24.04
+    env:
+      V: ${{ needs.prepare.outputs.version }}
+      S: ${{ needs.prepare.outputs.short }}
+    steps:
+      - name: Update release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          notes=$(cat <<EOF
+          focim -- the Focussed Nim Editor.
+          Built from uirelays @ ${{ needs.prepare.outputs.commit }}
+          version ${V} · ${{ needs.prepare.outputs.date }}
+
+          Downloads:
+          - Linux x86_64:   focim-${V}-${S}-linux_amd64.tar.xz
+          - Linux ARM64:    focim-${V}-${S}-linux_arm64.tar.xz
+          - macOS ARM64:    focim-${V}-${S}-macos_arm64.tar.xz
+          - Windows x86_64: focim-${V}-${S}-windows_amd64.zip
+
+          Extract and run focim. On Linux, libX11.so.6 and libXft.so.2 are
+          loaded at runtime and have to be present. Tab 0 is [config]: its text
+          is the window's layout and color theme.
+          EOF
+          )
+          gh release edit '${{ needs.prepare.outputs.tag }}' --repo "$GITHUB_REPOSITORY" --notes "$notes"

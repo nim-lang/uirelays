@@ -186,6 +186,12 @@ nim c --define:"feature.uirelays.figDrawSiwin" examples/hello.nim
 nim c apps/focim.nim
 ```
 
+Or download a build: nightly binaries for Linux (x86_64 and ARM64), macOS
+(ARM64) and Windows (x86_64) are published to
+[Releases](https://github.com/nim-lang/uirelays/releases) by
+[`nightly.yml`](.github/workflows/nightly.yml), one release per commit. On
+Linux they need `libX11.so.6` and `libXft.so.2` at runtime; nothing else.
+
 ## Examples
 
 - [hello.nim](examples/hello.nim) -- Minimal window with text rendering
