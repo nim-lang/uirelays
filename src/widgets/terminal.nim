@@ -14,6 +14,8 @@
 ## their output into the editor buffer.
 
 import std/[os, osproc, streams, strutils, tables, browsers]
+when defined(windows): import std/winlean
+else: import std/posix
 import synedit
 import ../uirelays/[coords, screen, input]
 
@@ -176,17 +178,76 @@ type
     cwd: string
     cmd: string
 
+  ThreadReply = object
+    text: string     ## output to append, may end mid-line
+    finished: bool   ## the process is over; nothing more will come
+
 var requests: Channel[ThreadTask]
 requests.open()
-var responses: Channel[string]
+var responses: Channel[ThreadReply]
 responses.open()
 
 const EndToken = "\e"
+  ## Only a *request*: asks the thread to terminate the running process.
+  ## Replies say they are the last one with `ThreadReply.finished`, so no byte
+  ## of a process's output can be mistaken for the end of it.
+
+# Output is read from the pipe handle rather than through `p.outputStream`,
+# which wraps it in a stdio `File` -- the wrong tool here twice over. Its reads
+# go through `fread`, which does not return until it has a full block or the
+# pipe closes, so on a live process the output only surfaced once it had
+# exited. And the bytes stdio buffers are invisible to a readiness check on the
+# file descriptor, so waiting and reading cannot be combined through it.
+
+const OutputChunk = 4096
+
+when defined(windows):
+  proc waitForOutput(p: Process; timeoutMs: int): bool =
+    ## `PeekNamedPipe` cannot wait, so poll it.
+    var waited = 0
+    while true:
+      if osproc.hasData(p): return true
+      if waited >= timeoutMs: return false
+      os.sleep 10
+      inc waited, 10
+
+  proc readAvailable(p: Process; buf: var string): int =
+    var got: int32 = 0
+    if readFile(p.outputHandle.Handle, addr buf[0], int32(buf.len),
+                addr got, nil) == 0:
+      return 0     # broken pipe: end of output
+    result = got.int
+else:
+  proc waitForOutput(p: Process; timeoutMs: int): bool =
+    ## True as soon as the pipe holds something, or has reached its end. The
+    ## timeout is what lets the loop notice a request that arrives while the
+    ## process is quiet -- typed input, or Ctrl+C.
+    var fds = default(TFdSet)
+    FD_ZERO(fds)
+    FD_SET(cint(p.outputHandle), fds)
+    var tv = Timeval(tv_sec: posix.Time(timeoutMs div 1000),
+                     tv_usec: Suseconds((timeoutMs mod 1000) * 1000))
+    result = select(cint(p.outputHandle) + 1, addr fds, nil, nil, addr tv) == 1
+
+  proc readAvailable(p: Process; buf: var string): int =
+    result = posix.read(p.outputHandle, addr buf[0], buf.len)
+    if result < 0: result = 0
 
 proc execThreadProc() {.thread.} =
   var p: Process
-  var o: Stream
   var started = false
+  var chunk = newString(OutputChunk)
+
+  template reap() =
+    ## The process is over: report how it went and say this is the last reply.
+    started = false
+    let exitCode = p.waitForExit()
+    p.close()
+    if exitCode != 0:
+      responses.send ThreadReply(
+        text: "Process terminated with exitcode: " & $exitCode & "\L")
+    responses.send ThreadReply(finished: true)
+
   while true:
     var tasks = requests.peek()
     if tasks == 0 and not started: tasks = 1
@@ -196,13 +257,7 @@ proc execThreadProc() {.thread.} =
         if task.cmd == EndToken:
           if started:
             p.terminate()
-            o.close()
-            started = false
-            let exitCode = p.waitForExit()
-            p.close()
-            if exitCode != 0:
-              responses.send("Process terminated with exitcode: " & $exitCode & "\L")
-            responses.send EndToken
+            reap()
         else:
           if not started:
             let (bin, args) = cmdToArgs(task.cmd)
@@ -210,28 +265,31 @@ proc execThreadProc() {.thread.} =
               p = startProcess(bin, task.cwd, args,
                         options = {poStdErrToStdOut, poUsePath, poInteractive,
                                    poDaemon})
-              o = p.outputStream
               started = true
             except:
               started = false
-              responses.send getCurrentExceptionMsg()
-              responses.send EndToken
+              responses.send ThreadReply(text: getCurrentExceptionMsg())
+              responses.send ThreadReply(finished: true)
           else:
             p.inputStream.writeLine task.cmd
+            # Buffered: without this the process waits for input that is
+            # already sitting in this end of the pipe.
+            p.inputStream.flush()
     if started:
-      if not p.running:
-        while not o.atEnd:
-          let line = o.readAll()
-          responses.send line
-        started = false
-        let exitCode = p.waitForExit()
-        p.close()
-        if exitCode != 0:
-          responses.send("Process terminated with exitcode: " & $exitCode & "\L")
-        responses.send EndToken
-      elif osproc.hasData(p):
-        let line = o.readAll()
-        responses.send line
+      # Hand over whatever has arrived so far, even a part of a line -- that is
+      # what makes a progress indicator move rather than appear at the end.
+      # The wait is bounded so that a request arriving while the process is
+      # quiet still gets picked up on the next turn.
+      if waitForOutput(p, 50):
+        chunk.setLen OutputChunk
+        let n = readAvailable(p, chunk)
+        if n > 0:
+          chunk.setLen n
+          responses.send ThreadReply(text: chunk)
+        else:
+          reap()      # end of the pipe
+      elif not p.running:
+        reap()        # exited without closing the pipe (a child still holds it)
 
 var backgroundThread: Thread[void]
 createThread[void](backgroundThread, execThreadProc)
@@ -446,13 +504,13 @@ proc update*(t: var Terminal) =
   if t.processRunning:
     if responses.peek > 0:
       let resp = responses.recv()
-      if resp == EndToken:
+      if resp.text.len > 0:
+        t.ed.appendOutput(resp.text)
+      if resp.finished:
         t.processRunning = false
         t.process.setLen 0
         t.ed.appendOutput "\L"
         t.insertPrompt()
-      else:
-        t.ed.appendOutput(resp)
 
 proc sendBreak*(t: var Terminal) =
   if t.processRunning:
