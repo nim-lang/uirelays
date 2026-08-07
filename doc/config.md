@@ -12,10 +12,10 @@ One NIF file says where a window's widgets go and what they look like:
       (editor))
     (status (lines 1)))
   (theme
-    (bg "1E1E2E")
-    (fg "CDD6F4"
-      (Keyword "CBA6F7")
-      (Comment "6C7086"))))
+    (bg "#15171B")
+    (fg "#E6DFD1"
+      (Keyword "#E5B94E")
+      (Comment "#7A7365"))))
 ```
 
 ```nim
@@ -39,8 +39,8 @@ Nothing here raises. A file that does not parse has its reason in `error` --
 `"1:19: the size has to come before the children"` -- and hands back no cells
 and the fallback theme, so a program that forgets to look gets an empty window
 rather than a half-applied one. That matters for a config a user types: the
-editor example puts `error` straight into its status bar and keeps drawing the
-last good config.
+focim app puts `error` straight into its status bar and keeps drawing the last
+good config.
 
 The layout half can also be read on its own, without the umbrella, which is
 what the smaller examples do:
@@ -88,8 +88,8 @@ pointing at the child that cannot be there:
 
 The other side of that coin: a misspelled *widget* name is a perfectly good
 layout for a widget nobody draws. Check for the cells you need after
-resolving -- the editor example refuses a layout without an `editor` cell,
-since that is where the layout itself gets typed.
+resolving -- focim refuses a layout without an `editor` cell, since that is
+where the layout itself gets typed.
 
 ## Sizes
 
@@ -112,7 +112,7 @@ children always fill their parent exactly instead of leaving a one pixel
 seam: three `(stretch 1)` boxes in 100 pixels are 33, 33 and 34.
 
 `gap` inserts pixels between adjacent boxes -- the background shows through
-them, which is how the editor example draws its borders. Gaps come off the
+them, which is how focim draws its borders. Gaps come off the
 stretching boxes, never off a `px` or `lines` one.
 
 # The theme
@@ -124,21 +124,24 @@ can fall out of sync when a field is added.
 
 ```
 (theme
-  (bg "1E1E2E")
-  (fg "CDD6F4"             # the base color of every token class ...
-    (Keyword "CBA6F7")     # ... and the ones that differ
-    (StringLit "A6E3A1")
-    (Comment "6C7086"))
-  (selBg "585B70"))
+  (bg "#15171B")
+  (fg "#E6DFD1"            # the base color of every token class ...
+    (Keyword "#E5B94E")    # ... and the ones that differ
+    (StringLit "#2EC4B6")
+    (Comment "#7A7365"))
+  (selBg "#35474B"))
 ```
 
-A color is the six hex digits of `RRGGBB` in a string literal, in either case
--- what a palette hands you, without the `#`, which would start a comment out
-here. There is one way to write a color and no other.
+A color is `"#RRGGBB"` in a string literal, in either case -- what a palette
+hands you, quoted so that the `#` cannot start a comment. `"#RGB"` and
+`"#RRGGBBAA"` work too: the accepted spellings are exactly the three SynEdit
+draws a color chip for, so a color that shows a chip while you edit the file is
+a color the parser takes. focim turns that on for its config buffer, which is
+why the palette is visible beside the text.
 
 | Tag | What it colors |
 |-----|----------------|
-| `(fg base? (Class "RRGGBB")*)` | text, per token class; the leading color is all of them at once |
+| `(fg base? (Class "#RRGGBB")*)` | text, per token class; the leading color is all of them at once |
 | `(bg ...)` | the editor background |
 | `(selBg ...)` | selection background |
 | `(bracketBg ...)` | the matching bracket |

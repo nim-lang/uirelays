@@ -4,7 +4,7 @@ Native Nim UI library based on the idea of "relays" -- dependency injection
 via global callbacks. Has Windows API, X11, Cocoa, GTK4, SDL2, SDL3 and FigDraw
 support. Write UI apps as easily as terminal apps!
 
-![SynEdit Demo](screenshots/synedit_demo.png)
+![focim](screenshots/synedit_demo.png)
 
 ## Getting started
 
@@ -176,9 +176,18 @@ nim c --define:"feature.uirelays.figDrawWindy" examples/hello.nim
 nim c --define:"feature.uirelays.figDrawSiwin" examples/hello.nim
 ```
 
+## Apps
+
+- [focim.nim](apps/focim.nim) -- the Focussed Nim Editor: code editor with
+  integrated terminal, laid out and colored by an editable
+  [config file](doc/config.md)
+
+```sh
+nim c apps/focim.nim
+```
+
 ## Examples
 
-- [editor.nim](examples/editor.nim) -- Code editor with integrated terminal
 - [hello.nim](examples/hello.nim) -- Minimal window with text rendering
 - [paint.nim](examples/paint.nim) -- Simple drawing app with explicit submodule imports
 - [layout_demo.nim](examples/layout_demo.nim) -- NIF layout system demo
@@ -231,9 +240,9 @@ they look like -- read by the dependency-free lexer in `uirelays/tinynif`:
       (editor))
     (status (lines 1)))
   (theme
-    (bg "1E1E2E")
-    (fg "CDD6F4"
-      (Keyword "CBA6F7"))))
+    (bg "#15171B")
+    (fg "#E6DFD1"
+      (Keyword "#E5B94E"))))
 ```
 
 `resolve` turns the layout into a `Rect` per name, and every field of `Theme`

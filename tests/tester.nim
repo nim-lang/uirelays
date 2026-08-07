@@ -17,6 +17,9 @@ template execBackend(cmd: string) =
 exec "nim c -r tests/tinyniftest.nim"
 exec "nim c -r tests/configtest.nim"
 
+# The app, once, with the platform's default backend.
+exec "nim c apps/focim.nim"
+
 execBackend("")
 when defined(feature.uirelays.figDrawWindy):
   execBackend("--define:\"feature.uirelays.figDrawWindy\"")

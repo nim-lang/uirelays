@@ -6,21 +6,23 @@
 ##       (editor)
 ##       (status (lines 1)))
 ##     (theme
-##       (bg "1E1E2E")
-##       (fg "CDD6F4"               # every token class ...
-##         (Keyword "CBA6F7")       # ... except the ones named here
-##         (Comment "6C7086"))
-##       (selBg "585B70")))
+##       (bg "#15171B")
+##       (fg "#E6DFD1"              # every token class ...
+##         (Keyword "#E5B94E")      # ... except the ones named here
+##         (Comment "#7A7365"))
+##       (selBg "#35474B")))
 ##
 ## The tags inside `(theme ...)` are the field names of `Theme` and the tags
 ## inside `(fg ...)` are the values of `TokenClass`, both spelled exactly as
 ## they are in `theme.nim` -- so there is nothing to look up, and nothing can
 ## fall out of sync when a field is added.
 ##
-## A color is the six hex digits of `RRGGBB` in a string literal -- what a
-## palette hands you, minus the `#` that would start a comment. Whatever the
-## theme leaves unsaid keeps the value it has in the theme passed to
-## `parseConfig`.
+## A color is `"#RRGGBB"` in a string literal -- what a palette hands you,
+## quoted so that the `#` cannot start a comment. `"#RGB"` and `"#RRGGBBAA"`
+## work too: the accepted spellings are exactly the ones SynEdit draws a color
+## chip for, so anything that shows a chip in the editor also parses here.
+## Whatever the theme leaves unsaid keeps the value it has in the theme passed
+## to `parseConfig`.
 ##
 ## Nothing raises. A file that does not parse leaves its reason in `error`; a
 ## theme whose text would be unreadable on its own background is refused, and
@@ -67,29 +69,41 @@ proc hexDigit(c: char): int =
   else: result = -1
 
 proc toColor(s: string; dest: var Color): bool =
-  ## "RRGGBB", in either case.
-  if s.len != 6: return false
-  var v = 0
-  for i in 0 ..< 6:
-    let d = hexDigit(s[i])
-    if d < 0: return false
-    v = v * 16 + d
-  dest = color(uint8((v shr 16) and 0xFF), uint8((v shr 8) and 0xFF),
-               uint8(v and 0xFF))
+  ## `#RGB`, `#RRGGBB` or `#RRGGBBAA`, in either case -- the same three
+  ## spellings SynEdit draws a color chip for, so that a color which shows a
+  ## chip in the editor is a color this understands.
+  result = false
+  if s.len == 0 or s[0] != '#': return
+  let n = s.len - 1
+  if n != 3 and n != 6 and n != 8: return
+  var d: array[8, int]
+  for i in 0 ..< n:
+    d[i] = hexDigit(s[i + 1])
+    if d[i] < 0: return
+  if n == 3:
+    # #RGB is #RRGGBB with every digit doubled: #f0c is #ff00cc.
+    dest = color(uint8(d[0] * 17), uint8(d[1] * 17), uint8(d[2] * 17))
+  else:
+    let r = uint8(d[0] * 16 + d[1])
+    let g = uint8(d[2] * 16 + d[3])
+    let b = uint8(d[4] * 16 + d[5])
+    if n == 8: dest = color(r, g, b, uint8(d[6] * 16 + d[7]))
+    else: dest = color(r, g, b)
   result = true
 
 proc readColor(p: var Parser; dest: var Color) =
   ## One color, stopping in front of whatever follows it.
   if p.tok.kind != tkStringLit:
-    p.fail "expected a color like \"1E1E2E\" but found " & $p.tok
+    p.fail "expected a color like \"#1E1E2E\" but found " & $p.tok
     return
   if not toColor(p.tok.text, dest):
-    p.fail "a color is six hex digits, \"RRGGBB\", not \"" & p.tok.text & "\""
+    p.fail "a color is \"#RRGGBB\" -- or \"#RGB\", or \"#RRGGBBAA\" -- " &
+           "not \"" & p.tok.text & "\""
     return
   p.advance
 
 proc parseColor(p: var Parser; dest: var Color) =
-  ## A color that fills its whole tag: `(bg "1E1E2E")`.
+  ## A color that fills its whole tag: `(bg "#1E1E2E")`.
   p.readColor(dest)
   if p.error.len > 0: return
   if p.tok.kind != tkParRi:
@@ -106,7 +120,7 @@ proc toTokenClass(s: string; tc: var TokenClass): bool =
       return true
 
 proc parseFg(p: var Parser; t: var Theme) =
-  ## `(fg base? (Class "RRGGBB")*)`: the leading color, if there is one, is
+  ## `(fg base? (Class "#RRGGBB")*)`: the leading color, if there is one, is
   ## every token class at once, and each child overrides one of them.
   p.advance
   if p.error.len > 0: return

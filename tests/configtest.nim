@@ -35,11 +35,11 @@ block:
     (editor (stretch 3))
     (status (lines 1)))
   (theme
-    (bg "1E1E2E")
-    (fg "CDD6F4"
-      (Keyword "CBA6F7")
-      (Comment "6C7086"))
-    (selBg "585b70")))
+    (bg "#1E1E2E")
+    (fg "#CDD6F4"
+      (Keyword "#CBA6F7")
+      (Comment "#6C7086"))
+    (selBg "#585b70")))
 """)
   let cells = c.layout.resolve(100, 100, lineHeight = 10, padding = 0)
   check("the layout came through", "editor" in cells and "status" in cells,
@@ -53,7 +53,18 @@ block:
   equals("no complaint", c.note, "")
 
 block:
-  let c = parsed("(config (theme (bg \"14141E\")) (layout (editor)))")
+  # The three spellings SynEdit draws a chip for, so a color that shows a chip
+  # in the editor is a color the parser takes.
+  let c = parsed("(config (theme (bg \"#012\") (selBg \"#1e1e2e80\") " &
+                 "(bracketBg \"#1E1E2E\")))")
+  equals("#RGB doubles each digit", $c.theme.bg, "0,17,34")
+  equals("#RRGGBBAA keeps the alpha",
+         $c.theme.selBg & "," & $c.theme.selBg.a, "30,30,46,128")
+  equals("#RRGGBB", $c.theme.bracketBg, "30,30,46")
+  equals("and all three are readable", c.note, "")
+
+block:
+  let c = parsed("(config (theme (bg \"#14141E\")) (layout (editor)))")
   check("theme before layout", c.layout.cell("editor"))
   equals("and both took effect", $c.theme.bg, "20,20,30")
 
@@ -64,14 +75,14 @@ block:
   equals("all of it", $c.theme.fg[TokenClass.Keyword], $d.fg[TokenClass.Keyword])
 
 block:
-  let c = parsed("(config (theme (bg \"1E1E2E\")))")
+  let c = parsed("(config (theme (bg \"#1E1E2E\")))")
   check("a config without a layout is empty, not broken",
         c.layout.resolve(100, 100).len == 0)
 
 block:
   var base = defaultTheme()
   base.markerBg = color(1, 2, 3)
-  let c = parseConfig("(config (theme (bg \"1E1E2E\")))", base)
+  let c = parseConfig("(config (theme (bg \"#1E1E2E\")))", base)
   equals("what the theme leaves out comes from the fallback given",
          $c.theme.markerBg, "1,2,3")
 
@@ -80,22 +91,22 @@ block:
   # own color here, so a field that is wired to the wrong place shows up.
   let c = parsed("""
 (config (theme
-  (bg "0A141E")
-  (fg "C8C8C8"
-    (Keyword "FF6464")
-    (Comment "969696")
-    (MarkdownFence "8C8C91"))
-  (selBg "28292A")
-  (bracketBg "2B2C2D")
-  (cursorColor "FF0000")
-  (lineNumColor "00FF00")
-  (markerBg "2E2F30")
-  (scrollBarColor "313233")
-  (scrollBarActiveColor "343536")
-  (scrollTrackColor "373839")
-  (activeLineBg "3A3B3C")
-  (actionColor "3D3E3F")
-  (closeColor "6464FF")))
+  (bg "#0A141E")
+  (fg "#C8C8C8"
+    (Keyword "#FF6464")
+    (Comment "#969696")
+    (MarkdownFence "#8C8C91"))
+  (selBg "#28292A")
+  (bracketBg "#2B2C2D")
+  (cursorColor "#FF0000")
+  (lineNumColor "#00FF00")
+  (markerBg "#2E2F30")
+  (scrollBarColor "#313233")
+  (scrollBarActiveColor "#343536")
+  (scrollTrackColor "#373839")
+  (activeLineBg "#3A3B3C")
+  (actionColor "#3D3E3F")
+  (closeColor "#6464FF")))
 """)
   equals("bg", $c.theme.bg, "10,20,30")
   equals("fg base", $c.theme.fg[TokenClass.Text], "200,200,200")
@@ -120,7 +131,7 @@ block:
   let c = parsed("""
 (config          # a comment
   (layout (editor))   # and another
-  (theme (bg "1E1E2E")))
+  (theme (bg "#1E1E2E")))
 """)
   check("comments are allowed throughout", c.layout.cell("editor"))
   equals("and change nothing", $c.theme.bg, "30,30,46")
@@ -147,8 +158,8 @@ check("catppuccinMocha still does too",
 
 block:
   # Near-black text on a near-black background: the case the check exists for.
-  let c = parsed("(config (layout (editor)) (theme (bg \"000000\") " &
-                 "(fg \"141414\")))")
+  let c = parsed("(config (layout (editor)) (theme (bg \"#000000\") " &
+                 "(fg \"#141414\")))")
   check("an unreadable theme is refused", c.note.len > 0)
   check("with the sentence the status bar wants",
         c.note.startsWith("too low contrast between colors, used default " &
@@ -162,28 +173,28 @@ block:
 
 block:
   # The classic half-finished edit: a new background, the old foregrounds.
-  let c = parsed("(config (theme (bg \"FFFFFF\")))")
+  let c = parsed("(config (theme (bg \"#FFFFFF\")))")
   check("light background with dark-theme text is refused", c.note.len > 0,
         "accepted")
 
 block:
-  let c = parsed("(config (theme (bg \"1E1E2E\") (cursorColor \"202030\")))")
+  let c = parsed("(config (theme (bg \"#1E1E2E\") (cursorColor \"#202030\")))")
   check("an invisible cursor is refused", c.note.len > 0, "accepted")
   check("and named", c.note.contains("cursor"), c.note)
 
 block:
-  let c = parsed("(config (theme (bg \"1E1E2E\") (lineNumColor \"1F1F2F\")))")
+  let c = parsed("(config (theme (bg \"#1E1E2E\") (lineNumColor \"#1F1F2F\")))")
   check("invisible line numbers are refused", c.note.len > 0, "accepted")
 
 block:
   # Backgrounds are not checked: they sit behind text on purpose.
-  let c = parsed("(config (theme (bg \"1E1E2E\") (activeLineBg \"1F1F2F\") " &
-                 "(selBg \"202030\") (actionColor \"212131\")))")
+  let c = parsed("(config (theme (bg \"#1E1E2E\") (activeLineBg \"#1F1F2F\") " &
+                 "(selBg \"#202030\") (actionColor \"#212131\")))")
   equals("a background close to bg is nobody's business", c.note, "")
 
 block:
   # One class alone is enough to refuse the theme.
-  let c = parsed("(config (theme (bg \"1E1E2E\") (fg (Keyword \"212132\"))))")
+  let c = parsed("(config (theme (bg \"#1E1E2E\") (fg (Keyword \"#212132\"))))")
   check("a single unreadable token class is refused", c.note.len > 0,
         "accepted")
   check("named by the class", c.note.contains("Keyword"), c.note)
@@ -194,29 +205,27 @@ proc rejects(name, src, expected: string) =
   let err = parseConfig(src).error
   check(name, err.contains(expected), "got '" & err & "'")
 
-rejects("an unknown theme field", "(config (theme (bgg \"010203\")))",
+rejects("an unknown theme field", "(config (theme (bgg \"#010203\")))",
         "'bgg' is not a theme field")
-rejects("an unknown token class", "(config (theme (fg (Keywrd \"010203\"))))",
+rejects("an unknown token class", "(config (theme (fg (Keywrd \"#010203\"))))",
         "'Keywrd' is not a token class")
 rejects("numbers are not a color", "(config (theme (bg 30 30 46)))",
         "expected a color like")
-rejects("too few digits", "(config (theme (bg \"1E1E2\")))",
-        "six hex digits")
-rejects("too many digits", "(config (theme (bg \"1E1E2E00\")))",
-        "six hex digits")
-rejects("a '#' in the string", "(config (theme (bg \"#1E1E2E\")))",
-        "six hex digits")
-rejects("a digit that is not hex", "(config (theme (bg \"1E1E2Z\")))",
-        "six hex digits")
-rejects("the empty string", "(config (theme (bg \"\")))", "six hex digits")
+rejects("no '#'", "(config (theme (bg \"1E1E2E\")))", "a color is")
+rejects("four digits", "(config (theme (bg \"#1E1E\")))", "a color is")
+rejects("seven digits", "(config (theme (bg \"#1E1E2E0\")))", "a color is")
+rejects("a digit that is not hex", "(config (theme (bg \"#1E1E2Z\")))",
+        "a color is")
+rejects("the empty string", "(config (theme (bg \"\")))", "a color is")
+rejects("a '#' on its own", "(config (theme (bg \"#\")))", "a color is")
 rejects("two colors in one field",
-        "(config (theme (bg \"1E1E2E\" \"112233\")))", "expected ')'")
+        "(config (theme (bg \"#1E1E2E\" \"#112233\")))", "expected ')'")
 rejects("two layouts", "(config (layout (a)) (layout (b)))",
         "only one (layout ...)")
 rejects("two themes",
-        "(config (theme (bg \"010101\")) (theme (bg \"020202\")))",
+        "(config (theme (bg \"#010101\")) (theme (bg \"#020202\")))",
         "only one (theme ...)")
-rejects("a tag that belongs nowhere", "(config (style (bg \"010203\")))",
+rejects("a tag that belongs nowhere", "(config (style (bg \"#010203\")))",
         "does not belong in a config")
 rejects("a bare layout", "(layout (a))", "expected (config ...)")
 rejects("nothing at all", "", "nothing here")
@@ -231,7 +240,7 @@ rejects("a lexer error is passed along",
 block:
   # A config that did not parse hands back nothing usable, so a caller that
   # ignores `error` cannot draw a half-applied window.
-  let bad = parseConfig("(config (theme (bgg \"010203\")) (layout (editor)))")
+  let bad = parseConfig("(config (theme (bgg \"#010203\")) (layout (editor)))")
   check("a broken config has no layout", bad.layout.resolve(100, 100).len == 0)
   equals("and the fallback theme", $bad.theme.bg, $defaultTheme().bg)
 

@@ -1,4 +1,6 @@
 ##[
+focim -- the Focussed Nim Editor.
+
 Design Notes:
 
 Everything is text. The core widget is **SynEdit** -- a syntax-aware text
@@ -36,10 +38,12 @@ later layout lists it again. Only the `editor` cell has to stay, since it is
 where the config gets typed. A config that does not parse is reported in the
 status bar, with the line and column of the mistake, and ignored, so the last
 good one keeps the window usable; a theme whose text would be unreadable on
-its own background is refused the same way.
+its own background is refused the same way. Every color in it is written as
+`"#RRGGBB"`, which SynEdit draws a chip of, so the palette is visible while it
+is being edited.
 
 The config and the list of open tabs are stored under `getConfigDir()` in
-`relayedit/config.nif` and `relayedit/tabs.txt`, so both survive a restart.
+`focim/config.nif` and `focim/tabs.txt`, so both survive a restart.
 ]##
 
 import std/[tables, os, algorithm]
@@ -52,7 +56,6 @@ import widgets/[synedit, terminal, config]
 const defaultConfig = """
 (config
   (layout
-    (title (lines 1))
     (cols
       (rows (px 200)
         (tabs (lines 6))
@@ -64,12 +67,12 @@ const defaultConfig = """
     (status (lines 1)))
   # Anything left out keeps the color it has; `doc/config.md` lists the fields.
   (theme
-    (bg "15171B")
-    (fg "E6DFD1"
-      (Keyword "E5B94E")
-      (StringLit "2EC4B6")
-      (DecNumber "E8833A")
-      (Comment "7A7365"))))
+    (bg "#15171B")
+    (fg "#E6DFD1"
+      (Keyword "#E5B94E")
+      (StringLit "#2EC4B6")
+      (DecNumber "#E8833A")
+      (Comment "#7A7365"))))
 """
 
 const
@@ -86,7 +89,7 @@ const
   ## keeps its state until a later layout brings it back. Only the editor
   ## has to stay: without it there is nowhere to type the layout back.
   RequiredCells = ["editor"]
-  ConfigDirName = "relayedit"
+  ConfigDirName = "focim"
 
 proc configPath(name: string): string =
   getConfigDir() / ConfigDirName / name
@@ -460,7 +463,7 @@ proc activateEntry(ex: var Explorer; name: string;
     let p = ex.dir / name
     if fileExists(p):
       current = buffers.openFile(font, p, -1, -1)
-      setWindowTitle("SynEdit - " & name)
+      setWindowTitle("focim - " & name)
       focus = "editor"
 
 proc handleTermCtrlClick(buf: SynEdit; pos: int;
@@ -473,14 +476,14 @@ proc handleTermCtrlClick(buf: SynEdit; pos: int;
   term.ed.underline(a, b)
   if dirExists(path):
     os.setCurrentDir(path)
-    setWindowTitle("SynEdit Demo - " & path)
+    setWindowTitle("focim - " & path)
     term.ed.appendOutput("\L")
     term.insertPrompt()
     var lsCmd = "ls"
     discard term.runCommand(lsCmd)
   elif fileExists(path):
     current = buffers.openFile(font, path, ln, fc)
-    setWindowTitle("SynEdit - " & path.extractFilename)
+    setWindowTitle("focim - " & path.extractFilename)
     focus = "editor"
 
 proc updateStatus(status: var Terminal; ed: SynEdit; path, note: string) =
@@ -513,25 +516,22 @@ proc tryOpenFile(arg: string; buffers: var seq[BufferEntry];
   let path = if isAbsolute(arg): arg else: os.getCurrentDir() / arg
   if fileExists(path):
     current = buffers.openFile(font, path, -1, -1)
-    setWindowTitle("SynEdit - " & path.extractFilename)
+    setWindowTitle("focim - " & path.extractFilename)
     focus = "editor"
   elif dirExists(path):
     os.setCurrentDir(path)
-    setWindowTitle("SynEdit Demo - " & path)
+    setWindowTitle("focim - " & path)
 
 proc adjustFocusedFontSize(
     focus: string; delta: int;
     fonts: var Table[int, Font];
-    title, history: var SynEdit;
+    history: var SynEdit;
     tabs: var TabList; explorer: var Explorer;
     term, status: var Terminal;
     buffers: var seq[BufferEntry]; current: int;
-    titleFontSize, panelFontSize, historyFontSize,
+    panelFontSize, historyFontSize,
     terminalFontSize, statusFontSize, editorFontSize: var int) =
   case focus
-  of "title":
-    titleFontSize = clamp(titleFontSize + delta, MinFontSize, MaxFontSize)
-    title.setFont(fonts.fontForSize(titleFontSize))
   of "tabs", "explorer":
     panelFontSize = clamp(panelFontSize + delta, MinFontSize, MaxFontSize)
     let f = fonts.fontForSize(panelFontSize)
@@ -564,9 +564,8 @@ proc main =
   var fonts: Table[int, Font]
   let font = fonts.fontForSize(DefaultFontSize)
   var fm = getFontMetrics(font)
-  setWindowTitle("SynEdit Demo")
+  setWindowTitle("focim")
 
-  var title = createSynEdit(font)
   var history = createSynEdit(font)
   var term = createTerminal(font)
   var status = createTerminal(font)
@@ -586,15 +585,11 @@ proc main =
   history.setActionLines(0)
   history.setCloseButtons(0)
   history.lang = langNone
-  var titleFontSize = DefaultFontSize
   var panelFontSize = DefaultFontSize
   var historyFontSize = DefaultFontSize
   var terminalFontSize = DefaultFontSize
   var statusFontSize = DefaultFontSize
   var editorFontSize = DefaultFontSize
-
-  title.setLabel("SynEdit Demo -- edit the [config] tab to lay out and " &
-                 "color this window")
 
   # The config the window starts with: whatever was stored last time, unless it
   # no longer works -- then the default, with the reason in the status bar.
@@ -623,8 +618,11 @@ proc main =
   block:
     var ed = createSynEdit(fonts.fontForSize(editorFontSize))
     # NIF is close enough to Nim for the tokenizer: parentheses, names, numbers
-    # and '#' comments all land where they should.
+    # and '#' comments all land where they should -- and a quoted "#RRGGBB" is
+    # a string literal, which is what makes `rfColorLiterals` draw a chip of
+    # the color right beside it.
     ed.lang = langNim
+    ed.flags = {rfColorLiterals}
     ed.showLineNumbers = true
     ed.setText(configText)
     buffers.add BufferEntry(ed: ed, path: "", isConfig: true)
@@ -664,7 +662,6 @@ proc main =
     # The theme goes out to every widget every frame. Buffers come and go and
     # the colors can change with any keystroke in the config, so there is no
     # single place to hook this that could not be forgotten later.
-    title.theme = theme
     history.theme = theme
     tabs.ed.theme = theme
     explorer.ed.theme = theme
@@ -696,7 +693,6 @@ proc main =
         gUiScale = e.uiScale
         for f in fonts.values: closeFont(f)
         fonts.clear()
-        title.setFont(fonts.fontForSize(titleFontSize))
         let panelFont = fonts.fontForSize(panelFontSize)
         tabs.ed.setFont(panelFont)
         explorer.ed.setFont(panelFont)
@@ -726,9 +722,9 @@ proc main =
         e = default Event  # consume the event
       elif cmd and (e.key == KeyEqual or e.key == KeyPlus or e.key == KeyMinus):
         let delta = if e.key == KeyMinus: -1 else: 1
-        adjustFocusedFontSize(focus, delta, fonts, title, history,
+        adjustFocusedFontSize(focus, delta, fonts, history,
                               tabs, explorer, term, status, buffers, current,
-                              titleFontSize, panelFontSize, historyFontSize,
+                              panelFontSize, historyFontSize,
                               terminalFontSize, statusFontSize, editorFontSize)
         e = default Event  # consume the event
       elif e.key == KeyEnter and focus == "tabs":
@@ -747,7 +743,7 @@ proc main =
           elif full.len > 0 and fileExists(full):
             current = buffers.openFile(fonts.fontForSize(editorFontSize),
                                        full, -1, -1)
-            setWindowTitle("SynEdit - " & full.extractFilename)
+            setWindowTitle("focim - " & full.extractFilename)
             focus = "editor"
           elif explorer.entries.len > 0:
             # A partial name accepts the first match.
@@ -762,8 +758,6 @@ proc main =
     # Widgets the layout leaves out are simply not drawn. They keep their
     # state, so they come back exactly as they were once a layout lists
     # them again.
-    if "title" in cells:
-      discard title.draw(e, cells["title"], focus == "title")
 
     # Tab list -- its lines ARE the open tabs. The bookkeeping runs even when
     # the list is hidden, because Ctrl+W still edits its buffer.
@@ -850,7 +844,7 @@ proc main =
     of openFile:
       if fileExists(termAct.file):
         current = buffers.openFile(fonts.fontForSize(editorFontSize), termAct.file, -1, -1)
-        setWindowTitle("SynEdit - " & termAct.file.extractFilename)
+        setWindowTitle("focim - " & termAct.file.extractFilename)
         focus = "editor"
     of saveFile:
       if buffers[current].path.len > 0:
