@@ -124,6 +124,7 @@ const
   WM_MOUSEWHEEL = 0x020A'u32
   WM_SETFOCUS = 0x0007'u32
   WM_KILLFOCUS = 0x0008'u32
+  WM_DPICHANGED = 0x02E0'u32
 
   PM_REMOVE = 0x0001'u32
   INFINITE = 0xFFFFFFFF'u32
@@ -355,12 +356,43 @@ var
   gWidth, gHeight: int32
   gQuitFlag: bool
   gSavedClipRgn: HRGN
+  gUiScale: int = 100
 
 # Event queue: WndProc pushes events, pollEvent/waitEvent consumes them
 var eventQueue: seq[input.Event]
 
 proc pushEvent(e: input.Event) =
   eventQueue.add e
+
+# ---- Display density ----
+
+const LOGPIXELSX = 88.int32
+
+proc GetDeviceCaps(hdc: HDC; index: int32): int32
+  {.stdcall, dynlib: "gdi32", importc.}
+
+proc uiScaleFromDpi(dpi: int): int {.inline.} =
+  ## 96 dpi is Windows' 100%; the usual steps are 120, 144 and 192 dpi, which
+  ## come out as exactly 125, 150 and 200 percent.
+  if dpi <= 0: 100 else: max(100, dpi * 100 div 96)
+
+proc currentUiScale(): int =
+  ## The process is per-monitor DPI aware, so window coordinates are physical
+  ## pixels and nothing on the way to the screen scales the drawing -- the
+  ## monitor's DPI has to land in `uiScale`.
+  if gHwnd != nil:
+    try:
+      proc GetDpiForWindow(hwnd: HWND): UINT
+        {.stdcall, dynlib: "user32", importc.}
+      return uiScaleFromDpi(GetDpiForWindow(gHwnd).int)
+    except: discard
+  # Before Windows 10 1607 there is only the one system-wide DPI.
+  let dc = GetDC(nil)
+  if dc != nil:
+    let dpi = GetDeviceCaps(dc, LOGPIXELSX).int
+    discard ReleaseDC(nil, dc)
+    return uiScaleFromDpi(dpi)
+  result = 100
 
 # ---- Back-buffer management ----
 
@@ -462,10 +494,27 @@ proc wndProc(hwnd: HWND; msg: UINT; wp: WPARAM; lp: LPARAM): LRESULT {.stdcall.}
       gWidth = newW
       gHeight = newH
       recreateBackBuffer()
-      var e = input.Event(kind: WindowResizeEvent)
+      var e = input.Event(kind: WindowMetricsEvent)
       e.x = gWidth
       e.y = gHeight
+      e.scaleX = 1
+      e.scaleY = 1
+      e.uiScale = gUiScale
       pushEvent(e)
+    return 0
+
+  of WM_DPICHANGED:
+    # Dragged to a monitor of another density. The window keeps its pixel size
+    # -- so it stays physically the same -- and the app enlarges its own
+    # drawing by the new `uiScale`.
+    gUiScale = currentUiScale()
+    var e = input.Event(kind: WindowMetricsEvent)
+    e.x = gWidth
+    e.y = gHeight
+    e.scaleX = 1
+    e.scaleY = 1
+    e.uiScale = gUiScale
+    pushEvent(e)
     return 0
 
   of WM_PAINT:
@@ -613,8 +662,15 @@ proc winCreateWindow(layout: var ScreenLayout) =
   layout.height = gHeight
   layout.scaleX = 1
   layout.scaleY = 1
+  gUiScale = currentUiScale()
+  layout.uiScale = gUiScale
 
   recreateBackBuffer()
+
+proc winGetWindowLayout(): ScreenLayout =
+  gUiScale = currentUiScale()
+  ScreenLayout(width: gWidth.int, height: gHeight.int,
+               scaleX: 1, scaleY: 1, uiScale: gUiScale)
 
 proc winRefresh() =
   discard InvalidateRect(gHwnd, nil, 0)
@@ -909,7 +965,8 @@ proc setDpiAware() =
 proc initWinapiDriver*() =
   setDpiAware()
   windowRelays = WindowRelays(
-    createWindow: winCreateWindow, refresh: winRefresh,
+    createWindow: winCreateWindow, getWindowLayout: winGetWindowLayout,
+    refresh: winRefresh,
     saveState: winSaveState, restoreState: winRestoreState,
     setClipRect: winSetClipRect, setCursor: winSetCursor,
     setWindowTitle: winSetWindowTitle)

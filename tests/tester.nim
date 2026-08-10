@@ -16,7 +16,19 @@ template execBackend(backend: string) =
     ].join(" ")
     exec command
 
+# The lexer and the config parsers need no driver, so they are tested directly.
+exec "nim c -r tests/tinyniftest.nim"
+exec "nim c -r tests/configtest.nim"
+exec "nim c -r tests/markdowntest.nim"
+
+# The app, once, with the platform's default backend.
+exec "nim c apps/focim.nim"
+
 execBackend("")
+when defined(feature.uirelays.figDrawWindy):
+  execBackend("--define:\"feature.uirelays.figDrawWindy\"")
+when defined(feature.uirelays.figDrawSiwin):
+  execBackend("--define:\"feature.uirelays.figDrawSiwin\"")
 when defined(linux):
   execBackend("-d:gtk4")
 # execBackend("-d:sdl2")

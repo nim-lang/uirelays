@@ -1,17 +1,17 @@
 # uirelays
 
 Native Nim UI library based on the idea of "relays" -- dependency injection
-via global callbacks. Has Windows API, X11, Cocoa, GTK4, SDL2 and SDL3
+via global callbacks. Has Windows API, X11, Cocoa, GTK4, SDL2, SDL3 and FigDraw
 support. Write UI apps as easily as terminal apps!
 
-![SynEdit Demo](screenshots/synedit_demo.png)
+![focim](screenshots/synedit_demo.png)
 
 ## Getting started
 
 `import uirelays` is all you need -- it re-exports everything and
 automatically initializes the native backend for the current platform
 (WinAPI on Windows, Cocoa on macOS, X11 on Linux/BSD). Override with
-`-d:sdl3`, `-d:sdl2`, or `-d:gtk4`.
+`-d:sdl3`, `-d:sdl2`, `-d:gtk4`, or a FigDraw Nimble feature.
 
 For finer control, import the submodules directly and call `initBackend()`
 yourself:
@@ -35,6 +35,23 @@ Backend selection:
 - Default on macOS: Cocoa
 - Default on Linux/BSD: X11
 - Optional overrides: `-d:gtk4`, `-d:sdl3`, `-d:sdl2`
+- Optional features: `figDrawWindy` and `figDrawSiwin`
+
+### FigDraw backend
+
+Choose either the Windy or siwin integration. The features are mutually
+exclusive and install only the selected windowing dependency:
+
+```sh
+atlas install --feature:uirelays.figDrawWindy
+nim c --define:"feature.uirelays.figDrawWindy" examples/hello.nim
+
+atlas install --feature:uirelays.figDrawSiwin
+nim c --define:"feature.uirelays.figDrawSiwin" examples/hello.nim
+```
+
+The matching `-d:figDrawWindy` and `-d:figDrawSiwin` convenience aliases are
+also accepted once their dependencies are available.
 
 ### Nim Packages For SDL Backends
 
@@ -155,14 +172,31 @@ Force a specific backend:
 nim c -d:gtk4 examples/hello.nim
 nim c -d:sdl3 examples/hello.nim
 nim c -d:sdl2 examples/hello.nim
+nim c --define:"feature.uirelays.figDrawWindy" examples/hello.nim
+nim c --define:"feature.uirelays.figDrawSiwin" examples/hello.nim
 ```
+
+## Apps
+
+- [focim.nim](apps/focim.nim) -- the Focussed Nim Editor: code editor with
+  integrated terminal, laid out and colored by an editable
+  [config file](doc/config.md)
+
+```sh
+nim c apps/focim.nim
+```
+
+Or download a build: nightly binaries for Linux (x86_64 and ARM64), macOS
+(ARM64) and Windows (x86_64) are published to
+[Releases](https://github.com/nim-lang/uirelays/releases) by
+[`nightly.yml`](.github/workflows/nightly.yml), one release per commit. On
+Linux they need `libX11.so.6` and `libXft.so.2` at runtime; nothing else.
 
 ## Examples
 
-- [editor.nim](examples/editor.nim) -- Code editor with integrated terminal
 - [hello.nim](examples/hello.nim) -- Minimal window with text rendering
 - [paint.nim](examples/paint.nim) -- Simple drawing app with explicit submodule imports
-- [layout_demo.nim](examples/layout_demo.nim) -- Markdown table layout system demo
+- [layout_demo.nim](examples/layout_demo.nim) -- NIF layout system demo
 - [todo.nim](examples/todo.nim) -- Todo list app
 
 ## Architecture
@@ -192,9 +226,34 @@ allocation -- just plain proc pointers.
 | `gtk4_driver` | Linux/BSD | GTK4, Cairo, Pango |
 | `sdl3_driver` | Cross-platform | SDL3, SDL3_ttf |
 | `sdl2_driver` | Cross-platform | SDL2, SDL2_ttf |
+| `figdraw_windy_driver` | Cross-platform | FigDraw, Windy |
+| `figdraw_siwin_driver` | Cross-platform | FigDraw, siwin |
 
 See [Writing a custom driver](doc/drivers.md) for a guide on
 adding support for a new platform or graphics toolkit.
+
+## Layout and theme
+
+A window is described in [NIF](doc/config.md) -- where its widgets go and what
+they look like -- read by the dependency-free lexer in `uirelays/tinynif`:
+
+```
+(config
+  (layout
+    (toolbar (lines 2))
+    (cols
+      (sidebar (px 250))
+      (editor))
+    (status (lines 1)))
+  (theme
+    (bg "#15171B")
+    (fg "#E6DFD1"
+      (Keyword "#E5B94E"))))
+```
+
+`resolve` turns the layout into a `Rect` per name, and every field of `Theme`
+can be set -- except a color combination nobody could read, which is refused
+with a note rather than applied. See [The config file](doc/config.md).
 
 ## License
 

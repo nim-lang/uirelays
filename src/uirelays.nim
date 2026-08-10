@@ -1,6 +1,6 @@
 ## uirelays - Native Nim UI library based on dependency injection via
 ## global callbacks ("relays"). Has Windows API, X11, Cocoa, GTK4,
-## SDL2 and SDL3 support.
+## SDL2, SDL3 and FigDraw support.
 ##
 ## Importing this module re-exports coords, screen and input, and
 ## automatically selects and initializes the native backend for the

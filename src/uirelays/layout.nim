@@ -1,233 +1,297 @@
-# Layout manager: markdown table → named Rects.
+# Layout manager: a NIF description -> named Rects.
 #
-# The layout IS a markdown table:
+# The layout is a tree of boxes:
 #
-#   | toolbar, 2 lines                                        |
-#   | local, 250px, scroll | divider, 4px | remote, *, scroll |
-#   | log, 5 lines, scroll                                    |
-#   | status, 1 line                                          |
+#   (layout
+#     (toolbar (lines 2))
+#     (cols
+#       (local (px 250))
+#       (divider (px 4))
+#       (remote))
+#     (log (lines 5))
+#     (status (lines 1)))
 #
-# Each row is a horizontal slice. | separators create columns.
-# Sizing: Npx (fixed pixels), N lines (font-relative), N* (stretch).
+# * `(layout ...)` is the window; its children are stacked top to bottom.
+# * `(rows ...)` stacks its children top to bottom, `(cols ...)` left to right,
+#   and either may hold the other, so nesting replaces every special case.
+# * Every other tag is a leaf and names a widget: `resolve` puts its `Rect`
+#   under that name. Since there are no anonymous boxes -- a box that nothing
+#   draws in is not worth mentioning -- the name can be the tag itself.
+#
+# `layout`, `rows`, `cols`, `px`, `lines` and `stretch` are therefore the only
+# names a widget cannot have.
+#
+# A box may state its size along the axis its parent divides -- a height inside
+# `rows`, a width inside `cols`:
+#
+#   (px 250)     250 of whatever unit the driver draws in
+#   (lines 5)    5 * lineHeight, plus the padding above and below
+#   (stretch 2)  two shares of what the fixed sizes leave over
+#
+# Leaving the size out means `(stretch 1)`.
 
-import std/[strutils, tables]
-import coords
+import std/tables
+import coords, tinynif
 
 type
   SizeKind = enum
+    skStretch,    ## weighted share of the remaining space
     skPixels,     ## fixed pixel count
-    skLines,      ## N * lineHeight
-    skStretch     ## weighted share of remaining space
+    skLines       ## N * lineHeight
 
   CellSize = object
     kind: SizeKind
-    value: int   ## pixels, line count, or stretch weight
+    value: int    ## stretch weight, pixels, or line count
 
-  Cell = object
-    name: string
-    width: CellSize   ## horizontal size (for multi-column rows)
-    height: CellSize  ## vertical size (row height)
-    subcells: seq[Cell] ## vertical stack within this cell (if ; was used)
+  NodeKind = enum
+    # `rows` first on purpose: a default-constructed Layout is then an empty
+    # window rather than a nameless cell covering everything.
+    nkRows,       ## children stacked top to bottom
+    nkCols,       ## children placed left to right
+    nkCell        ## a leaf: one named rect
 
-  Row = object
-    cells: seq[Cell]
-    height: CellSize   ## resolved from the cells (max or first)
+  Node = object
+    kind: NodeKind
+    name: string          ## cells only
+    size: CellSize        ## along the axis the parent divides
+    children: seq[Node]   ## containers only
 
   Layout* = object
-    rows: seq[Row]
+    root: Node
+    error*: string   ## empty when the layout parsed; otherwise "line:col: why".
+                     ## Parsing never raises, so this is the only report there
+                     ## is -- and it is short enough for a status bar.
 
   CellHit* = object
     name*: string
     pos*: GlobalPos
 
-proc parseSize(s: string): CellSize =
-  ## Parse "250px", "2 lines", "1 line", "*", "2*"
-  let s = s.strip()
-  if s.endsWith("px"):
-    let num = s[0 ..< s.len - 2].strip()
-    result = CellSize(kind: skPixels, value: parseInt(num))
-  elif s.endsWith("lines") or s.endsWith("line"):
-    let num = s.split()[0].strip()
-    result = CellSize(kind: skLines, value: parseInt(num))
-  elif s.endsWith("*"):
-    if s == "*":
-      result = CellSize(kind: skStretch, value: 1)
-    else:
-      let num = s[0 ..< s.len - 1].strip()
-      result = CellSize(kind: skStretch, value: parseInt(num))
+# ---------------------------------------------------------------------------
+# Parsing. tinynif hands out tags as strings; giving them meaning is this
+# module's business, so the vocabulary lives here and nowhere else.
+# ---------------------------------------------------------------------------
+
+type
+  LayoutTag = enum
+    tagCell,      ## anything that is not one of the structural tags below
+    tagLayout, tagRows, tagCols, tagPx, tagLines, tagStretch
+
+  Parser = object
+    lex: Lexer
+    tok: Token
+    error: string
+
+proc toTag(s: string): LayoutTag =
+  ## tinynif hands out tags as strings; this is the one place they turn into
+  ## something this module knows. Every tag that is not structural names a
+  ## cell, which is why there is no "unknown tag" here.
+  case s
+  of "layout": result = tagLayout
+  of "rows": result = tagRows
+  of "cols": result = tagCols
+  of "px": result = tagPx
+  of "lines": result = tagLines
+  of "stretch": result = tagStretch
+  else: result = tagCell
+
+proc isSizeTag(s: string): bool =
+  let t = toTag(s)
+  result = t == tagPx or t == tagLines or t == tagStretch
+
+proc fail(p: var Parser; msg: string) =
+  ## The first complaint is the one that gets reported: everything after it is
+  ## a consequence of it.
+  if p.error.len == 0:
+    p.error = p.tok.position & ": " & msg
+
+proc advance(p: var Parser) =
+  p.tok = next(p.lex)
+  if p.tok.kind == tkError: p.fail p.tok.text
+
+proc parseSize(p: var Parser): CellSize =
+  ## `(px 250)`, `(lines 5)`, `(stretch 2)`.
+  result = CellSize(kind: skStretch, value: 1)
+  let tag = toTag(p.tok.text)
+  p.advance
+  if p.tok.kind != tkIntLit:
+    p.fail "expected a number but found " & $p.tok
+    return
+  if p.tok.intVal < 0:
+    p.fail "a size cannot be negative"
+    return
+  case tag
+  of tagPx: result = CellSize(kind: skPixels, value: int(p.tok.intVal))
+  of tagLines: result = CellSize(kind: skLines, value: int(p.tok.intVal))
+  else: result = CellSize(kind: skStretch, value: int(p.tok.intVal))
+  p.advance
+  if p.tok.kind != tkParRi:
+    p.fail "expected ')' after the size but found " & $p.tok
+    return
+  p.advance
+
+proc parseNode(p: var Parser; isRoot: bool): Node =
+  result = Node(kind: nkCell, name: "",
+                size: CellSize(kind: skStretch, value: 1), children: @[])
+  if p.tok.kind != tkParLe:
+    p.fail "expected '(' but found " & $p.tok
+    return
+  case toTag(p.tok.text)
+  of tagLayout:
+    if not isRoot:
+      p.fail "(layout ...) may only be the outermost tag; use (rows ...) here"
+      return
+    result.kind = nkRows
+    p.advance
+  of tagRows:
+    result.kind = nkRows
+    p.advance
+  of tagCols:
+    result.kind = nkCols
+    p.advance
+  of tagPx, tagLines, tagStretch:
+    p.fail "'" & p.tok.text & "' is a size, not a box"
+    return
+  of tagCell:
+    # Every other tag names a widget: `(history (lines 5))`.
+    result.kind = nkCell
+    result.name = p.tok.text
+    p.advance
+  if p.error.len > 0: return
+
+  # The size comes before the children, so that it cannot hide in the middle
+  # of a long list.
+  var hasSize = false
+  if p.tok.kind == tkParLe and isSizeTag(p.tok.text):
+    result.size = p.parseSize
+    hasSize = true
+    if p.error.len > 0: return
+
+  while p.tok.kind == tkParLe:
+    if isSizeTag(p.tok.text):
+      if hasSize: p.fail "a box has only one size"
+      else: p.fail "the size has to come before the children"
+      return
+    if result.kind == nkCell:
+      # The likely cause is a misspelled `rows` or `cols`, which by the rule
+      # above became the name of a widget instead.
+      p.fail "'" & result.name & "' names a widget, and a widget has no " &
+             "children; did you mean (rows ...) or (cols ...)?"
+      return
+    result.children.add p.parseNode(isRoot = false)
+    if p.error.len > 0: return
+
+  if p.tok.kind != tkParRi:
+    p.fail "expected ')' but found " & $p.tok
+    return
+  p.advance
+
+proc parseLayout*(lex: var Lexer; tok: var Token): Layout =
+  ## Parse the `(layout ...)` that `tok` starts, leaving `tok` on the token
+  ## behind it. This is the entry point for a caller whose file holds more than
+  ## a layout -- a `(config ...)` -- and who therefore owns the lexer.
+  result = Layout(root: Node(kind: nkRows, name: "",
+                             size: CellSize(kind: skStretch, value: 1),
+                             children: @[]), error: "")
+  var p = Parser(lex: lex, tok: tok, error: "")
+  if p.tok.kind == tkError:
+    p.fail p.tok.text
+  elif p.tok.kind == tkEof:
+    p.fail "nothing here; expected (layout ...)"
   else:
-    raise newException(ValueError, "unknown size '" & s &
-      "', expected Npx, N lines, or N*")
-
-proc parseSingleCell(s: string): Cell =
-  ## Parse "name, 250px" or "name, 2 lines" or "name, *"
-  ## With one size spec: used as both width and height (context decides).
-  ## With two size specs: first is height, second is width.
-  let parts = s.strip().split(",")
-  if parts.len == 0:
-    raise newException(ValueError, "empty cell")
-
-  result.name = parts[0].strip()
-  result.width = CellSize(kind: skStretch, value: 1)  # default
-  result.height = CellSize(kind: skStretch, value: 1) # default
-
-  if parts.len == 2:
-    let sz = parseSize(parts[1].strip())
-    result.width = sz
-    result.height = sz
-  elif parts.len >= 3:
-    result.height = parseSize(parts[1].strip())
-    result.width = parseSize(parts[2].strip())
-
-proc parseCell(s: string): Cell =
-  ## Parse a cell, possibly containing ";" for vertical stacking.
-  if ";" in s:
-    let subs = s.split(";")
-    result = parseSingleCell(subs[0])
-    for i in 0 ..< subs.len:
-      result.subcells.add parseSingleCell(subs[i])
-  else:
-    result = parseSingleCell(s)
+    if p.tok.kind == tkParLe and toTag(p.tok.text) != tagLayout:
+      p.fail "expected (layout ...) but found (" & p.tok.text
+    let root = p.parseNode(isRoot = true)
+    if p.error.len == 0: result.root = root
+  result.error = p.error
+  lex = p.lex
+  tok = p.tok
 
 proc parseLayout*(s: string): Layout =
-  ## Parse a markdown table string into a Layout.
-  for rawLine in s.splitLines():
-    let line = rawLine.strip()
-    if line.len == 0: continue
-    if not line.startsWith("|"): continue
+  ## Parse a whole string as a NIF layout. Never raises: check `result.error`.
+  var lex = initLexer(s)
+  var tok = next(lex)
+  result = parseLayout(lex, tok)
+  if result.error.len == 0 and tok.kind != tkEof:
+    result.error = tok.position & ": unexpected " & $tok & " behind the layout"
 
-    # Split by | and trim empty first/last
-    var parts: seq[string]
-    for p in line.split("|"):
-      let trimmed = p.strip()
-      if trimmed.len > 0:
-        parts.add trimmed
+# ---------------------------------------------------------------------------
+# Resolving
+# ---------------------------------------------------------------------------
 
-    if parts.len == 0: continue
-
-    var row: Row
-    for p in parts:
-      row.cells.add parseCell(p)
-
-    # Row height: for single-column rows, the cell's size IS the row height.
-    # For multi-column rows, the cell sizes are widths; the row stretches.
-    if row.cells.len == 1:
-      row.height = row.cells[0].height
-    else:
-      row.height = CellSize(kind: skStretch, value: 1)
-
-    result.rows.add row
-
-proc resolveSize(sz: CellSize; lineHeight, padding: int): int =
+proc fixedSize(sz: CellSize; lineHeight, padding: int): int =
   case sz.kind
-  of skPixels: sz.value
-  of skLines: sz.value * lineHeight + 2 * padding
-  of skStretch: 0  # resolved later
+  of skPixels: result = sz.value
+  of skLines: result = sz.value * lineHeight + 2 * padding
+  of skStretch: result = 0
 
-proc resolveSubcells(subcells: seq[Cell]; parent: Rect;
-                     lineHeight, padding, gap: int;
-                     result: var Table[string, Rect]) =
-  ## Resolve vertically stacked subcells within a parent rect.
-  let subGaps = gap * max(0, subcells.len - 1)
-  var subHeights = newSeq[int](subcells.len)
-  var totalFixed = 0
-  var totalStretch = 0
-  for i, sc in subcells:
-    let h = resolveSize(sc.height, lineHeight, padding)
-    if sc.height.kind == skStretch:
-      totalStretch += sc.height.value
+proc place(n: Node; r: Rect; lineHeight, padding, gap: int;
+           res: var Table[string, Rect]) =
+  if n.kind == nkCell:
+    res[n.name] = r
+    return
+  if n.children.len == 0: return
+
+  let vertical = n.kind == nkRows
+  let axis = if vertical: r.h else: r.w
+  let gaps = gap * (n.children.len - 1)
+
+  var sizes = newSeq[int](n.children.len)
+  var fixed = 0
+  var weights = 0
+  var lastStretch = -1
+  for i in 0 ..< n.children.len:
+    let sz = n.children[i].size
+    if sz.kind == skStretch:
+      weights += sz.value
+      lastStretch = i
     else:
-      totalFixed += h
-    subHeights[i] = h
-  let remain = max(0, parent.h - totalFixed - subGaps)
-  if totalStretch > 0:
-    for i, sc in subcells:
-      if sc.height.kind == skStretch:
-        subHeights[i] = (remain * sc.height.value) div totalStretch
-  var sy = parent.y
-  for i, sc in subcells:
-    result[sc.name] = Rect(x: parent.x, y: sy, w: parent.w, h: subHeights[i])
-    sy += subHeights[i] + gap
+      sizes[i] = fixedSize(sz, lineHeight, padding)
+      fixed += sizes[i]
+
+  let remaining = max(0, axis - fixed - gaps)
+  if weights > 0:
+    var handed = 0
+    for i in 0 ..< n.children.len:
+      if n.children[i].size.kind == skStretch:
+        if i == lastStretch:
+          # The last stretching child takes the division's remainder, so the
+          # children fill their parent exactly instead of leaving a seam.
+          sizes[i] = remaining - handed
+        else:
+          sizes[i] = remaining * n.children[i].size.value div weights
+          handed += sizes[i]
+
+  var pos = if vertical: r.y else: r.x
+  for i in 0 ..< n.children.len:
+    let sub = if vertical: Rect(x: r.x, y: pos, w: r.w, h: sizes[i])
+              else: Rect(x: pos, y: r.y, w: sizes[i], h: r.h)
+    place(n.children[i], sub, lineHeight, padding, gap, res)
+    pos += sizes[i] + gap
 
 proc resolve*(layout: Layout; screenW, screenH: int;
               lineHeight: int = 20; padding: int = 6;
               gap: int = 0): Table[string, Rect] =
-  ## Resolve the layout into named Rects given screen dimensions.
-  ## lineHeight is used to resolve "N lines" sizes.
-  ## padding is added above and below the text area for "N lines" cells.
-  ## gap inserts pixel gaps between adjacent cells (for visible borders).
+  ## Resolve the layout into named Rects given the window's dimensions.
+  ## `lineHeight` resolves `(lines N)` sizes, `padding` is added above and
+  ## below such a text area, and `gap` inserts pixel gaps between adjacent
+  ## boxes so that the background can show through as a border.
+  ## A layout that did not parse resolves to nothing.
   result = initTable[string, Rect]()
+  if layout.error.len > 0: return
+  place(layout.root, Rect(x: 0, y: 0, w: screenW, h: screenH),
+        lineHeight, padding, gap, result)
 
-  let rowGaps = gap * max(0, layout.rows.len - 1)
-
-  # Pass 1: resolve row heights
-  var rowHeights = newSeq[int](layout.rows.len)
-  var totalFixed = 0
-  var totalStretchWeight = 0
-
-  for i, row in layout.rows:
-    let h = resolveSize(row.height, lineHeight, padding)
-    if row.height.kind == skStretch:
-      totalStretchWeight += row.height.value
-    else:
-      totalFixed += h
-    rowHeights[i] = h
-
-  # Distribute remaining space to stretch rows
-  let remaining = max(0, screenH - totalFixed - rowGaps)
-  if totalStretchWeight > 0:
-    for i, row in layout.rows:
-      if row.height.kind == skStretch:
-        rowHeights[i] = (remaining * row.height.value) div totalStretchWeight
-
-  # Pass 2: resolve cell positions
-  var y = 0
-  for i, row in layout.rows:
-    let rowH = rowHeights[i]
-    let colGaps = gap * max(0, row.cells.len - 1)
-    if row.cells.len == 1:
-      let c = row.cells[0]
-      let r = Rect(x: 0, y: y, w: screenW, h: rowH)
-      if c.subcells.len > 0:
-        resolveSubcells(c.subcells, r, lineHeight, padding, gap, result)
-      else:
-        result[c.name] = r
-    else:
-      # Multi-column: resolve widths
-      var cellWidths = newSeq[int](row.cells.len)
-      var fixedW = 0
-      var stretchW = 0
-      for j, c in row.cells:
-        let w = resolveSize(c.width, lineHeight, padding)
-        if c.width.kind == skStretch:
-          stretchW += c.width.value
-        else:
-          fixedW += w
-        cellWidths[j] = w
-
-      let remainW = max(0, screenW - fixedW - colGaps)
-      if stretchW > 0:
-        for j, c in row.cells:
-          if c.width.kind == skStretch:
-            cellWidths[j] = (remainW * c.width.value) div stretchW
-
-      var x = 0
-      for j, c in row.cells:
-        let r = Rect(x: x, y: y, w: cellWidths[j], h: rowH)
-        if c.subcells.len > 0:
-          resolveSubcells(c.subcells, r, lineHeight, padding, gap, result)
-        else:
-          result[c.name] = r
-        x += cellWidths[j] + gap
-
-    y += rowH + gap
+proc hasCell(n: Node; name: string): bool =
+  if n.kind == nkCell:
+    result = n.name == name
+  else:
+    result = false
+    for i in 0 ..< n.children.len:
+      if hasCell(n.children[i], name): return true
 
 proc cell*(layout: Layout; name: string): bool =
   ## Check if a cell name exists in the layout.
-  for row in layout.rows:
-    for c in row.cells:
-      if c.name == name: return true
-  return false
+  result = hasCell(layout.root, name)
 
 proc hitTest*(cells: Table[string, Rect]; x, y: int): CellHit =
   ## Given screen coordinates, return which cell was hit and the

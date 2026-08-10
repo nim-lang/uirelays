@@ -329,6 +329,8 @@ proc xSelect(nfds: cint; readfds, writefds, exceptfds: ptr XFdSet;
 
 proc XOpenDisplay(name: cstring): pointer
   {.cdecl, dynlib: libX11, importc.}
+proc XResourceManagerString(dpy: pointer): cstring
+  {.cdecl, dynlib: libX11, importc.}
 proc XDefaultScreen(dpy: pointer): cint
   {.cdecl, dynlib: libX11, importc.}
 proc XDisplayWidth(dpy: pointer; screen: cint): cint
@@ -496,6 +498,7 @@ var
   gTargets: Atom
   gClipboardText: string
   gClipProperty: Atom
+  gUiScale: int = 100
 
 var eventQueue: seq[input.Event]
 
@@ -610,9 +613,12 @@ proc processXEvent(xev: XEvent) =
       gWidth = newW
       gHeight = newH
       recreateBackBuffer()
-      var e = input.Event(kind: WindowResizeEvent)
+      var e = input.Event(kind: WindowMetricsEvent)
       e.x = gWidth
       e.y = gHeight
+      e.scaleX = 1
+      e.scaleY = 1
+      e.uiScale = gUiScale
       pushEvent(e)
 
   of ClientMessage:
@@ -703,12 +709,53 @@ proc drainXEvents() =
     discard XNextEvent(gDisplay, addr xev)
     processXEvent(xev)
 
+# ---- Display density ----
+
+proc matchesAt(s: string; i: int; prefix: string): bool =
+  if i + prefix.len > s.len: return false
+  for k in 0 ..< prefix.len:
+    if s[i + k] != prefix[k]: return false
+  result = true
+
+proc dpiFromResources(): int =
+  ## `Xft.dpi` from the root window's resource manager string, 0 if unset.
+  ## The server's own idea of the physical size is no use here -- Xwayland
+  ## reports a flat 96 dpi no matter the monitor -- so this resource, which is
+  ## what the desktop environment writes, is the only honest source.
+  result = 0
+  let rm = XResourceManagerString(gDisplay)
+  if rm == nil: return
+  let db = $rm
+  const key = "Xft.dpi:"
+  var i = 0
+  while i < db.len:
+    var lineEnd = i
+    while lineEnd < db.len and db[lineEnd] != '\n': inc lineEnd
+    if db.matchesAt(i, key):
+      var j = i + key.len
+      while j < lineEnd and (db[j] == ' ' or db[j] == '\t'): inc j
+      var dpi = 0
+      while j < lineEnd and db[j] in {'0'..'9'}:
+        dpi = dpi * 10 + (ord(db[j]) - ord('0'))
+        inc j
+      if dpi > 0: return dpi
+    i = lineEnd + 1
+
+proc computeUiScale(): int =
+  ## X11 coordinates are raw device pixels and nothing on the way to the screen
+  ## scales them, so the display's full density has to land in `uiScale`.
+  ## Never below 100: shrinking an app's hardcoded sizes is more likely to make
+  ## it unusable than to be what the user meant.
+  let dpi = dpiFromResources()
+  result = if dpi <= 0: 100 else: max(100, dpi * 100 div 96)
+
 # ---- Screen hook implementations ----
 
 proc x11CreateWindow(layout: var ScreenLayout) =
   gDisplay = XOpenDisplay(nil)
   if gDisplay == nil:
     quit("Cannot open X11 display")
+  gUiScale = computeUiScale()
   gScreen = XDefaultScreen(gDisplay)
   gVisual = XDefaultVisual(gDisplay, gScreen)
   gColormap = XDefaultColormap(gDisplay, gScreen)
@@ -749,6 +796,16 @@ proc x11CreateWindow(layout: var ScreenLayout) =
 
   layout.scaleX = 1
   layout.scaleY = 1
+  layout.uiScale = gUiScale
+
+proc x11GetWindowLayout(): ScreenLayout =
+  ## Re-reads `Xft.dpi`: X11 has no event for a density change, so an app that
+  ## cares has to ask. `WindowMetricsEvent` carries the value cached at
+  ## startup.
+  if gDisplay != nil:
+    gUiScale = computeUiScale()
+  ScreenLayout(width: gWidth.int, height: gHeight.int,
+               scaleX: 1, scaleY: 1, uiScale: gUiScale)
 
 proc x11Refresh() =
   if gBackPixmap != None:
@@ -987,7 +1044,8 @@ proc x11QuitRequest() =
 
 proc initX11Driver*() =
   windowRelays = WindowRelays(
-    createWindow: x11CreateWindow, refresh: x11Refresh,
+    createWindow: x11CreateWindow, getWindowLayout: x11GetWindowLayout,
+    refresh: x11Refresh,
     saveState: x11SaveState, restoreState: x11RestoreState,
     setClipRect: x11SetClipRect, setCursor: x11SetCursor,
     setWindowTitle: x11SetWindowTitle)

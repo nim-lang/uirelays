@@ -948,6 +948,26 @@ void cocoa_createWindow(int w, int h, int *outW, int *outH,
   }
 }
 
+/* backingScaleFactor is a whole number of pixels per point on every Mac
+   (1 or 2), so an int loses nothing here. */
+void cocoa_getWindowLayout(int *outW, int *outH, int *outScaleX, int *outScaleY) {
+  @autoreleasepool {
+    if (!mainWindow || !mainView) {
+      *outW = 0;
+      *outH = 0;
+      *outScaleX = 1;
+      *outScaleY = 1;
+      return;
+    }
+    NSRect contentFrame = [mainView frame];
+    CGFloat scale = [mainWindow backingScaleFactor];
+    *outW = (int)contentFrame.size.width;
+    *outH = (int)contentFrame.size.height;
+    *outScaleX = (int)scale;
+    *outScaleY = (int)scale;
+  }
+}
+
 void cocoa_refresh(void) {
   @autoreleasepool {
     [mainView setNeedsDisplay:YES];

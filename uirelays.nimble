@@ -10,3 +10,11 @@ srcDir        = "src"
 # Dependencies
 
 requires "nim >= 2.0.0"
+
+feature "figdrawwindy":
+  requires "figdraw >= 0.28.1"
+  requires "windy >= 0.5.0"
+
+feature "figdrawsiwin":
+  requires "figdraw >= 0.28.1"
+  requires "siwin >= 1.0.0"

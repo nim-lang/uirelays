@@ -9,7 +9,7 @@
 ## Usage::
 ##
 ##   var ed = createSynEdit(font)
-##   # uses catppuccin mocha theme by default
+##   # uses `defaultTheme()` by default
 ##   ed.setText("hello world")
 ##   # in your main loop:
 ##   ed.draw(e, rect(10, 10, 600, 400))
@@ -28,11 +28,25 @@
 ##   term.init(font)
 ##   term.lang = langConsole
 ##   term.appendOutput("$ ")   # user types after the prompt
+##
+## List of clickable lines -- a field where a click acts instead of just
+## placing the cursor. The frame is the affordance; what a click does is up
+## to the caller::
+##
+##   var tabs = createSynEdit(font)
+##   tabs.setActionLines(0)     # every line is clickable
+##   tabs.setCloseButtons(0)    # ... and closable
+##   # setActionLines(1) would leave line 0 as a normal field
+##   # in your main loop:
+##   let act = tabs.draw(e, area, focused)
+##   if act.kind == closeLine: tabs.gotoLine(act.line + 1, 0); tabs.deleteLine()
 
 import ../uirelays/[coords, screen, input]
 import ./theme
+import ./langs/markdown
 import std/strutils
 export theme
+export markdown
 
 const
   LinkMod* = when defined(macosx): GuiPressed else: CtrlPressed
@@ -125,13 +139,16 @@ type
   EditActionKind* = enum
     noAction,
     ctrlHover,          ## ctrl+mouse move over text
-    ctrlClick           ## ctrl+click on text
+    ctrlClick,          ## ctrl+click on text
+    closeLine           ## the (x) button of a line was clicked
 
   EditAction* = object
     case kind*: EditActionKind
     of noAction: discard
     of ctrlHover, ctrlClick:
       pos*: int         ## buffer offset
+    of closeLine:
+      line*: int        ## 0-based line whose (x) was clicked
 
   ImageCacheEntry = object
     path: string
@@ -189,6 +206,12 @@ type
     markers: seq[Marker]
     # Line decorations (breakpoints, active execution line, etc.)
     lineDecorations: seq[LineDecoration]
+    # Action lines -- see setActionLines()
+    actionLines*: int               ## first line whose text is framed as
+                                    ## clickable; -1 = none
+    # Close buttons -- see setCloseButtons()
+    closeLines*: int                ## first line with an (x) button; -1 = none
+    closeHover: int                 ## line whose (x) the mouse is over; -1 = none
     # Cached images for rich markdown rendering
     imageCache: seq[ImageCacheEntry]
     # Cache
@@ -202,6 +225,9 @@ proc currentLine*(s: SynEdit): int {.inline.} = s.currentLine.int
 proc currentCol*(s: SynEdit): int {.inline.} = s.desiredCol.int
 proc changed*(s: SynEdit): bool {.inline.} = s.changed
 proc markChanged*(s: var SynEdit) = s.changed = true
+proc markSaved*(s: var SynEdit) = s.changed = false
+  ## Clear the changed flag without writing a file, for buffers whose content
+  ## has been consumed by something other than `saveToFile`.
 proc cursor*(s: SynEdit): int {.inline.} = s.cursor.int
 proc cacheId*(s: SynEdit): int {.inline.} = s.cacheId
 proc getFont*(s: SynEdit): Font {.inline.} = s.font
@@ -794,6 +820,87 @@ proc strToLanguage*(s: string): SourceLanguage =
   of "md", "markdown": langMarkdown
   else: langNone
 
+proc styleMarkdownLink(s: var SynEdit; lineEnd: int; i: var int): bool =
+  ## Style `[label](url)` or `![alt](url)` starting at `i`. Advances `i`.
+  let bang = s[i] == '!' and i + 1 < lineEnd and s[i + 1] == '['
+  let openBracket = if bang: i + 1 else: i
+  if openBracket >= lineEnd or s[openBracket] != '[': return false
+  var j = openBracket + 1
+  while j < lineEnd and s[j] != ']': inc j
+  if j >= lineEnd or j + 1 >= lineEnd or s[j + 1] != '(': return false
+  var k = j + 2
+  while k < lineEnd and s[k] != ')' and s[k] != ' ': inc k
+  var close = k
+  while close < lineEnd and s[close] != ')': inc close
+  if close >= lineEnd: return false
+  if bang:
+    s.setCellStyle(i, TokenClass.Punctuation)
+  s.setCellStyle(openBracket, TokenClass.Punctuation)
+  for p in openBracket + 1 ..< j:
+    s.setCellStyle(p, TokenClass.Link)
+  s.setCellStyle(j, TokenClass.Punctuation)
+  s.setCellStyle(j + 1, TokenClass.Punctuation)
+  for p in j + 2 ..< close:
+    s.setCellStyle(p, TokenClass.Comment)
+  s.setCellStyle(close, TokenClass.Punctuation)
+  i = close + 1
+  result = true
+
+proc styleMarkdownLine(s: var SynEdit; lineStart, lineEnd, last: int) =
+  ## Headings, links, autolinks and inline code -- the bits that make a
+  ## markdown buffer readable without leaving the editor.
+  var i = lineStart
+  while i < lineEnd and s[i] in {' ', '\t'}:
+    s.setCellStyle(i, TokenClass.Whitespace)
+    inc i
+  var hashes = 0
+  var h = i
+  while h < lineEnd and s[h] == '#':
+    inc hashes
+    inc h
+  if hashes in 1 .. 6 and h < lineEnd and s[h] == ' ':
+    for p in i ..< h:
+      s.setCellStyle(p, TokenClass.Punctuation)
+    while h < lineEnd and s[h] == ' ':
+      s.setCellStyle(h, TokenClass.Whitespace)
+      inc h
+    for p in h ..< min(lineEnd, last + 1):
+      s.setCellStyle(p, TokenClass.Keyword)
+    if lineEnd <= last:
+      s.setCellStyle(lineEnd, TokenClass.None)
+    return
+
+  for p in lineStart ..< min(lineEnd, last + 1):
+    s.setCellStyle(p, TokenClass.Text)
+  i = lineStart
+  while i < lineEnd:
+    if s[i] == '`':
+      var j = i + 1
+      while j < lineEnd and s[j] != '`': inc j
+      if j < lineEnd:
+        s.setCellStyle(i, TokenClass.Punctuation)
+        for p in i + 1 ..< j:
+          s.setCellStyle(p, TokenClass.StringLit)
+        s.setCellStyle(j, TokenClass.Punctuation)
+        i = j + 1
+        continue
+    if s[i] == '<' and i + 1 < lineEnd and s[i + 1] notin {' ', '\t', '<'}:
+      var j = i + 1
+      while j < lineEnd and s[j] notin {'>', ' ', '\t'}: inc j
+      if j < lineEnd and s[j] == '>':
+        s.setCellStyle(i, TokenClass.Punctuation)
+        for p in i + 1 ..< j:
+          s.setCellStyle(p, TokenClass.Link)
+        s.setCellStyle(j, TokenClass.Punctuation)
+        i = j + 1
+        continue
+    if s[i] == '[' or (s[i] == '!' and i + 1 < lineEnd and s[i + 1] == '['):
+      if s.styleMarkdownLink(lineEnd, i):
+        continue
+    inc i
+  if lineEnd <= last:
+    s.setCellStyle(lineEnd, TokenClass.None)
+
 proc highlightMarkdown(s: var SynEdit; first, last: int) =
   var insideFence = false
   var fenceLang = langNone
@@ -836,10 +943,7 @@ proc highlightMarkdown(s: var SynEdit; first, last: int) =
       if lineEnd <= last:
         s.setCellStyle(lineEnd, TokenClass.None)
     else:
-      for j in lineStart..<min(lineEnd, last+1):
-        s.setCellStyle(j, TokenClass.Text)
-      if lineEnd <= last:
-        s.setCellStyle(lineEnd, TokenClass.None)
+      s.styleMarkdownLine(lineStart, lineEnd, last)
 
     pos = lineEnd + 1
 
@@ -1885,10 +1989,11 @@ proc setLabel*(s: var SynEdit; text: string) =
 # Initialization
 # ---------------------------------------------------------------------------
 
-proc createSynEdit*(font: Font; theme = catppuccinMocha()): SynEdit =
+proc createSynEdit*(font: Font; theme = defaultTheme()): SynEdit =
   result = SynEdit(front: @[], back: @[], actions: @[], cursor: 0,
     selected: (-1, -1), bracketA: -1, bracketB: -1, hotLink: (-1, -1),
     readOnly: -1, tabSize: TabWidth, lang: langNim,
+    actionLines: -1, closeLines: -1, closeHover: -1,
     font: font, theme: theme, flags: {},
     showLineNumbers: false, cursorVisible: true, lastBlinkTick: 0)
 
@@ -1909,7 +2014,7 @@ proc hexDigitValue(c: char): int {.inline.} =
 proc isHexDigit(c: char): bool {.inline.} =
   c in {'0'..'9', 'a'..'f', 'A'..'F'}
 
-proc tryParseHexColor(text: string; start: int; c: var Color; consumed: var int): bool =
+proc tryParseHexColor(text: openArray[char]; start: int; c: var Color; consumed: var int): bool =
   ## Parse #RGB/#RRGGBB/#RRGGBBAA from text[start..].
   if start < 0 or start >= text.len or text[start] != '#':
     return
@@ -1953,36 +2058,45 @@ proc getCachedImage(s: var SynEdit; path: string): Image =
   s.imageCache.add ImageCacheEntry(path: path, img: img)
   result = img
 
-proc parseMarkdownImagePath(line: string; path: var string): bool =
-  ## Parse a full-line markdown image: ![alt](path)
+proc extractMarkdownLink*(s: SynEdit; pos: int): tuple[url: string; a, b: int] =
+  ## Buffer-position variant of `findMarkdownLinkAt`.
+  result = ("", -1, -1)
+  if pos < 0 or pos >= s.len: return
+  var lineStart = pos
+  while lineStart > 0 and s[lineStart - 1] != '\L': dec lineStart
+  var lineEnd = pos
+  while lineEnd < s.len and s[lineEnd] != '\L': inc lineEnd
+  var line = newStringOfCap(lineEnd - lineStart)
+  for p in lineStart ..< lineEnd: line.add s[p]
+  let hit = findMarkdownLinkAt(line, pos - lineStart)
+  if hit.a < 0: return
+  result = (hit.url, lineStart + hit.a, lineStart + hit.b)
+
+proc gotoMarkdownHeading*(s: var SynEdit; fragment: string): bool =
+  ## Jump to the first ATX heading whose slug matches `fragment`.
+  let want = markdownHeadingSlug(fragment)
+  if want.len == 0: return false
   var i = 0
-  while i < line.len and line[i] in {' ', '\t'}: inc i
-  if i + 1 >= line.len or line[i] != '!' or line[i + 1] != '[':
-    return
-  var closeBracket = -1
-  var k = i + 2
-  while k < line.len:
-    if line[k] == ']':
-      closeBracket = k
-      break
-    inc k
-  if closeBracket < 0 or closeBracket + 1 >= line.len or line[closeBracket + 1] != '(':
-    return
-  var closeParen = -1
-  k = closeBracket + 2
-  while k < line.len:
-    if line[k] == ')':
-      closeParen = k
-      break
-    inc k
-  if closeParen < 0:
-    return
-  var tail = closeParen + 1
-  while tail < line.len and line[tail] in {' ', '\t'}: inc tail
-  if tail != line.len:
-    return
-  path = line[(closeBracket + 2) ..< closeParen]
-  result = path.len > 0
+  var lineNo = 0
+  while i <= s.len:
+    let lineStart = i
+    while i < s.len and s[i] != '\L': inc i
+    var j = lineStart
+    while j < i and s[j] in {' ', '\t'}: inc j
+    var hashes = 0
+    while j < i and s[j] == '#':
+      inc hashes
+      inc j
+    if hashes in 1 .. 6 and j < i and s[j] == ' ':
+      while j < i and s[j] == ' ': inc j
+      var title = ""
+      for p in j ..< i: title.add s[p]
+      if markdownHeadingSlug(title) == want:
+        s.gotoLine(lineNo + 1, 0)
+        return true
+    if i >= s.len: break
+    inc i
+    inc lineNo
 
 proc renderMarkdownImageLine(
     s: var SynEdit; lineStart: int; dim: var Rect;
@@ -2080,6 +2194,36 @@ proc clearLineDecorations*(s: var SynEdit) =
   ## Remove all line decorations.
   s.lineDecorations.setLen 0
 
+# ---------------------------------------------------------------------------
+# Action lines -- lines that act on click instead of just taking the cursor
+# ---------------------------------------------------------------------------
+
+proc setActionLines*(s: var SynEdit; first: int) =
+  ## Frame the text of every line from `first` on, marking it as clickable:
+  ## in such a field a click does something (activate, open, navigate)
+  ## rather than merely placing the cursor. Pass `first = -1` to disable.
+  ## Survives `setText`, so a field can be declared clickable once.
+  ## The frame is drawn in `theme.actionColor`.
+  s.actionLines = first
+
+proc setCloseButtons*(s: var SynEdit; first: int) =
+  ## Draw an (x) button at the right edge of every line from `first` on.
+  ## Clicking one yields `EditAction(kind: closeLine, line: ...)` and leaves
+  ## the cursor alone, so it does not double as an activating click.
+  ## Pass `first = -1` to disable. Survives `setText`.
+  ## The button is drawn in `theme.closeColor`.
+  s.closeLines = first
+
+proc closeButtonWidth(s: SynEdit): int {.inline.} =
+  fontLineSkip(s.font) - 1
+
+proc drawFrame(r: Rect; color: Color) =
+  if r.w <= 0 or r.h <= 0: return
+  fillRect(rect(r.x, r.y, r.w, 1), color)
+  fillRect(rect(r.x, r.y + r.h - 1, r.w, 1), color)
+  fillRect(rect(r.x, r.y, 1, r.h), color)
+  fillRect(rect(r.x + r.w - 1, r.y, 1, r.h), color)
+
 const
   CharBufSize = 80
 
@@ -2160,46 +2304,23 @@ proc drawSubtoken(db: var DrawBuf; ra, rb: int; fg, bg: Color) =
   if isLink:
     let ulY = d.y + db.lineH - 1
     drawLine(d.x, ulY, d.x + textWidth(db.font, db.tempStr), ulY, fgColor)
-  if rfColorLiterals in db.s[].flags:
-    var idx = 0
-    while idx < db.tempStr.len:
-      if db.tempStr[idx] == '#':
-        var chipColor: Color
-        var consumed = 0
-        if tryParseHexColor(db.tempStr, idx, chipColor, consumed):
-          var prefix = ""
-          if idx > 0:
-            prefix = db.tempStr[0 ..< idx]
-          let prefixW = textWidth(db.font, prefix)
-          let chipToken = db.tempStr[idx ..< idx + consumed]
-          let tokenW = textWidth(db.font, chipToken)
-          let chipSize = max(6, db.lineH - 6)
-          let chipX = d.x + prefixW + tokenW + 2
-          let chipY = d.y + (db.lineH - chipSize) div 2
-          if chipX + chipSize <= db.dim.w:
-            fillRect(rect(chipX, chipY, chipSize, chipSize), chipColor)
-            drawLine(chipX, chipY, chipX + chipSize, chipY, color(30, 30, 30))
-            drawLine(chipX, chipY, chipX, chipY + chipSize, color(30, 30, 30))
-            drawLine(chipX + chipSize, chipY, chipX + chipSize, chipY + chipSize, color(30, 30, 30))
-            drawLine(chipX, chipY + chipSize, chipX + chipSize, chipY + chipSize, color(30, 30, 30))
-          break
-      inc idx
 
-proc drawToken(db: var DrawBuf; fg, bg: Color) =
-  if db.dim.y + db.lineH > db.maxY: return
+proc drawRun(db: var DrawBuf; a, b: int; fg, bg: Color) =
+  ## Draw `db.chars[a..b]` at the current position, wrapping if it does not fit.
+  if a > b: return
   db.tempStr.setLen 0
-  for k in 0 ..< db.charsLen: db.tempStr.add db.chars[k]
+  for k in a..b: db.tempStr.add db.chars[k]
   let ext = measureText(db.font, db.tempStr)
   let w = ext.w
   if db.dim.x + w + db.spaceWidth <= db.dim.w:
-    drawSubtoken(db, 0, db.charsLen - 1, fg, bg)
+    drawSubtoken(db, a, b, fg, bg)
     db.dim.x += w
   else:
     # wrapping: just draw what fits, then continue on next line
-    var ra = 0
-    while ra < db.charsLen:
+    var ra = a
+    while ra <= b:
       var probe = ra
-      while probe < db.charsLen:
+      while probe <= b:
         db.tempStr.setLen 0
         for k in ra..probe: db.tempStr.add db.chars[k]
         let w2 = textWidth(db.font, db.tempStr)
@@ -2215,10 +2336,52 @@ proc drawToken(db: var DrawBuf; fg, bg: Color) =
       drawSubtoken(db, ra, rb, fg, bg)
       db.dim.x += ext2
       ra = probe
-      if ra < db.charsLen:
+      if ra <= b:
         db.dim.x = db.oldX
         db.dim.y += db.lineH
         if db.dim.y + db.lineH > db.maxY: break
+
+proc drawColorChip(db: var DrawBuf; c: Color): int =
+  ## Draw the chip at the current position, return the width it occupies.
+  let chipSize = max(6, db.lineH - 6)
+  let x = db.dim.x + 2
+  let y = db.dim.y + (db.lineH - chipSize) div 2
+  if x + chipSize + 2 > db.dim.w: return 0
+  fillRect(rect(x, y, chipSize, chipSize), c)
+  drawLine(x, y, x + chipSize, y, color(30, 30, 30))
+  drawLine(x, y, x, y + chipSize, color(30, 30, 30))
+  drawLine(x + chipSize, y, x + chipSize, y + chipSize, color(30, 30, 30))
+  drawLine(x, y + chipSize, x + chipSize, y + chipSize, color(30, 30, 30))
+  result = chipSize + 4
+
+proc drawToken(db: var DrawBuf; fg, bg: Color) =
+  if db.dim.y + db.lineH > db.maxY: return
+  if rfColorLiterals notin db.s[].flags:
+    db.drawRun(0, db.charsLen - 1, fg, bg)
+    return
+  # A color chip is drawn right behind its literal, so the token is split into
+  # runs at every literal and the rest of the text is shifted to the right.
+  # Anything else either covers the character following the literal or puts
+  # the chip far away from it, at the end of the token.
+  var runStart = 0
+  var idx = 0
+  while idx < db.charsLen:
+    var chipColor: Color
+    var consumed = 0
+    if db.chars[idx] == '#' and
+       tryParseHexColor(db.chars.toOpenArray(0, db.charsLen - 1), idx,
+                        chipColor, consumed):
+      var last = idx + consumed - 1
+      # keep the closing quote of `"#RRGGBB"` with the literal
+      if last + 1 < db.charsLen and db.chars[last + 1] in {'"', '\''}:
+        inc last
+      db.drawRun(runStart, last, fg, bg)
+      db.dim.x += db.drawColorChip(chipColor)
+      runStart = last + 1
+      idx = last + 1
+    else:
+      inc idx
+  db.drawRun(runStart, db.charsLen - 1, fg, bg)
 
 proc drawTextLine(s: var SynEdit; i: int; dim: var Rect; blink: bool): int =
   var tokenClass = s.getCell(i).s
@@ -2336,6 +2499,21 @@ const ScrollBarWidth* = 14
 proc scrollEnabled(s: SynEdit): bool {.inline.} =
   s.span > 0 and s.span.Natural <= s.numberOfLines
 
+proc closeButtonHit(s: SynEdit; area: Rect; x, y: int): int =
+  ## The line whose (x) button covers (x, y), or -1. The button column is
+  ## derived from the area alone, so this answers before the line is drawn.
+  result = -1
+  if s.closeLines < 0 or not area.contains(point(x, y)): return
+  let lineH = fontLineSkip(s.font)
+  if lineH <= 0: return
+  let endX = area.x + area.w -
+             (if s.scrollEnabled: ScrollBarWidth else: 0) - 1
+  if x < endX - s.closeButtonWidth or x > endX: return
+  let line = s.firstLine.int + (y - area.y) div lineH
+  if line < s.closeLines or line >= s.getLineCount(): return
+  if s.getLineText(line).len == 0: return   # an empty line has no button
+  result = line
+
 proc scrollGrip(s: SynEdit; area: Rect; lineH: int): Rect =
   ## Compute the scrollbar grip rectangle.
   if not s.scrollEnabled: return
@@ -2409,7 +2587,38 @@ proc render*(s: var SynEdit; area: Rect; showCursor: bool) =
         inc renderLine
         continue
 
+    let thisLine = renderLine.int
+    let actionLine = s.actionLines >= 0 and thisLine >= s.actionLines
+    let closeLine = s.closeLines >= 0 and thisLine >= s.closeLines
+    let lineY = dim.y
+    let lineStart = i
     i = s.drawTextLine(i, dim, blink)
+    if actionLine or closeLine:
+      # Drawn after the text, so the per-token backgrounds cannot paint over
+      # the frame's top and bottom edges -- and so the button occludes a
+      # name that is too long for the column.
+      let empty = lineStart >= s.len or s[lineStart] == '\L'
+      if not empty:
+        if closeLine:
+          let bw = s.closeButtonWidth
+          let br = rect(endX - bw, lineY, bw, lineH - 1)
+          let hovered = s.closeHover == thisLine
+          # The cross is drawn, not typed: no font has to have the glyph.
+          fillRect(br, if hovered: s.theme.closeColor else: s.getBg(lineStart))
+          let fg = if hovered: s.theme.bg else: s.theme.closeColor
+          let pad = max(3, bw div 4)
+          let x0 = br.x + pad
+          let x1 = br.x + br.w - 1 - pad
+          let y0 = br.y + pad
+          let y1 = br.y + br.h - 1 - pad
+          drawLine(x0, y0, x1, y1, fg)
+          drawLine(x1, y0, x0, y1, fg)
+        if actionLine:
+          # The frame outlines the whole row, so the row reads as one target
+          # -- and drawing it last puts its edges over the button's fill.
+          # lineH - 1 keeps consecutive frames from sharing an edge.
+          drawFrame(rect(area.x, lineY, endX - area.x + 1, lineH - 1),
+                    s.theme.actionColor)
     inc s.span, consumedRows
     inc renderLine
 
@@ -2446,6 +2655,11 @@ proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
   let lineH = fontLineSkip(s.font)
   let grip = s.scrollGrip(area, lineH)
   let hasScrollBar = s.scrollEnabled
+  let closeHit =
+    if e.kind in {MouseDownEvent, MouseMoveEvent}:
+      s.closeButtonHit(area, e.x, e.y)
+    else: -1
+  if e.kind == MouseMoveEvent: s.closeHover = closeHit
 
   case e.kind
   of TextInputEvent:
@@ -2533,6 +2747,10 @@ proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
     if hasScrollBar and grip.contains(point(e.x, e.y)):
       s.scrollGrabbed = true
       s.scrollGrabOffset = e.y - grip.y
+    elif closeHit >= 0:
+      # Leave the cursor where it is: closing a line is not activating it.
+      s.render(area, showCursor = focused)
+      return EditAction(kind: closeLine, line: closeHit)
     elif area.contains(point(e.x, e.y)):
       if LinkMod in e.mods:
         s.setCursorFromMouse(e.x, e.y, 1)

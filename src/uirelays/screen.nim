@@ -17,9 +17,21 @@ type
     ascent*, descent*, lineHeight*: int
 
   ScreenLayout* = object
-    width*, height*: int
+    ## Everything here is integers on purpose: a display's scale is either a
+    ## whole number of device pixels per coordinate unit, or -- for the 125%
+    ## and 150% displays where that is not true -- a percentage, which is
+    ## still an integer.
+    width*, height*: int  ## window size, in the unit the driver draws in
     pitch*: int
-    scaleX*, scaleY*: int
+    scaleX*, scaleY*: int ## device pixels the driver *already* puts per
+                          ## coordinate unit, so `width * scaleX` is the
+                          ## physical width. Purely informational: an app
+                          ## must not scale its own drawing by this.
+    uiScale*: int         ## percent an app should enlarge its fonts and
+                          ## hardcoded pixel sizes by to keep them physically
+                          ## the same on any display. 100 means the driver or
+                          ## the platform already accounts for the display's
+                          ## density; 200 means the app draws twice as large.
     fullScreen*: bool
 
   CursorKind* = enum
@@ -28,6 +40,7 @@ type
 
   WindowRelays* = object
     createWindow*: proc (layout: var ScreenLayout) {.nimcall.}
+    getWindowLayout*: proc (): ScreenLayout {.nimcall.}
     refresh*: proc () {.nimcall.}
     saveState*: proc () {.nimcall.}
     restoreState*: proc () {.nimcall.}
@@ -57,6 +70,8 @@ proc `==`*(a, b: Image): bool {.borrow.}
 
 var windowRelays* = WindowRelays(
   createWindow: proc (layout: var ScreenLayout) = discard,
+  getWindowLayout: proc (): ScreenLayout =
+    ScreenLayout(scaleX: 1, scaleY: 1, uiScale: 100),
   refresh: proc () = discard,
   saveState: proc () = discard,
   restoreState: proc () = discard,
@@ -82,8 +97,22 @@ var drawRelays* = DrawRelays(
 
 # Convenience wrappers
 proc createWindow*(requestedW, requestedH: int; fullScreen = false): ScreenLayout =
-  result = ScreenLayout(width: requestedW, height: requestedH, fullScreen: fullScreen)
+  ## The defaults are what a driver that knows nothing about display density
+  ## reports, so a driver only has to write back what it actually knows.
+  result = ScreenLayout(width: requestedW, height: requestedH,
+                        scaleX: 1, scaleY: 1, uiScale: 100,
+                        fullScreen: fullScreen)
   windowRelays.createWindow(result)
+
+proc getWindowLayout*(): ScreenLayout =
+  ## The current size and scale. Worth re-reading after the window moved to
+  ## another monitor; `WindowMetricsEvent` reports the same numbers.
+  windowRelays.getWindowLayout()
+
+proc scaled*(layout: ScreenLayout; value: int): int =
+  ## Enlarge a hardcoded font size or pixel dimension for this display.
+  ## Integer arithmetic throughout, so 125% and 150% displays stay exact.
+  value * layout.uiScale div 100
 
 proc refresh*() = windowRelays.refresh()
 proc saveState*() = windowRelays.saveState()

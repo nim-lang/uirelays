@@ -1,5 +1,5 @@
 ## layout_demo.nim -- Demonstrates the layout manager.
-## Parses a markdown table into named screen regions, draws them,
+## Parses a NIF layout into named screen regions, draws them,
 ## highlights the region under the mouse, and resizes dynamically.
 ##
 ## Compile:
@@ -10,9 +10,13 @@ import uirelays/layout
 import std/tables
 
 const LayoutSpec = """
-  | toolbar, 30px                               |
-  | sidebar, 200px | divider, 4px | editor, *   |
-  | status, 1 line                              |
+(layout
+  (toolbar (px 30))
+  (cols
+    (sidebar (px 200))
+    (divider (px 4))
+    (editor))
+  (status (lines 1)))
 """
 
 const
@@ -29,10 +33,11 @@ proc main =
   var height = win.height
 
   var fm: FontMetrics
-  let font = openFont("", 16, fm)
+  let font = openFont("", win.scaled(16), fm)
   setWindowTitle("Layout Demo")
 
   let parsed = parseLayout(LayoutSpec)
+  doAssert parsed.error.len == 0, parsed.error
 
   var running = true
   var mouseX, mouseY = 0
@@ -44,7 +49,7 @@ proc main =
       case e.kind
       of QuitEvent, WindowCloseEvent:
         running = false
-      of WindowResizeEvent:
+      of WindowResizeEvent, WindowMetricsEvent:
         width = e.x
         height = e.y
       of MouseMoveEvent:

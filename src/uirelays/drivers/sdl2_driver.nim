@@ -36,6 +36,12 @@ var
 
 # --- Screen hook implementations ---
 
+# SDL2 has no dependable way to learn a display's density: `SDL_GetDisplayDPI`
+# derives it from the physical size the server advertises, which is exactly the
+# number that is wrong under Xwayland, and on Windows SDL2 is not DPI aware at
+# all. So this driver reports `uiScale = 100` and text stays small on a HiDPI
+# display -- use the SDL3 driver there.
+
 proc sdlCreateWindow(layout: var ScreenLayout) =
   let flags =
     if layout.fullScreen:
@@ -52,7 +58,16 @@ proc sdlCreateWindow(layout: var ScreenLayout) =
   layout.height = h
   layout.scaleX = 1
   layout.scaleY = 1
+  layout.uiScale = 100
   sdl2.startTextInput()
+
+proc sdlGetWindowLayout(): ScreenLayout =
+  result = ScreenLayout(scaleX: 1, scaleY: 1, uiScale: 100)
+  if window != nil:
+    var w, h: cint
+    window.getSize(w, h)
+    result.width = w
+    result.height = h
 
 proc sdlRefresh() =
   renderer.present()
@@ -244,9 +259,12 @@ proc sdlPollEvent(e: var input.Event; flags: set[InputFlag]): bool =
     let wev = sdlEvent.window
     case wev.event
     of WindowEvent_Resized, WindowEvent_SizeChanged:
-      e.kind = WindowResizeEvent
+      e.kind = WindowMetricsEvent
       e.x = wev.data1
       e.y = wev.data2
+      e.scaleX = 1
+      e.scaleY = 1
+      e.uiScale = 100
     of WindowEvent_Close:
       e.kind = WindowCloseEvent
     of WindowEvent_FocusGained:
@@ -328,7 +346,8 @@ proc initSdl2Driver*() =
   if ttfInit() != SdlSuccess:
     quit("TTF init failed")
   windowRelays = WindowRelays(
-    createWindow: sdlCreateWindow, refresh: sdlRefresh,
+    createWindow: sdlCreateWindow, getWindowLayout: sdlGetWindowLayout,
+    refresh: sdlRefresh,
     saveState: sdlSaveState, restoreState: sdlRestoreState,
     setClipRect: sdlSetClipRect, setCursor: sdlSetCursor,
     setWindowTitle: sdlSetWindowTitle)
