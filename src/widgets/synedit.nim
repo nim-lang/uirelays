@@ -2014,7 +2014,7 @@ proc hexDigitValue(c: char): int {.inline.} =
 proc isHexDigit(c: char): bool {.inline.} =
   c in {'0'..'9', 'a'..'f', 'A'..'F'}
 
-proc tryParseHexColor(text: string; start: int; c: var Color; consumed: var int): bool =
+proc tryParseHexColor(text: openArray[char]; start: int; c: var Color; consumed: var int): bool =
   ## Parse #RGB/#RRGGBB/#RRGGBBAA from text[start..].
   if start < 0 or start >= text.len or text[start] != '#':
     return
@@ -2304,46 +2304,23 @@ proc drawSubtoken(db: var DrawBuf; ra, rb: int; fg, bg: Color) =
   if isLink:
     let ulY = d.y + db.lineH - 1
     drawLine(d.x, ulY, d.x + textWidth(db.font, db.tempStr), ulY, fgColor)
-  if rfColorLiterals in db.s[].flags:
-    var idx = 0
-    while idx < db.tempStr.len:
-      if db.tempStr[idx] == '#':
-        var chipColor: Color
-        var consumed = 0
-        if tryParseHexColor(db.tempStr, idx, chipColor, consumed):
-          var prefix = ""
-          if idx > 0:
-            prefix = db.tempStr[0 ..< idx]
-          let prefixW = textWidth(db.font, prefix)
-          let chipToken = db.tempStr[idx ..< idx + consumed]
-          let tokenW = textWidth(db.font, chipToken)
-          let chipSize = max(6, db.lineH - 6)
-          let chipX = d.x + prefixW + tokenW + 2
-          let chipY = d.y + (db.lineH - chipSize) div 2
-          if chipX + chipSize <= db.dim.w:
-            fillRect(rect(chipX, chipY, chipSize, chipSize), chipColor)
-            drawLine(chipX, chipY, chipX + chipSize, chipY, color(30, 30, 30))
-            drawLine(chipX, chipY, chipX, chipY + chipSize, color(30, 30, 30))
-            drawLine(chipX + chipSize, chipY, chipX + chipSize, chipY + chipSize, color(30, 30, 30))
-            drawLine(chipX, chipY + chipSize, chipX + chipSize, chipY + chipSize, color(30, 30, 30))
-          break
-      inc idx
 
-proc drawToken(db: var DrawBuf; fg, bg: Color) =
-  if db.dim.y + db.lineH > db.maxY: return
+proc drawRun(db: var DrawBuf; a, b: int; fg, bg: Color) =
+  ## Draw `db.chars[a..b]` at the current position, wrapping if it does not fit.
+  if a > b: return
   db.tempStr.setLen 0
-  for k in 0 ..< db.charsLen: db.tempStr.add db.chars[k]
+  for k in a..b: db.tempStr.add db.chars[k]
   let ext = measureText(db.font, db.tempStr)
   let w = ext.w
   if db.dim.x + w + db.spaceWidth <= db.dim.w:
-    drawSubtoken(db, 0, db.charsLen - 1, fg, bg)
+    drawSubtoken(db, a, b, fg, bg)
     db.dim.x += w
   else:
     # wrapping: just draw what fits, then continue on next line
-    var ra = 0
-    while ra < db.charsLen:
+    var ra = a
+    while ra <= b:
       var probe = ra
-      while probe < db.charsLen:
+      while probe <= b:
         db.tempStr.setLen 0
         for k in ra..probe: db.tempStr.add db.chars[k]
         let w2 = textWidth(db.font, db.tempStr)
@@ -2359,10 +2336,52 @@ proc drawToken(db: var DrawBuf; fg, bg: Color) =
       drawSubtoken(db, ra, rb, fg, bg)
       db.dim.x += ext2
       ra = probe
-      if ra < db.charsLen:
+      if ra <= b:
         db.dim.x = db.oldX
         db.dim.y += db.lineH
         if db.dim.y + db.lineH > db.maxY: break
+
+proc drawColorChip(db: var DrawBuf; c: Color): int =
+  ## Draw the chip at the current position, return the width it occupies.
+  let chipSize = max(6, db.lineH - 6)
+  let x = db.dim.x + 2
+  let y = db.dim.y + (db.lineH - chipSize) div 2
+  if x + chipSize + 2 > db.dim.w: return 0
+  fillRect(rect(x, y, chipSize, chipSize), c)
+  drawLine(x, y, x + chipSize, y, color(30, 30, 30))
+  drawLine(x, y, x, y + chipSize, color(30, 30, 30))
+  drawLine(x + chipSize, y, x + chipSize, y + chipSize, color(30, 30, 30))
+  drawLine(x, y + chipSize, x + chipSize, y + chipSize, color(30, 30, 30))
+  result = chipSize + 4
+
+proc drawToken(db: var DrawBuf; fg, bg: Color) =
+  if db.dim.y + db.lineH > db.maxY: return
+  if rfColorLiterals notin db.s[].flags:
+    db.drawRun(0, db.charsLen - 1, fg, bg)
+    return
+  # A color chip is drawn right behind its literal, so the token is split into
+  # runs at every literal and the rest of the text is shifted to the right.
+  # Anything else either covers the character following the literal or puts
+  # the chip far away from it, at the end of the token.
+  var runStart = 0
+  var idx = 0
+  while idx < db.charsLen:
+    var chipColor: Color
+    var consumed = 0
+    if db.chars[idx] == '#' and
+       tryParseHexColor(db.chars.toOpenArray(0, db.charsLen - 1), idx,
+                        chipColor, consumed):
+      var last = idx + consumed - 1
+      # keep the closing quote of `"#RRGGBB"` with the literal
+      if last + 1 < db.charsLen and db.chars[last + 1] in {'"', '\''}:
+        inc last
+      db.drawRun(runStart, last, fg, bg)
+      db.dim.x += db.drawColorChip(chipColor)
+      runStart = last + 1
+      idx = last + 1
+    else:
+      inc idx
+  db.drawRun(runStart, db.charsLen - 1, fg, bg)
 
 proc drawTextLine(s: var SynEdit; i: int; dim: var Rect; blink: bool): int =
   var tokenClass = s.getCell(i).s
