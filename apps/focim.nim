@@ -44,10 +44,16 @@ is being edited.
 
 The config and the list of open tabs are stored under `getConfigDir()` in
 `focim/config.nif` and `focim/tabs.txt`, so both survive a restart.
+
+Markdown is still SynEdit, not a browser pane. Headings, links and fenced
+code light up in place; Cmd/Ctrl+click on a `[label](path)` opens a relative
+file (or jumps to `#heading`), so Nimony's `doc/*.md` can be explored without
+leaving the editor.
 ]##
 
 import std/[tables, os, algorithm]
-from std/strutils import toLowerAscii, strip, endsWith, contains, splitLines
+from std/strutils import toLowerAscii, strip, endsWith, contains, splitLines,
+                         startsWith, find
 from std/cmdline import paramCount, paramStr
 import uirelays
 import uirelays/layout
@@ -486,6 +492,58 @@ proc handleTermCtrlClick(buf: SynEdit; pos: int;
     setWindowTitle("focim - " & path.extractFilename)
     focus = "editor"
 
+proc splitMarkdownTarget(url: string): tuple[path, frag: string] =
+  ## Split `path#heading` / `#heading` into path and fragment.
+  let hash = url.find('#')
+  if hash < 0: return (url, "")
+  if hash == 0: return ("", url[1 .. ^1])
+  result = (url[0 ..< hash], url[hash + 1 .. ^1])
+
+proc isExternalUrl(url: string): bool =
+  let u = url.toLowerAscii
+  u.startsWith("http://") or u.startsWith("https://") or u.startsWith("mailto:")
+
+proc markdownLinkAt(ed: SynEdit; pos: int): tuple[url: string; a, b: int] =
+  ## Prefer a real markdown link; fall back to a bare path under the cursor.
+  result = ed.extractMarkdownLink(pos)
+  if result.a >= 0: return
+  let (path, a, b) = ed.extractPath(pos)
+  if path.len > 0: result = (path, a, b)
+
+proc handleMarkdownCtrlClick(ed: var SynEdit; pos: int;
+                             buffers: var seq[BufferEntry]; current: var int;
+                             font: Font; focus: var string;
+                             note: var string; explorer: var Explorer) =
+  ## Follow a markdown link from the focused editor buffer.
+  let (url, a, b) = ed.markdownLinkAt(pos)
+  if url.len == 0: return
+  ed.underline(a, b)
+  let (path, frag) = splitMarkdownTarget(url)
+  if path.len == 0:
+    if not ed.gotoMarkdownHeading(frag):
+      note = "no heading: #" & frag
+    return
+  if isExternalUrl(path):
+    note = "external: " & path
+    return
+  let base =
+    if buffers[current].path.len > 0: buffers[current].path.parentDir
+    else: os.getCurrentDir()
+  let full = if isAbsolute(path): path else: base / path
+  if fileExists(full):
+    current = buffers.openFile(font, full, -1, -1)
+    setWindowTitle("focim - " & full.extractFilename)
+    focus = "editor"
+    note = ""
+    if frag.len > 0 and not buffers[current].ed.gotoMarkdownHeading(frag):
+      note = "opened, but no heading: #" & frag
+  elif dirExists(full):
+    explorer.showDir(full)
+    focus = "explorer"
+    note = ""
+  else:
+    note = "not found: " & full
+
 proc updateStatus(status: var Terminal; ed: SynEdit; path, note: string) =
   let name = if path.len > 0: path.extractFilename else: "[scratch]"
   let info = name & "  Ln " & $(ed.currentLine + 1) &
@@ -808,9 +866,16 @@ proc main =
     let edAct = buffers[current].ed.draw(e, cells["editor"], focus == "editor")
     case edAct.kind
     of ctrlClick:
-      discard # TODO: language server lookup at edAct.pos
+      if buffers[current].ed.lang == langMarkdown:
+        handleMarkdownCtrlClick(buffers[current].ed, edAct.pos, buffers,
+                                current, fonts.fontForSize(editorFontSize),
+                                focus, tabs.note, explorer)
+      # else: language server lookup at edAct.pos
     of ctrlHover:
-      discard # TODO: underline identifier at edAct.pos
+      if buffers[current].ed.lang == langMarkdown:
+        let (_, a, b) = buffers[current].ed.markdownLinkAt(edAct.pos)
+        buffers[current].ed.underline(a, b)
+      # else: underline identifier at edAct.pos
     of closeLine:
       discard # the editor has no close buttons
     of noAction:

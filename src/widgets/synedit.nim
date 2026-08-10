@@ -43,8 +43,10 @@
 
 import ../uirelays/[coords, screen, input]
 import ./theme
+import ./langs/markdown
 import std/strutils
 export theme
+export markdown
 
 const
   LinkMod* = when defined(macosx): GuiPressed else: CtrlPressed
@@ -818,6 +820,87 @@ proc strToLanguage*(s: string): SourceLanguage =
   of "md", "markdown": langMarkdown
   else: langNone
 
+proc styleMarkdownLink(s: var SynEdit; lineEnd: int; i: var int): bool =
+  ## Style `[label](url)` or `![alt](url)` starting at `i`. Advances `i`.
+  let bang = s[i] == '!' and i + 1 < lineEnd and s[i + 1] == '['
+  let openBracket = if bang: i + 1 else: i
+  if openBracket >= lineEnd or s[openBracket] != '[': return false
+  var j = openBracket + 1
+  while j < lineEnd and s[j] != ']': inc j
+  if j >= lineEnd or j + 1 >= lineEnd or s[j + 1] != '(': return false
+  var k = j + 2
+  while k < lineEnd and s[k] != ')' and s[k] != ' ': inc k
+  var close = k
+  while close < lineEnd and s[close] != ')': inc close
+  if close >= lineEnd: return false
+  if bang:
+    s.setCellStyle(i, TokenClass.Punctuation)
+  s.setCellStyle(openBracket, TokenClass.Punctuation)
+  for p in openBracket + 1 ..< j:
+    s.setCellStyle(p, TokenClass.Link)
+  s.setCellStyle(j, TokenClass.Punctuation)
+  s.setCellStyle(j + 1, TokenClass.Punctuation)
+  for p in j + 2 ..< close:
+    s.setCellStyle(p, TokenClass.Comment)
+  s.setCellStyle(close, TokenClass.Punctuation)
+  i = close + 1
+  result = true
+
+proc styleMarkdownLine(s: var SynEdit; lineStart, lineEnd, last: int) =
+  ## Headings, links, autolinks and inline code -- the bits that make a
+  ## markdown buffer readable without leaving the editor.
+  var i = lineStart
+  while i < lineEnd and s[i] in {' ', '\t'}:
+    s.setCellStyle(i, TokenClass.Whitespace)
+    inc i
+  var hashes = 0
+  var h = i
+  while h < lineEnd and s[h] == '#':
+    inc hashes
+    inc h
+  if hashes in 1 .. 6 and h < lineEnd and s[h] == ' ':
+    for p in i ..< h:
+      s.setCellStyle(p, TokenClass.Punctuation)
+    while h < lineEnd and s[h] == ' ':
+      s.setCellStyle(h, TokenClass.Whitespace)
+      inc h
+    for p in h ..< min(lineEnd, last + 1):
+      s.setCellStyle(p, TokenClass.Keyword)
+    if lineEnd <= last:
+      s.setCellStyle(lineEnd, TokenClass.None)
+    return
+
+  for p in lineStart ..< min(lineEnd, last + 1):
+    s.setCellStyle(p, TokenClass.Text)
+  i = lineStart
+  while i < lineEnd:
+    if s[i] == '`':
+      var j = i + 1
+      while j < lineEnd and s[j] != '`': inc j
+      if j < lineEnd:
+        s.setCellStyle(i, TokenClass.Punctuation)
+        for p in i + 1 ..< j:
+          s.setCellStyle(p, TokenClass.StringLit)
+        s.setCellStyle(j, TokenClass.Punctuation)
+        i = j + 1
+        continue
+    if s[i] == '<' and i + 1 < lineEnd and s[i + 1] notin {' ', '\t', '<'}:
+      var j = i + 1
+      while j < lineEnd and s[j] notin {'>', ' ', '\t'}: inc j
+      if j < lineEnd and s[j] == '>':
+        s.setCellStyle(i, TokenClass.Punctuation)
+        for p in i + 1 ..< j:
+          s.setCellStyle(p, TokenClass.Link)
+        s.setCellStyle(j, TokenClass.Punctuation)
+        i = j + 1
+        continue
+    if s[i] == '[' or (s[i] == '!' and i + 1 < lineEnd and s[i + 1] == '['):
+      if s.styleMarkdownLink(lineEnd, i):
+        continue
+    inc i
+  if lineEnd <= last:
+    s.setCellStyle(lineEnd, TokenClass.None)
+
 proc highlightMarkdown(s: var SynEdit; first, last: int) =
   var insideFence = false
   var fenceLang = langNone
@@ -860,10 +943,7 @@ proc highlightMarkdown(s: var SynEdit; first, last: int) =
       if lineEnd <= last:
         s.setCellStyle(lineEnd, TokenClass.None)
     else:
-      for j in lineStart..<min(lineEnd, last+1):
-        s.setCellStyle(j, TokenClass.Text)
-      if lineEnd <= last:
-        s.setCellStyle(lineEnd, TokenClass.None)
+      s.styleMarkdownLine(lineStart, lineEnd, last)
 
     pos = lineEnd + 1
 
@@ -1978,36 +2058,45 @@ proc getCachedImage(s: var SynEdit; path: string): Image =
   s.imageCache.add ImageCacheEntry(path: path, img: img)
   result = img
 
-proc parseMarkdownImagePath(line: string; path: var string): bool =
-  ## Parse a full-line markdown image: ![alt](path)
+proc extractMarkdownLink*(s: SynEdit; pos: int): tuple[url: string; a, b: int] =
+  ## Buffer-position variant of `findMarkdownLinkAt`.
+  result = ("", -1, -1)
+  if pos < 0 or pos >= s.len: return
+  var lineStart = pos
+  while lineStart > 0 and s[lineStart - 1] != '\L': dec lineStart
+  var lineEnd = pos
+  while lineEnd < s.len and s[lineEnd] != '\L': inc lineEnd
+  var line = newStringOfCap(lineEnd - lineStart)
+  for p in lineStart ..< lineEnd: line.add s[p]
+  let hit = findMarkdownLinkAt(line, pos - lineStart)
+  if hit.a < 0: return
+  result = (hit.url, lineStart + hit.a, lineStart + hit.b)
+
+proc gotoMarkdownHeading*(s: var SynEdit; fragment: string): bool =
+  ## Jump to the first ATX heading whose slug matches `fragment`.
+  let want = markdownHeadingSlug(fragment)
+  if want.len == 0: return false
   var i = 0
-  while i < line.len and line[i] in {' ', '\t'}: inc i
-  if i + 1 >= line.len or line[i] != '!' or line[i + 1] != '[':
-    return
-  var closeBracket = -1
-  var k = i + 2
-  while k < line.len:
-    if line[k] == ']':
-      closeBracket = k
-      break
-    inc k
-  if closeBracket < 0 or closeBracket + 1 >= line.len or line[closeBracket + 1] != '(':
-    return
-  var closeParen = -1
-  k = closeBracket + 2
-  while k < line.len:
-    if line[k] == ')':
-      closeParen = k
-      break
-    inc k
-  if closeParen < 0:
-    return
-  var tail = closeParen + 1
-  while tail < line.len and line[tail] in {' ', '\t'}: inc tail
-  if tail != line.len:
-    return
-  path = line[(closeBracket + 2) ..< closeParen]
-  result = path.len > 0
+  var lineNo = 0
+  while i <= s.len:
+    let lineStart = i
+    while i < s.len and s[i] != '\L': inc i
+    var j = lineStart
+    while j < i and s[j] in {' ', '\t'}: inc j
+    var hashes = 0
+    while j < i and s[j] == '#':
+      inc hashes
+      inc j
+    if hashes in 1 .. 6 and j < i and s[j] == ' ':
+      while j < i and s[j] == ' ': inc j
+      var title = ""
+      for p in j ..< i: title.add s[p]
+      if markdownHeadingSlug(title) == want:
+        s.gotoLine(lineNo + 1, 0)
+        return true
+    if i >= s.len: break
+    inc i
+    inc lineNo
 
 proc renderMarkdownImageLine(
     s: var SynEdit; lineStart: int; dim: var Rect;

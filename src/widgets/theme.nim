@@ -115,6 +115,7 @@ proc catppuccinMocha*(): Theme =
   result.fg[TokenClass.Yellow] = color(249, 226, 175)
   result.fg[TokenClass.Red] = color(243, 139, 168)
   result.fg[TokenClass.MarkdownFence] = color(128, 128, 128)
+  result.fg[TokenClass.Link] = color(137, 180, 250)       # blue
   result.bg = color(30, 30, 46)
   result.selBg = color(88, 91, 112)
   result.bracketBg = color(69, 71, 90)

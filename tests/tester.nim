@@ -16,6 +16,7 @@ template execBackend(cmd: string) =
 # The lexer and the config parsers need no driver, so they are tested directly.
 exec "nim c -r tests/tinyniftest.nim"
 exec "nim c -r tests/configtest.nim"
+exec "nim c -r tests/markdowntest.nim"
 
 # The app, once, with the platform's default backend.
 exec "nim c apps/focim.nim"
