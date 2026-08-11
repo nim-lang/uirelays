@@ -216,6 +216,40 @@ static int translateKeyCode(unsigned short kc) {
   }
 }
 
+static int translateKeyEvent(NSEvent *event) {
+  /* A keyCode is a physical position on the keyboard and the layout decides
+     what that position types. The table above is ANSI, so on a German
+     keyboard it gets Y and Z backwards -- 0x06 types 'y' there and 0x10 types
+     'z' -- which puts undo on the key labelled Y and redo on the one labelled
+     Z. Punctuation moves too: '-' is 0x2C and '+' is 0x1E, so Cmd+plus and
+     Cmd+minus land on neither.
+
+     So anything that produces a character is identified by the character the
+     current layout actually gives, and only the keys that produce none
+     (arrows, F-keys, Home/End, ...) stay a lookup by position.
+     charactersIgnoringModifiers drops every modifier but Shift, so Ctrl+Z
+     still reports a plain "z" rather than a control code. */
+  NSString *chars = [event charactersIgnoringModifiers];
+  if (chars.length == 1) {
+    unichar c = [chars characterAtIndex:0];
+    if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+    if (c >= 'a' && c <= 'z') return 1 + (c - 'a');           /* keyA..keyZ */
+    if (c == '0') return 27;                                  /* key0 */
+    if (c >= '1' && c <= '9') return 28 + (c - '1');          /* key1..key9 */
+    switch (c) {
+      case ',': return 65;  /* keyComma */
+      case '.': return 66;  /* keyPeriod */
+      case '/': return 67;  /* keySlash */
+      case '-': return 68;  /* keyMinus */
+      case '=': return 69;  /* keyEqual */
+      case '+': return 70;  /* keyPlus */
+    }
+    /* Shifted digits ('!' for 1) and everything else fall through to the
+       position, which is what the apps that bind digits expect. */
+  }
+  return translateKeyCode(event.keyCode);
+}
+
 /* ---- Font management -------------------------------------------------- */
 
 #define MAX_FONTS 64
@@ -625,7 +659,7 @@ void cocoa_delay(uint32_t ms) {
 - (void)keyDown:(NSEvent *)event {
   NEEvent e = {0};
   e.kind = NE_KEY_DOWN;
-  e.key = translateKeyCode(event.keyCode);
+  e.key = translateKeyEvent(event);
   e.mods = translateModifiers(event.modifierFlags);
   pushEvent(e);
 
@@ -668,7 +702,7 @@ void cocoa_delay(uint32_t ms) {
 - (void)keyUp:(NSEvent *)event {
   NEEvent e = {0};
   e.kind = NE_KEY_UP;
-  e.key = translateKeyCode(event.keyCode);
+  e.key = translateKeyEvent(event);
   e.mods = translateModifiers(event.modifierFlags);
   pushEvent(e);
 }
