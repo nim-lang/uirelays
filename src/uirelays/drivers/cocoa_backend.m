@@ -230,13 +230,29 @@ static int fontCount = 0;
 
 int cocoa_openFont(const char *path, int size,
                    int *outAscent, int *outDescent, int *outLineHeight) {
-  if (fontCount >= MAX_FONTS) return 0;
+  /* Take a slot that cocoa_closeFont freed before growing the table. Without
+     the reuse this is append-only and MAX_FONTS is a lifetime budget, not a
+     concurrent one: focim keeps one font per logical size and closes and
+     reopens the whole cache every time the window moves to a display of
+     another density, so a few drags between monitors would exhaust the table
+     and openFont would start handing back 0 -- i.e. no text at all. */
+  int idx = -1;
+  for (int i = 0; i < fontCount; i++)
+    if (!fonts[i].font) { idx = i; break; }
+  if (idx < 0 && fontCount >= MAX_FONTS) return 0;
 
   CTFontRef ctFont = NULL;
 
   if (path[0] == '\0') {
-    /* Empty path = platform default (system) font */
-    ctFont = CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, (CGFloat)size, NULL);
+    /* Empty path = platform default font, and every other driver reads that
+       as "monospaced" (Consolas on Windows, fontconfig's `monospace` on X11).
+       kCTFontUIFontSystem would hand back San Francisco, which is
+       proportional -- so ask for the fixed-pitch UI font instead; it resolves
+       to Menlo. Do NOT reach for "SF Mono" by name: CTFontCreateWithName
+       falls back to Helvetica without an error when a name is unknown, and SF
+       Mono is not name-accessible on a stock system. */
+    ctFont = CTFontCreateUIFontForLanguage(kCTFontUIFontUserFixedPitch,
+                                           (CGFloat)size, NULL);
   } else {
     /* Create font from file path */
     CFStringRef cfPath = CFStringCreateWithCString(NULL, path, kCFStringEncodingUTF8);
@@ -260,7 +276,8 @@ int cocoa_openFont(const char *path, int size,
 
   if (!ctFont) return 0;
 
-  int idx = fontCount++;
+  if (idx < 0) idx = fontCount++;  /* fontCount stays the high-water mark, so
+                                      the `idx < fontCount` guards below hold */
   fonts[idx].font = ctFont;
   fonts[idx].ascent = (int)ceil(CTFontGetAscent(ctFont));
   fonts[idx].descent = (int)ceil(CTFontGetDescent(ctFont));
@@ -876,6 +893,18 @@ static int currentButtons(NSEvent *event) {
   pushEvent(e);
 }
 
+- (void)requestQuit:(id)sender {
+  /* The app menu's Quit item lands here instead of on NSApp's terminate:,
+     which would kill the process from inside the menu's own event handling --
+     the app would never see the keystroke and never get to run its shutdown
+     path. Queueing NE_QUIT lets Cmd+Q reach the app like every other Cmd
+     combination, and matches what windowShouldClose: above already does for
+     the close button. */
+  NEEvent e = {0};
+  e.kind = NE_QUIT;
+  pushEvent(e);
+}
+
 @end
 
 /* ---- Window management ------------------------------------------------ */
@@ -895,6 +924,9 @@ void cocoa_createWindow(int w, int h, int *outW, int *outH,
     [NSApplication sharedApplication];
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
 
+    /* The delegate is created up front: the Quit menu item below targets it. */
+    winDelegate = [[NimEditWindowDelegate alloc] init];
+
     /* Create menu bar (minimal: just app menu with Quit) */
     NSMenu *menubar = [[NSMenu alloc] init];
     NSMenuItem *appMenuItem = [[NSMenuItem alloc] init];
@@ -904,8 +936,9 @@ void cocoa_createWindow(int w, int h, int *outW, int *outH,
     NSMenu *appMenu = [[NSMenu alloc] init];
     NSMenuItem *quitItem = [[NSMenuItem alloc]
       initWithTitle:@"Quit NimEdit"
-             action:@selector(terminate:)
+             action:@selector(requestQuit:)
       keyEquivalent:@"q"];
+    [quitItem setTarget:winDelegate];
     [appMenu addItem:quitItem];
     [appMenuItem setSubmenu:appMenu];
 
@@ -925,8 +958,7 @@ void cocoa_createWindow(int w, int h, int *outW, int *outH,
     [mainWindow setContentView:mainView];
     [mainWindow makeFirstResponder:mainView];
 
-    /* Window delegate */
-    winDelegate = [[NimEditWindowDelegate alloc] init];
+    /* Window delegate (already allocated above for the Quit menu item) */
     [mainWindow setDelegate:winDelegate];
 
     /* Show */

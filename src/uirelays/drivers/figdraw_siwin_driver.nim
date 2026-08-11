@@ -106,29 +106,39 @@ proc queueEvent(e: input.Event) =
   eventQueue.addLast(e)
 
 proc resolveFontPath(path: string): string =
+  ## An empty path means "the platform default", and for this library that is
+  ## a *monospaced* font: the native drivers pick Consolas (Windows) and
+  ## fontconfig's `monospace` (X11), and the apps are text editors that expect
+  ## a fixed advance. So the candidate lists here are mono-only too -- a
+  ## proportional fallback would silently break column arithmetic.
+  ##
+  ## Only `.ttf`/`.otf` are listed: pixie's `readTypeface` rejects anything
+  ## else, so macOS' `.ttc` collections (Menlo, Courier) are unreachable from
+  ## here, and SFNSMono.ttf is a variable font whose default instance is the
+  ## too-thin Light weight.
   if path.len > 0:
     return path
 
   when defined(windows):
     let candidates = [
-      "Segoe UI",
-      "segoeui.ttf",
-      "Arial",
-      "arial.ttf"
+      "Consolas",
+      "consola.ttf",
+      "Courier New",
+      "cour.ttf"
     ]
   elif defined(macosx):
     let candidates = [
-      "SFNS.ttf",
-      "Helvetica",
-      "Arial Unicode.ttf",
-      "Arial.ttf"
+      "Monaco.ttf",
+      "Andale Mono.ttf",
+      "Courier New.ttf",
+      "DejaVuSansMono.ttf"
     ]
   else:
     let candidates = [
-      "NotoSans[wght].ttf",
-      "LiberationSans-Regular.ttf",
-      "Cantarell-VF.otf",
-      "DejaVuSans.ttf"
+      "DejaVuSansMono.ttf",
+      "LiberationMono-Regular.ttf",
+      "NotoSansMono[wdth,wght].ttf",
+      "monospace"
     ]
 
   for candidate in candidates:

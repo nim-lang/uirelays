@@ -667,7 +667,10 @@ proc draw*(t: var Terminal; e: Event; area: Rect; focused: bool): TermAction =
         t.ed.render(area, showCursor = true)
         return
       of KeyC:
-        if ctrl and t.processRunning:
+        # The one binding Command must NOT stand in for: on macOS Cmd+C copies
+        # (SynEdit gets it below) and Ctrl+C interrupts, exactly as in any
+        # other terminal, so this asks for the physical Control key.
+        if ctrlOnly(e.mods) and t.processRunning:
           t.sendBreak()
           t.ed.render(area, showCursor = true)
           return

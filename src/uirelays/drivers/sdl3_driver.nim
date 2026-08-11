@@ -174,27 +174,37 @@ proc evictTextCacheIfNeeded() =
 # --- Screen hook implementations ---
 
 proc resolveFontPath(path: string): string =
+  ## An empty path means "the platform default", and for this library that is
+  ## a *monospaced* font: the native drivers pick Consolas (Windows) and
+  ## fontconfig's `monospace` (X11), and the apps are text editors that expect
+  ## a fixed advance. So the candidate lists here are mono-only too -- a
+  ## proportional fallback would silently break column arithmetic.
   if path.len > 0:
     return path
 
   when defined(windows):
     let candidates = [
-      r"C:\Windows\Fonts\segoeui.ttf",
-      r"C:\Windows\Fonts\arial.ttf"
+      r"C:\Windows\Fonts\consola.ttf",
+      r"C:\Windows\Fonts\cour.ttf"
     ]
   elif defined(macosx):
+    # SDL_ttf goes through FreeType, which reads face 0 out of a .ttc, so the
+    # collections are fine here. SFNSMono.ttf is deliberately absent: it is a
+    # variable font and its default instance is the too-thin Light weight.
     let candidates = [
-      "/System/Library/Fonts/SFNS.ttf",
-      "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-      "/System/Library/Fonts/Supplemental/Arial.ttf"
+      "/System/Library/Fonts/Menlo.ttc",
+      "/System/Library/Fonts/Monaco.ttf",
+      "/System/Library/Fonts/Supplemental/Andale Mono.ttf",
+      "/System/Library/Fonts/Supplemental/Courier New.ttf"
     ]
   else:
     let candidates = [
-      "/usr/share/fonts/google-noto-vf/NotoSans[wght].ttf",
-      "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
-      "/usr/share/fonts/abattis-cantarell-vf-fonts/Cantarell-VF.otf",
-      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-      "/usr/share/fonts/TTF/DejaVuSans.ttf"
+      "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+      "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+      "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf",
+      "/usr/share/fonts/liberation-mono-fonts/LiberationMono-Regular.ttf",
+      "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+      "/usr/share/fonts/google-noto-vf/NotoSansMono[wdth,wght].ttf"
     ]
 
   for candidate in candidates:
