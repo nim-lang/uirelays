@@ -134,6 +134,7 @@ const
   MK_MBUTTON = 0x0010'u32
 
   SW_SHOW = 5'i32
+  SW_MAXIMIZE = 3'i32
   TRANSPARENT = 1
   OPAQUE = 2
 
@@ -645,13 +646,19 @@ proc winCreateWindow(layout: var ScreenLayout) =
     cast[ptr uint16](title[0].addr),
     WS_OVERLAPPEDWINDOW or WS_VISIBLE,
     0x80000000'i32, 0x80000000'i32, # CW_USEDEFAULT
-    layout.width.int32, layout.height.int32,
+    (if layout.width < 0: 0x80000000'i32 else: layout.width.int32),
+    (if layout.height < 0: 0x80000000'i32 else: layout.height.int32),
     nil, nil, gHinstance, nil)
 
   if gHwnd == nil:
     quit("CreateWindowExW failed")
 
-  discard ShowWindow(gHwnd, SW_SHOW)
+  # A negative dimension is MaxWindowWidth/MaxWindowHeight. SW_MAXIMIZE is the
+  # shell's own idea of how large a window may be, so it stops at the taskbar
+  # instead of covering it -- this is not a fullscreen window. GetClientRect
+  # below then reports whatever size that worked out to.
+  let maximized = layout.width < 0 or layout.height < 0
+  discard ShowWindow(gHwnd, if maximized: SW_MAXIMIZE else: SW_SHOW)
   discard UpdateWindow(gHwnd)
 
   var rc: WINAPIRECT

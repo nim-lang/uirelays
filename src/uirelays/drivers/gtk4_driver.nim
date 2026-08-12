@@ -106,6 +106,7 @@ proc gtk_window_set_default_size(win: pointer; w, h: gint) {.importc, nodecl, cd
 proc gtk_window_set_child(win: pointer; child: pointer) {.importc, nodecl, cdecl.}
 proc gtk_window_destroy(win: pointer) {.importc, nodecl, cdecl.}
 proc gtk_window_present(win: pointer) {.importc, nodecl, cdecl.}
+proc gtk_window_maximize(win: pointer) {.importc, nodecl, cdecl.}
 proc gtk_widget_queue_draw(w: pointer) {.importc, nodecl, cdecl.}
 proc gtk_widget_grab_focus(w: pointer) {.importc, nodecl, cdecl.}
 proc gtk_widget_set_cursor(w, cursor: pointer) {.importc, nodecl, cdecl.}
@@ -498,7 +499,14 @@ proc gtkCreateWindow(layout: var ScreenLayout) =
     quit("GTK4 init failed")
   win = gtk_window_new()
   gtk_window_set_title(win, "NimEdit")
-  gtk_window_set_default_size(win, gint(layout.width), gint(layout.height))
+  # A negative dimension is MaxWindowWidth/MaxWindowHeight: ask the window
+  # manager to maximize, which leaves panels and docks visible (unlike
+  # gtk_window_fullscreen). The default size is what unmaximizing returns to.
+  let maximized = layout.width < 0 or layout.height < 0
+  gtk_window_set_default_size(win,
+    gint(if layout.width < 0: 1024 else: layout.width),
+    gint(if layout.height < 0: 768 else: layout.height))
+  if maximized: gtk_window_maximize(win)
   drawingArea = gtk_drawing_area_new()
   gtk_window_set_child(win, drawingArea)
   let da = cast[ptr GtkDrawingArea](drawingArea)

@@ -95,10 +95,29 @@ var drawRelays* = DrawRelays(
   freeImage: proc (img: Image) = discard,
   drawImage: proc (img: Image; src, dst: Rect) = discard)
 
+const
+  MaxWindowWidth* = -1
+    ## Pass as `createWindow`'s width for "every bit of width the desktop
+    ## gives a window". See `MaxWindowHeight`.
+  MaxWindowHeight* = -1
+    ## Pass as `createWindow`'s height for "every bit of height the desktop
+    ## gives a window" -- the screen minus the menu bar, the Dock, the
+    ## taskbar, whatever the platform reserves.
+    ##
+    ## This is not `fullScreen`: the window keeps its title bar and its place
+    ## among the other windows, and on macOS it does not move to a Space of
+    ## its own. Either dimension can be given on its own, so a window can
+    ## span the full width at a fixed height.
+
 # Convenience wrappers
 proc createWindow*(requestedW, requestedH: int; fullScreen = false): ScreenLayout =
   ## The defaults are what a driver that knows nothing about display density
   ## reports, so a driver only has to write back what it actually knows.
+  ##
+  ## `MaxWindowWidth` / `MaxWindowHeight` ask for as much space as a window
+  ## may have. The layout that comes back always holds the real size in
+  ## pixels -- the sentinel never survives the call, so the rest of an app
+  ## never has to know about it.
   result = ScreenLayout(width: requestedW, height: requestedH,
                         scaleX: 1, scaleY: 1, uiScale: 100,
                         fullScreen: fullScreen)

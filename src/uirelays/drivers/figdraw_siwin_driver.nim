@@ -402,6 +402,13 @@ proc renderQueuedOps() =
   drawOps.setLen(0)
 
 proc figCreateWindow(layout: var ScreenLayout) =
+  # MaxWindowWidth/MaxWindowHeight arrive as negative sizes. Neither backend
+  # is available to test against here, so this driver does the safe half of
+  # the contract: it substitutes a sane size instead of handing a negative one
+  # to the toolkit. The window is then merely large, not maximized -- wiring
+  # that up is a one-liner once the backend's own maximize can be verified.
+  if layout.width < 0: layout.width = 1024
+  if layout.height < 0: layout.height = 768
   if not siwinInitialized:
     renderer = newFigRenderer(atlasSize = 1024, backendState = SiwinRenderBackend())
     appWindow = newSiwinWindow(

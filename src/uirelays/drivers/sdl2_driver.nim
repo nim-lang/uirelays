@@ -43,14 +43,21 @@ var
 # display -- use the SDL3 driver there.
 
 proc sdlCreateWindow(layout: var ScreenLayout) =
-  let flags =
+  # A negative dimension is MaxWindowWidth/MaxWindowHeight; the window
+  # manager's maximize keeps taskbars visible, unlike FULLSCREEN_DESKTOP. The
+  # positive size is what the window returns to when it is unmaximized.
+  let maximized = layout.width < 0 or layout.height < 0
+  let reqW = if layout.width < 0: 1024 else: layout.width
+  let reqH = if layout.height < 0: 768 else: layout.height
+  var flags =
     if layout.fullScreen:
       SDL_WINDOW_FULLSCREEN_DESKTOP or SDL_WINDOW_SHOWN
     else:
       SDL_WINDOW_RESIZABLE or SDL_WINDOW_SHOWN
+  if maximized: flags = flags or SDL_WINDOW_MAXIMIZED
   window = createWindow("NimEdit",
     SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-    layout.width.cint, layout.height.cint, flags)
+    reqW.cint, reqH.cint, flags)
   renderer = createRenderer(window, -1, Renderer_Software)
   var w, h: cint
   window.getSize(w, h)

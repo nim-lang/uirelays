@@ -976,10 +976,29 @@ void cocoa_createWindow(int w, int h, int *outW, int *outH,
     [appMenu addItem:quitItem];
     [appMenuItem setSubmenu:appMenu];
 
-    /* Create window */
-    NSRect rect = NSMakeRect(100, 100, w, h);
+    /* Create window. A negative dimension is MaxWindowWidth/MaxWindowHeight:
+       take the screen's visibleFrame, which is the screen minus the menu bar
+       and the Dock -- every bit of space a window is allowed to have. This is
+       not fullscreen: the window keeps its title bar, the menu bar stays
+       visible and the window stays out of a Space of its own. A window that
+       maxes out in one direction is placed at that edge of the visible area
+       and keeps its requested size in the other. */
     NSUInteger style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
                        NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable;
+    /* initWithContentRect: wants the CONTENT rect, so the visible frame has
+       to have the title bar taken off it -- handing it over as-is would make
+       the window taller than the space it is supposed to fit in. */
+    NSRect visible = [[NSScreen mainScreen] visibleFrame];
+    NSRect maxContent = [NSWindow contentRectForFrameRect:visible styleMask:style];
+    NSRect rect = NSMakeRect(100, 100, w, h);
+    if (w < 0) {
+      rect.size.width = maxContent.size.width;
+      rect.origin.x = maxContent.origin.x;
+    }
+    if (h < 0) {
+      rect.size.height = maxContent.size.height;
+      rect.origin.y = maxContent.origin.y;
+    }
     mainWindow = [[NSWindow alloc] initWithContentRect:rect
                                              styleMask:style
                                                backing:NSBackingStoreBuffered

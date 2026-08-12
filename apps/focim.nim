@@ -614,7 +614,10 @@ proc adjustFocusedFontSize(
 
 
 proc main =
-  let screen = createWindow(1100, 700)
+  # An editor wants the whole desktop, so ask for it -- as a window, not as
+  # `fullScreen`: the menu bar and the other windows stay reachable, which
+  # matters for an app whose terminal is meant to be used next to a browser.
+  let screen = createWindow(MaxWindowWidth, MaxWindowHeight)
   var width = screen.width
   var height = screen.height
   gUiScale = screen.uiScale

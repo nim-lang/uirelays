@@ -248,11 +248,19 @@ template toPixelCoord(v: untyped): int =
 proc sdlCreateWindow(layout: var ScreenLayout) =
   if ren != nil or win != nil:
     resetSdlState()
-  let winFlags =
+  # A negative dimension is MaxWindowWidth/MaxWindowHeight. WINDOW_MAXIMIZED
+  # is the window manager's own maximize, so taskbars and docks stay visible;
+  # the size it picks comes back through syncWindowLayout below. SDL still
+  # needs a positive size to fall back on for when the window is unmaximized.
+  let maximized = layout.width < 0 or layout.height < 0
+  let reqW = if layout.width < 0: 1024 else: layout.width
+  let reqH = if layout.height < 0: 768 else: layout.height
+  var winFlags =
     if layout.fullScreen: WINDOW_FULLSCREEN or WINDOW_HIGH_PIXEL_DENSITY
     else: WINDOW_RESIZABLE or WINDOW_HIGH_PIXEL_DENSITY
+  if maximized: winFlags = winFlags or WINDOW_MAXIMIZED
   discard createWindowAndRenderer(cstring"NimEdit",
-    layout.width.cint, layout.height.cint, winFlags, win, ren)
+    reqW.cint, reqH.cint, winFlags, win, ren)
   discard startTextInput(win)
   syncWindowLayout(layout)
   currentClip = ClipState()
