@@ -72,35 +72,11 @@ var inputRelays* = InputRelays(
   sleep: proc (ms: int) = discard,
   shutdown: proc () = discard)
 
-proc foldCommandIntoCtrl(e: var Event) =
-  ## On macOS the Command key plays the role Control plays everywhere else:
-  ## Cmd+S saves, Cmd+C copies, Cmd+Z undoes. So it is folded into
-  ## `CtrlPressed` here, at the one point every event passes through, and
-  ## every `CtrlPressed in e.mods` in every widget and app keeps working
-  ## unchanged -- no call site has to remember to spell out
-  ## `or GuiPressed in e.mods`, and none of them can forget to.
-  ##
-  ## `GuiPressed` stays set alongside it, so the rare binding that really does
-  ## mean "the Command key" can still tell the two apart: SynEdit's
-  ## Cmd+click-to-follow-a-link, and `ctrlOnly` below.
-  when defined(macosx):
-    if GuiPressed in e.mods: e.mods.incl CtrlPressed
-
-proc ctrlOnly*(mods: set[Modifier]): bool =
-  ## `CtrlPressed` with the folded Command key taken back out: true only when
-  ## the physical Control key is down. For the rare binding that has to stay
-  ## distinct from Command -- a terminal's Ctrl+C interrupts a process while
-  ## Cmd+C copies, and both have to keep working.
-  when defined(macosx): CtrlPressed in mods and GuiPressed notin mods
-  else: CtrlPressed in mods
-
 proc pollEvent*(e: var Event; flags: set[InputFlag] = {}): bool =
-  result = inputRelays.pollEvent(e, flags)
-  if result: foldCommandIntoCtrl(e)
+  inputRelays.pollEvent(e, flags)
 proc waitEvent*(e: var Event; timeoutMs: int = -1;
                 flags: set[InputFlag] = {}): bool =
-  result = inputRelays.waitEvent(e, timeoutMs, flags)
-  if result: foldCommandIntoCtrl(e)
+  inputRelays.waitEvent(e, timeoutMs, flags)
 proc getClipboardText*(): string = clipboardRelays.getText()
 proc putClipboardText*(text: string) = clipboardRelays.putText(text)
 proc getTicks*(): int = inputRelays.getTicks()

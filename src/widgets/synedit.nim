@@ -2674,10 +2674,7 @@ proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
 
   of KeyDownEvent:
     if focused:
-      # Command already arrives folded into CtrlPressed on macOS, so this one
-      # test covers both keys -- and no longer lets the Super key stand in for
-      # Control on Windows and X11, which the hand-rolled `or` used to.
-      let ctrl = CtrlPressed in e.mods
+      let ctrl = CtrlPressed in e.mods or GuiPressed in e.mods
       let shift = ShiftPressed in e.mods
 
       case e.key

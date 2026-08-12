@@ -766,7 +766,7 @@ proc main =
       if hit.name.len > 0:
         focus = hit.name
     of KeyDownEvent:
-      let cmd = CtrlPressed in e.mods  # Command folds into this on macOS
+      let cmd = CtrlPressed in e.mods or GuiPressed in e.mods
       if cmd and e.key == KeyS:
         if buffers[current].path.len > 0:
           buffers[current].ed.saveToFile(buffers[current].path)
