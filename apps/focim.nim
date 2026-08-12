@@ -66,7 +66,7 @@ const defaultConfig = """
       (rows (px 200)
         (tabs (lines 6))
         (explorer))
-      (editor (stretch 3))
+      (editor (stretch 4))
       (rows (stretch 2)
         (history (lines 5))
         (terminal)))
