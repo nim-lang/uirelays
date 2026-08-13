@@ -19,6 +19,8 @@ exec "nim c -r tests/configtest.nim"
 exec "nim c -r tests/markdowntest.nim"
 # Bold and italics reach the drawing path through stub relays.
 exec "nim c -r tests/styletest.nim"
+# The word index needs no font until something draws with it.
+exec "nim c -r tests/wordindextest.nim"
 
 # The app, once, with the platform's default backend.
 exec "nim c apps/focim.nim"

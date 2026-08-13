@@ -1,0 +1,291 @@
+# focim word list -- see doc/completion.md
+(words
+  (source "nimony")
+  (w ACCEPT_MULTISHOT AF_INET AF_INET6 AF_UNIX AF_UNSPEC ATOMIC_
+    ATOMIC_ACQUIRE ATOMIC_ACQ_REL ATOMIC_CONSUME ATOMIC_RELAXED ATOMIC_RELEASE
+    ATOMIC_SEQ_CST AllChars AltSep Arithmetic AsyncCancelFlag AsyncCancelFlags
+    AtomMemModel AtomicFlag Availability BY_HANDLE_FILE_INFORMATION
+    BackgroundColor BackwardsIndex BaseLexer BiggestFloat BiggestInt
+    BiggestUInt BinaryPrefixMode BindSymRule BitInteger Buf BufReg BufRing
+    BulkSize CChar CCharArray CLOCK_MONOTONIC CLOCK_REALTIME CQE_BUFFER_SHIFT
+    CREATE_ALWAYS CREATE_NEW CREATE_NO_WINDOW CREATE_UNICODE_ENVIRONMENT
+    Caution ClockId CmdLineKind Comparable Complex Complex32 Complex64 Cond
+    Continuation ContinuationProc ControlChars CoroutineBase CqRing Cqe
+    CqeFlag CqeFlags CqringFlag CqringFlags CqringOffsets CurDir DIR DT_BLK
+    DT_CHR DT_DIR DT_FIFO DT_LNK DT_REG DT_SOCK DT_UNKNOWN DT_WHT
+    DUPLICATE_SAME_ACCESS DWORD DateTime Deque Dev Digits DirEntry DirSep
+    DirWalker Dirent Domain Duration DynlibFormat E2BIG EACCES EADDRINUSE
+    EADDRNOTAVAIL EAFNOSUPPORT EAGAIN EALREADY EBADF EBADMSG EBUSY ECANCELED
+    ECHILD ECONNABORTED ECONNREFUSED ECONNRESET EDEADLK EDESTADDRREQ EDOM
+    EEXIST EFAULT EFBIG EHOSTUNREACH EIDRM EILSEQ EINPROGRESS EINTR EINVAL EIO
+    EISCONN EISDIR ELOOP EMFILE EMLINK EMSGSIZE ENAMETOOLONG ENETDOWN
+    ENETRESET ENETUNREACH ENFILE ENOBUFS ENODATA ENODEV ENOENT ENOEXEC ENOLCK
+    ENOMEM ENOMSG ENOPROTOOPT ENOSPC ENOSR ENOSTR ENOSYS ENOTCONN ENOTDIR
+    ENOTEMPTY ENOTSOCK ENOTSUP ENOTTY ENXIO EOPNOTSUPP EOVERFLOW EPERM EPIPE
+    EPOLLERR EPOLLET EPOLLEXCLUSIVE EPOLLHUP EPOLLIN EPOLLMSG EPOLLONESHOT
+    EPOLLOUT EPOLLPRI EPOLLRDBAND EPOLLRDHUP EPOLLRDNORM EPOLLWAKEUP
+    EPOLLWRBAND EPOLLWRNORM EPOLL_CTL_ EPOLL_CTL_ADD EPOLL_CTL_DEL
+    EPOLL_CTL_MOD EPROTO EPROTONOSUPPORT EPROTOTYPE ERANGE EROFS ESPIPE ESRCH
+    ETIME ETIMEDOUT ETXTBSY EVFILT_READ EVFILT_WRITE EV_ADD EV_DELETE
+    EV_ENABLE EV_ONESHOT EWOULDBLOCK EXDEV EncodingConverter EndOfFile
+    EnterFlag EnterFlags EpollData EpollEvent Equatable ErrorCode EvRead
+    EvWrite Exception ExeExt ExtSep FILE FILETIME FILE_ATTRIBUTE_ARCHIVE
+    FILE_ATTRIBUTE_COMPRESSED FILE_ATTRIBUTE_DEVICE FILE_ATTRIBUTE_DIRECTORY
+    FILE_ATTRIBUTE_HIDDEN FILE_ATTRIBUTE_NORMAL
+    FILE_ATTRIBUTE_NOT_CONTENT_INDEXED FILE_ATTRIBUTE_OFFLINE
+    FILE_ATTRIBUTE_READONLY FILE_ATTRIBUTE_REPARSE_POINT
+    FILE_ATTRIBUTE_SPARSE_FILE FILE_ATTRIBUTE_SYSTEM FILE_ATTRIBUTE_TEMPORARY
+    FILE_BEGIN FILE_CURRENT FILE_END FILE_FLAG_BACKUP_SEMANTICS
+    FILE_FLAG_DELETE_ON_CLOSE FILE_FLAG_FIRST_PIPE_INSTANCE
+    FILE_FLAG_NO_BUFFERING FILE_FLAG_OPEN_NO_RECALL
+    FILE_FLAG_OPEN_REPARSE_POINT FILE_FLAG_OVERLAPPED
+    FILE_FLAG_POSIX_SEMANTICS FILE_FLAG_RANDOM_ACCESS
+    FILE_FLAG_SEQUENTIAL_SCAN FILE_FLAG_WRITE_THROUGH FILE_INDEX_ALLOC
+    FILE_MAP_READ FILE_MAP_WRITE FILE_READ_DATA FILE_SHARE_DELETE
+    FILE_SHARE_READ FILE_SHARE_WRITE FILE_WRITE_DATA F_ F_GETFL F_SETFL
+    Feature Features File FileHandle FileIndexRange FileMode FilePermission
+    FileSeekPos FileStream FileStreamObj FileSystemCaseSensitive FloatClass
+    FloatFormatMode ForegroundColor FormatFlag FsyncFlag FsyncFlags GC_ref
+    GC_unref GENERIC_ALL GENERIC_READ GENERIC_WRITE GeteventsArg
+    HANDLE_FLAG_INHERIT HSlice Handle HasArctan2 HasCos HasDefault HasExp
+    HasHypot HasLn HasSin HasSqrt Hash HashSet Hashable HeapQueue HexDigits
+    HoleyEnum INADDR_ANY INFINITE INVALID_FILE_SIZE INVALID_HANDLE_VALUE
+    INVALID_SET_FILE_POINTER IOFBF IOVec IO_WQ_BOUND IO_WQ_UNBOUND
+    IPPROTO_ICMP IPPROTO_ICMPV6 IPPROTO_IP IPPROTO_IPV6 IPPROTO_RAW
+    IPPROTO_TCP IPPROTO_UDP IdentChars IdentStartChars InAddr InAddrScalar Inf
+    InnerSqeAddr InnerSqeBuf InnerSqeCmd InnerSqeFlags InnerSqeOffset
+    InnerSqeSplice Ino IntSet IoCompletion IoHandler IoOp IoprioFlag
+    IoprioFlags JsonError JsonEventKind JsonKind JsonNode JsonNodeKind
+    JsonOptions JsonParser JsonTree KEvent KernelRwfT Keyable LONG Letters
+    LineInfoMode Lock LongString LowercaseLetters MAP_ANONYMOUS MAP_POPULATE
+    MAP_PRIVATE MAP_SHARED MAXIMUM_WAIT_OBJECTS MAX_PATH MD5Context MD5Digest
+    MOVEFILE_COPY_ALLOWED MOVEFILE_CREATE_HARDLINK MOVEFILE_DELAY_UNTIL_REBOOT
+    MOVEFILE_FAIL_IF_NOT_TRACKABLE MOVEFILE_REPLACE_EXISTING
+    MOVEFILE_WRITE_THROUGH MaxFds MaxFloat32Precision MaxFloat64Precision
+    MaxFloatPrecision MemFile MemoryOrder MinFloatNormal Mode MonoTime Month
+    MsgRingOp MsgRingOpFlag MsgRingOpFlags NC8 NORMAL_PRIORITY_CLASS
+    NOTIF_USAGE_ZC_COPIED NO_ERROR NaN Natural NewLines Newlines NifBuilder
+    NifReader NimNode NimNodeKind Note NotificationRegister NotificationSlot
+    Number OFF_CQ_RING OFF_SQES OFF_SQ_RING OPEN_ALWAYS OPEN_EXISTING
+    OP_SUPPORTED OSErrorCode O_APPEND O_CLOEXEC O_CREAT O_NONBLOCK O_RDONLY
+    O_RDWR O_TRUNC O_WRONLY Off OomBytes Op Opt OptParser Option Orderable
+    OrderedTable Ordinal OrdinalEnum PAGE_EXECUTE PAGE_EXECUTE_READ
+    PAGE_EXECUTE_READWRITE PAGE_NOACCESS PAGE_READONLY PAGE_READWRITE PI
+    PIPE_ACCESS_DUPLEX PIPE_ACCESS_INBOUND PIPE_ACCESS_OUTBOUND PIPE_NOWAIT
+    PIPE_WAIT PROCESS_INFORMATION PROT_READ PROT_WRITE PTHREAD_MUTEX_RECURSIVE
+    PackedSet ParDefaultChunks ParDir ParJoin ParMaxChunks Params Path
+    PathComponent PathIter PathSep Pid PollFlag PollFlags Port Positive
+    PrintableChars Probe ProbeOp Process ProcessOption Protocol
+    PunctuationChars Queue QuitFailure QuitSuccess REGISTER_FILES_SKIP
+    REGISTER_USE_REGISTERED_RING RLock RSRC_REGISTER_SPARSE RTLD_GLOBAL
+    RTLD_NOW Rand RawThread RecvmsgOut RegisterOp Restriction RestrictionOp
+    Result RootObj RootRef RsrcRegister RsrcUpdate RsrcUpdate2 Rtti Rune
+    SC_NPROCESSORS_ONLN SECURITY_ATTRIBUTES SEEK_CUR SEEK_END SEEK_SET SIGABRT
+    SIGCONT SIGKILL SIGSTOP SIGTERM SOCK_DGRAM SOCK_RAW SOCK_SEQPACKET
+    SOCK_STREAM SOL_SOCKET SO_REUSEADDR SPLICE_F_FD_IN_FIXED
+    STARTF_USESHOWWINDOW STARTF_USESTDHANDLES STARTUPINFO STD_ERROR_HANDLE
+    STD_INPUT_HANDLE STD_OUTPUT_HANDLE STILL_ACTIVE SYNCHRONIZE S_IF S_IRUSR
+    S_IS S_ISBLK S_ISCHR S_ISDIR S_ISFIFO S_ISLNK S_ISREG S_ISSOCK S_IWUSR
+    Scheduler ScriptExt SecureHash SeqNum SetupFlag SetupFlags Sha1Digest
+    Sha1State Sighandler SkipTable Slice SockAddr SockLen SockType Sockaddr_in
+    Sockaddr_storage SocketHandle SomeFloat SomeInteger SomeNumber SomeOrdinal
+    SomeSignedInt SomeUnsignedInt SortOrder SqRing Sqe SqeFlag SqeFlags
+    SqringFlag SqringFlags SqringOffsets Stat StatHasNanoseconds Stream
+    StreamObj StringStream StringStreamObj StringTableMode StringTableObj
+    StringTableRef Stringable StripeCount StripeSize Style SyncCancelReg
+    SysCond SysCondAttr SysLock SysLockAttr SysLockType SysLockType_Reentrant
+    TAU TIMEOUT_CLOCK_MASK TIMEOUT_UPDATE_MASK TIMER_ABSTIME TSa_Family Table
+    Task TerminalCmd TicketLock Time TimeoutFlag TimeoutFlags Timespec Tmsghdr
+    TokKind Trivial TypeOfMode URING_CMD_FIXED UncheckedArray UppercaseLetters
+    Utf16Char WAIT_FAILED WAIT_OBJECT_0 WAIT_TIMEOUT WCONTINUED WEXITSTATUS
+    WIFCONTINUED WIFEXITED WIFSIGNALED WIFSTOPPED WIN32_FIND_DATA WINBOOL
+    WNOHANG WOHandleArray WSTOPSIG WTERMSIG WeekDay Whitespace WideCString
+    WideCStringObj WinChar WinSizeT WorkerCount Workload __atomic_ __ulock_
+    abs abs2 absolutePath accept acceptFlags accept_multishot acquire
+    acquireSys add addEscapedChar addFileExt addFirst addFloat addInt addLast
+    addNormalizePath addQuoted addReadLine addUnique addr addr2 addr3 addrLen
+    advance after align alignLeft all allCharsInSet allIt alloc alloc0
+    allocFixed allocFrame allocatedSize almostEqual alpha and
+    ansiBackgroundColorCode ansiForegroundColorCode ansiResetCode
+    ansiStyleCode any anyIt apply applyIt arcDec arcInc arcIsUnique arccos
+    arccosh arccot arccoth arccsc arccsch arcsec arcsech arcsin arcsinh arctan
+    arctan2 arctanh arg array as ashr asm assert assertRc assertRcAlive
+    assertionsEnabled astToStr atEnd atEndImpl atomicAddFetch
+    atomicCompareExchange atomicCompareExchangeN atomicCompareExchangeWeak
+    atomicDec atomicExchange atomicExchangeN atomicFence atomicFetchAdd
+    atomicFetchAnd atomicFetchOr atomicFetchSub atomicFetchXor atomicInc
+    atomicLoad atomicLoadN atomicSignalFence atomicStore atomicStoreN
+    atomicSubFetch bInheritHandle basename beginStore bgPrefix bgid bid bind
+    bindSym binom bitand bitnot bitor bitxor block bool borrowCStringUnsafe
+    break broadcast broadcastSysCond buf bufGroup bufIndex bufpos bufs byte
+    cAbort cAlternateFileName cExit cFileName c_fp callee caller calls cancel
+    cancelFlags capacity capitalize capitalizeAscii card case cast cb
+    cbReserved2 cbrt cchar cdouble ceil ceilDiv cfloat changeFileExt char
+    chdir chr chunks cint clamp classify clear clearBit cliExitHelp
+    cliExitVersion cliFail cliInvalidValue cliMissingArguments
+    cliUnexpectedArgument cliUnknownLongOption cliUnknownShortOption cliapp
+    clock_gettime clong clongdouble clonglong close closeFd closeHandle
+    closeImpl closedir cmd cmdOp cmp cmpIgnoreCase cmpIgnoreStyle cmpMem
+    cmpPaths cmpRunesIgnoreCase codePageToName collects commandLineParams
+    compiles complement complete complex con concat concept conjugate connect
+    console const contains containsOrIncl continue continueAfterOutOfMem
+    continuesWith controllen convert converter copy copyCqes copyFileW copyMem
+    copyNimTree copySign correct cos cosh cot coth count countBits32
+    countBits64 countIt countProcessors countSetBits countdown countup
+    cpuRelax cq cqEntries cqOff cqReady cqes create createDir createDirectoryW
+    createFileMappingW createFileW createHardLinkW createJsonTree
+    createNamedPipe createPipe createProcessW createSymbolicLinkW
+    createSymlink csc csch cschar cshort csize_t cstring cstringArray cuchar
+    cuint culong culonglong cumprod cumsum cushort cycle d_name d_type data
+    dead dealloc deallocFixed deallocFrame dec declared decode decodeZigzag
+    deduplicate default defer defined definition degToRad deinitCond
+    deinitLock deinitRLock deinitSys deinitSysCond del delEnv delay delete
+    deleteFileW difference dirExists discard disjoint distinct distinctBase
+    distinctBaseShallow div divmod do doslikeFileSystem drainPrevious dropped
+    dup2 duplicateHandle dwFileAttributes dwFillAttribute dwFlags
+    dwHighDateTime dwLowDateTime dwProcessId dwThreadId dwVolumeSerialNumber
+    dwX dwXCountChars dwXSize dwY dwYCountChars dwYSize eat echo editDistance
+    elif else encode encodeMime encodeZigzag end endOfFile endStore endsWith
+    ensureMove ensureParPool ensureTerminatingZero enter entries enum env
+    envPairs epoll_create epoll_create1 epoll_ctl epoll_pwait epoll_wait
+    epsilon eqIdent equal erf erfc err errno error errorCodeToHttp
+    errorCodeToPosix errorCodeToWindows errorHandle errorMessages errorMsg
+    errorMsgExpected errorMsgFor errorStream escape euclDiv euclMod events
+    every exc except excl execCmd execCmdEx execProcess execProcesses
+    execShellCmd execve existsEnv exitStatusLikeShell exitnow exp
+    expandFilename expandSymlink expandTilde expectKind expectLen expectMinLen
+    export extractFilename fHandle fac fadvice fadviseAdvice failed fallocate
+    fastRuneAt fastToUTF8Copy fcntl fd features fflags fgPrefix fgetxattr
+    fieldPairs fields fileExists fileIndex fileName files_update filter
+    filterIt finalize finalizeCoroutine finally find findClose findExe
+    findFirstFile findFirstFileW findNextFile findNextFileW finished
+    firstSetBit flags flatMap flatten flipBit float float32 float64 floatVal
+    floor floorDiv floorMod flush flushFile flushImpl fn foldl foldr for fork
+    format formatBiggestFloat formatFloat formatSize freeEnvironmentStringsW
+    frexp from fromCString fromJson fromNif fromUnix fsetxattr fstat fsync
+    fsyncFlags ftCreationTime ftLastAccessTime ftLastWriteTime ftruncate
+    fullSet func gamma gcd genericHead get getAppDir getAppFilename getBool
+    getCacheDir getColNumber getColumn getCommandLine getCommandLineW
+    getConfigDir getConsoleMode getCurrentDir getCurrentDirectoryW
+    getCurrentEncoding getCurrentLine getCurrentProcess getDataDir
+    getDaysInMonth getEnv getEnvironmentStringsW getExitCodeProcess
+    getFileAttributesW getFileHandle getFileInformationByHandle getFilePos
+    getFileSize getFilename getFloat getFreeMem getFullPathNameW getHomeDir
+    getInt getLastError getLastModificationTime getLine getMD5 getMonoTime
+    getOccupiedMem getOrDefault getOrQuit getPosition getPositionImpl getSqe
+    getStdHandle getStr getSymlinkFileKind getSystemTimeAsFileTime getTempDir
+    getThreadId getTime getTok getTotalMem getcwd getopt getxattr graphemeLen
+    grow growUnsafe hProcess hStdError hStdInput hStdOutput hThread handle
+    handleCR handleLF handleRefillChar hardlinkFlags hasError hasIoPoll hasKey
+    hasNext hash hashIgnoreCase hashIgnoreStyle head helps high hour
+    httpToErrorCode hypot iNext id ident if im import in inMicroseconds
+    inMilliseconds inNanoseconds inSeconds inc incl include inclusive index
+    info initCond initDateTime initDeque initDuration initHashSet
+    initHeapQueue initIntSet initIoRing initLock initOptParser
+    initOrderedTable initPackedSet initPool initRLock initRand initSkipTable
+    initSysCond initSysLock initSysLockAttr initTable initTime inline
+    inputHandle inputStream insert int int16 int32 int64 int8 intVal interface
+    internalFieldPairs internalTypeName intersection inv invalid inverted
+    ioError ioFd ioprio iov_base iov_len is isAbsolute isAlpha isAlphaAscii
+    isAlphaNumeric isCombining isDigit isEmptyOrWhitespace isErr isError
+    isFail isLeapYear isLower isLowerAscii isMainModule isNaN isNil isNilNode
+    isNone isOk isOom isPowerOfTwo isRelativeTo isRootDir isSome isSorted
+    isSpace isSpaceAscii isSuccess isTitle isUpper isUpperAscii isWhiteSpace
+    isatty isnot items iterator itself join joinPath jsonKind keepIf keepItIf
+    kevent key keys kill kind kqueue lastOp lastPathPart lastRune lcm
+    leadingZeroBits leak_repro len lent let level lgamma lineNumber linear
+    lines linkNext link_timeout linkat listenTcp ln loadInput localErr log
+    log10 log1p log2 low lpDesktop lpReserved lpReserved2 lpSecurityDescriptor
+    lpTitle lstat macro macroMain madvice map mapHandle mapIt mapViewOfFileEx
+    mask max maxIndex maxSymlinkLen maxVarIntLen md5Final md5Init md5Update
+    mem method mgetOrPut min minIndex minimumPositiveValue minmax minute
+    missingOrExcl mitems mixin mkdir mkdirat mmap mmapErrno mmapFailed mod
+    mode month monthday move moveFileExW moveFileW moveMem mpairs msg msgFlags
+    msgRingFlags msg_control msg_controllen msg_flags msg_iov msg_iovlen
+    msg_name msg_namelen msg_ring multiReplace munmap mvalues nFileIndexHigh
+    nFileIndexLow nFileSizeHigh nFileSizeLow nLength nNumberOfLinks
+    nameToCodePage named namelen nanosecond nanosleep negative new
+    newAssignment newBlockStmt newCall newColonExpr newConstStmt newDotExpr
+    newEmptyNode newException newFileStream newFloatLitNode newIdentNode
+    newIfStmt newIntLitNode newLetStmt newNilLit newNimNode newQueue newSeq
+    newSeqOf newSeqOfCap newSeqUninit newSeqWith newSha1State newStmtList
+    newStrLitNode newString newStringOfCap newStringStream newStringTable
+    newSymChoiceNode newSymNode newTree newVarStmt newWideCString next
+    nextPowerOfTwo nextTry nifBuilderOpen nifReaderOpen
+    nifReaderOpenFromBuffer nil nimFlushStdStreams none nop normalize
+    normalizeExe normalizePath normalizePathEnd normalizedPath not notin now
+    nr nrSlots object of off offset offsetBase ok only op opFlags opcode open
+    openArray openFileStream openFlags openHandle openat opendir ops opsLen
+    option or ord osLastError out outputHandle outputStream overflow
+    overflowFlag own pad pad1 pad2 pad3 pairs panic parBegin parChunkCount
+    parChunkDone parChunkHi parChunkLo parGrain parIterCount parSubmit parWait
+    paramCount paramStr params parentDir parentDirs parityBits parked parks
+    parseBiggestFloat parseBiggestInt parseBiggestUInt parseCmdLine
+    parseEscapedUTF16 parseFile parseHex parseInt parseJson path payloadlen
+    pcall peek peekBool peekChar peekData peekDataImpl peekExitCode peekFirst
+    peekFloat32 peekFloat64 peekInt16 peekInt32 peekInt64 peekInt8 peekLast
+    peekLine peekNamedPipe peekStr peekUint16 peekUint32 peekUint64 peekUint8
+    personality pipe plugin plugins point pointer poll32Events pollCompletions
+    pollEvents poll_add poll_multi poll_remove poll_update poolHelp poolPollIo
+    poolStopped pop popFirst popLast popcount posixToErrorCode posix_environ
+    posix_fallocate pow pred prepareMutation proc procCall processID procs
+    prod proper provide_buffers ptr push pushpop putEnv quit quoteShell
+    quoteShellCommand quoteShellPosix quoteShellWindows radToDeg raise
+    raiseAssert raiseOSError raiseParseErr rand randomize range rawData re
+    read readAll readBool readBuffer readChar readData readDataImpl
+    readDataStr readDataStrImpl readFile readFloat32 readFloat64 readInt16
+    readInt32 readInt64 readInt8 readLine readLineImpl readLines readRawData
+    readRawDataStable readStr readUint16 readUint32 readUint64 readUint8
+    readVu64 read_fixed readdir readlink readv realloc realpath rearmFd recv
+    recv_multishot recvmsg recvmsg_multishot ref register registerBuffers
+    registerEventFd registerEventFdAsync registerFd registerFiles
+    registerFilesUpdate registerOp relativePath release releaseSys remaining
+    removeDir removeDirectoryW removeFile remove_buffers renameFlags renameat
+    repeat replace replaceWord res resetAttributes result resume resumeThread
+    resv resv1 resv2 resv3 return reversed ring ringAddr ringEntries ringMask
+    rmdir root rotateLeftBits rotateRightBits round rune runeAt runeAtPos
+    runeLen runeLenAt runeOffset runeReverseOffset runeStrAtPos runeSubStr
+    runes runnableExamples running rwFlags s_addr sa_data sa_family sameFile
+    sameTree sample saveOutput searchExtPos sec sech second seconds send
+    send_zc sendmsg sendmsg_zc seq set setBackgroundColor setBit setCurrentDir
+    setCurrentDirectoryW setEndOfFile setEnvironmentVariableW setError
+    setExitFlush setFileAttributesW setFilePointer setFilePos
+    setForegroundColor setHandleInformation setLen setNonBlocking
+    setOomHandler setPosition setPositionImpl setScheduler setStyle
+    setSysLockType setThreadAffinityMask setUserData setpgid setup setxattr
+    sgn shl shr shrink shuffle shutdown shutdownPool sigmask sigmaskSz signal
+    signalSysCond signbit sin sin_addr sin_family sin_port sinh sink size
+    sizeof skipFindData skipIgnoreCase skipRandomNumbers skipUntil sleep slurp
+    socket some sort sorted spaces specific splice spliceFdIn spliceFlags
+    spliceOffIn split splitDecimal splitDrive splitFile splitLines splitPath
+    splitWhitespace sq sqEntries sqOff sqReady sqThreadCpu sqThreadIdle
+    sqeFlags sqeHead sqeOp sqeTail sqes sqrt st_dev st_ino st_mode st_mtim
+    st_mtime st_size startProcess startsWith startsWithImpl stat static
+    staticRead statx statxFlags stderr stdin stdout stopping str strVal
+    strerror string strip stripGenericParams strlen stylePrefix
+    styledEchoProcessArg styledWrite styledWriteLine submit submitAccept
+    submitRead submitWrite substr succ sum supportedSystem suspend
+    suspendThread swap swapCase symlink symlinkExists symlinkat
+    symmetricDifference syncRangeFlags sync_file_range sys sysconf tag tagId
+    tags tail tailDir tan tanh teardown tee template terminal terminate
+    terminateProcess terminateThread terminatingZero testAndSet testBit than
+    this threadOutOfMem ticks timeout timeoutFlags timeout_remove title
+    toCString toDeque toHeapQueue toHex toJson toLower toLowerAscii toMD5
+    toNif toOpenArray toPackedSet toRunes toSeq toTask toTime toTitle toUTF8
+    toUnix toUpper toUpperAscii toWideCString toggle tok trailingZeroBits
+    translate treeRepr trimZeros trunc try tryAcquire tryAcquireSys
+    tryCloseDir tryCreateFinalDir tryMoveFSObject tryNextDir tryOpenDir
+    tryRemoveFile tryRemoveFinalDir tryWriteFile ts tuple tv_nsec tv_sec type
+    typeFieldName typed typedesc typeof u32 u64 udata uint uint16 uint32
+    uint64 uint8 unescape union unixToNativePath unlink unlinkFlags unlinkat
+    unmapViewOfFile unpack unpairedEnvAllocs unregisterBuffers
+    unregisterEventFd unregisterFd unregisterFiles unsafeAddr unsafeGet
+    untyped unzip update uringCmdFlags userData using utc utf8 val
+    validateUtf8 value values var varargs void wShowWindow wait
+    waitCompletions waitForExit waitForMultipleObjects waitForSingleObject
+    waitSysCond waitpid walkDir wasOpened weekday weirdTarget when while
+    windowsToErrorCode withLock withRLock wqFd wrapBinary wrapWords write
+    writeBuffer writeData writeDataImpl writeErr writeFile writeLine
+    writeNifBool writeNifChar writeNifFloat writeNifInt writeNifParLe
+    writeNifParRi writeNifRaw writeNifStr writeNifSymbol writeNifUInt
+    writeVu64 write_fixed writev xattrFlags xor year yearday yield zeroMem zip))

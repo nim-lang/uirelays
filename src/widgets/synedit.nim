@@ -230,6 +230,14 @@ proc markSaved*(s: var SynEdit) = s.changed = false
   ## has been consumed by something other than `saveToFile`.
 proc cursor*(s: SynEdit): int {.inline.} = s.cursor.int
 proc cacheId*(s: SynEdit): int {.inline.} = s.cacheId
+proc textVersion*(s: SynEdit): int {.inline.} = s.version
+  ## Bumped by every editing operation. Something that walks the text and
+  ## caches what it found -- a word index, an outline -- compares this against
+  ## the version it last saw to know whether its answer is still current.
+proc cursorRect*(s: SynEdit): tuple[x, y, h: int] {.inline.} = s.cursorDim
+  ## Where the caret was drawn last, in screen coordinates, for a popup that
+  ## wants to sit under it. `h == 0` means the caret was not on screen -- the
+  ## buffer has scrolled away from it, or nothing has been rendered yet.
 proc getFont*(s: SynEdit): Font {.inline.} = s.font
 proc setFont*(s: var SynEdit; f: Font) {.inline.} = s.font = f
 proc setRenderFlag*(s: var SynEdit; flag: RenderFlag; enabled = true) =
@@ -1563,6 +1571,32 @@ proc insertText*(s: var SynEdit; text: string) =
   inc s.version
   s.removeSelectedText()
   s.insertNoSelect(text, singleUndoOp = true)
+  s.cursorMoved()
+
+proc getWordPrefix*(s: SynEdit): string =
+  ## The identifier the cursor sits directly behind, "" when it sits behind
+  ## anything else. This is what a completion completes.
+  var i = s.cursor.int
+  while i > 0 and s[i - 1] in Letters: dec i
+  result = newStringOfCap(s.cursor.int - i)
+  for j in i ..< s.cursor.int: result.add s[j]
+
+proc replaceWordPrefix*(s: var SynEdit; word: string) =
+  ## Swap the identifier the cursor sits behind for `word` -- what accepting a
+  ## completion does. Everything this touches shares one `version`, so Ctrl+Z
+  ## takes the completion back in one step instead of one character at a time.
+  let prefix = s.getWordPrefix()
+  if word.len == 0 or word == prefix: return
+  inc s.version
+  s.deselect()
+  # Without this the first backspace would be appended to whatever deletion
+  # came before it -- an action of an older version, which would tear the
+  # group in two.
+  s.actions.setLen(clamp(s.undoIdx + 1, 0, s.actions.len))
+  if s.actions.len > 0 and s.actions[^1].k == dele:
+    s.actions[^1].k = delFinished
+  for i in 0 ..< prefix.len: s.backspaceNoSelect(overrideUtf8 = true)
+  s.insertNoSelect(word, singleUndoOp = true)
   s.cursorMoved()
 
 proc backspace*(s: var SynEdit; smartIndent: bool) =

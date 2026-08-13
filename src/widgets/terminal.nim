@@ -303,6 +303,7 @@ type
     noAction,
     openFile,           ## user typed `o <file>`
     saveFile,           ## user typed `save`
+    indexWords,         ## user typed `index <path>` or `unindex <path>`
     ctrlHover,          ## ctrl+mouse move over text
     ctrlClick           ## ctrl+click on text
 
@@ -311,6 +312,10 @@ type
     of noAction, saveFile: discard
     of openFile:
       file*: string
+    of indexWords:
+      path*: string     ## absolute; "" asks what is indexed rather than
+                        ## indexing anything
+      forget*: bool     ## `unindex`: drop the set instead of adding it
     of ctrlHover, ctrlClick:
       pos*: int         ## buffer offset
 
@@ -554,6 +559,16 @@ proc runCommand*(t: var Terminal; cmd: var string): TermAction =
   of "save":
     t.insertPrompt()
     result = TermAction(kind: saveFile)
+  of "index", "unindex":
+    # Reported rather than done: what a word index is good for is the host's
+    # business, and a terminal that grew one would have to grow a completion
+    # popup to go with it.
+    var b = ""
+    i = parseWord(cmd, b, i)
+    t.insertPrompt()
+    let e = expandTilde(b)
+    let path = if e.len == 0: "" elif isAbsolute(e): e else: t.cwd / e
+    result = TermAction(kind: indexWords, path: path, forget: a == "unindex")
   of "cls":
     t.ed.clear()
     t.ed.lang = langConsole
