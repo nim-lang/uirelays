@@ -781,6 +781,10 @@ proc main =
   var lastCurrent = current
 
   var focus = "editor"
+  # Where the pointer was last seen. A wheel event carries its delta in `x`
+  # and `y` and nothing about where it happened, so this is what says which
+  # panel the wheel is over.
+  var pointerX, pointerY = -1
 
   var running = true
   while running:
@@ -840,7 +844,26 @@ proc main =
         for i in 0 ..< buffers.len:
           buffers[i].ed.setFont(editorFont)
         fm = getFontMetrics(fonts.fontForSize(DefaultFontSize))
+    of MouseMoveEvent:
+      pointerX = e.x
+      pointerY = e.y
+    of MouseWheelEvent:
+      # The wheel turns whatever it is pointing at, focused or not -- reaching
+      # for the wheel is not a decision to type there. The event is consumed,
+      # so the focused panel does not scroll along with the one under the
+      # pointer.
+      case cells.hitTest(pointerX, pointerY).name
+      of "editor": buffers[current].ed.wheelScroll(e.y)
+      of "tabs": tabs.ed.wheelScroll(e.y)
+      of "explorer": explorer.ed.wheelScroll(e.y)
+      of "history": history.wheelScroll(e.y)
+      of "terminal": term.ed.wheelScroll(e.y)
+      of "status": status.ed.wheelScroll(e.y)
+      else: discard
+      e = default Event
     of MouseDownEvent:
+      pointerX = e.x
+      pointerY = e.y
       let hit = cells.hitTest(e.x, e.y)
       if hit.name.len > 0:
         focus = hit.name

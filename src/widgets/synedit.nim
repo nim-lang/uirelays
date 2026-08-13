@@ -1136,6 +1136,14 @@ proc scrollLines(s: var SynEdit; amount: int) =
   elif a > 0:
     while a > 0: s.downFirstLineOffset(); dec a
 
+proc wheelScroll*(s: var SynEdit; delta: int) =
+  ## Scroll by one turn of the mouse wheel: three lines per notch, and the
+  ## sign is the wheel's, so a positive delta scrolls towards the top of the
+  ## text. Public because a wheel event carries only its delta -- an app that
+  ## wants the panel *under the pointer* to scroll, rather than the focused
+  ## one, has to route the event itself, and this is what it routes it to.
+  s.scrollLines(-delta * 3)
+
 proc scroll(s: var SynEdit; amount: int) =
   s.currentLine = (s.currentLine.int + amount).clamp(0, s.numberOfLines.int).Natural
   if s.currentLine < s.firstLine:
@@ -2803,8 +2811,10 @@ proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
         s.scrollLines(target - s.firstLine.int)
 
   of MouseWheelEvent:
+    # Without the pointer's position in the event this is the best a widget can
+    # do on its own; `wheelScroll` is how a host routes it by hover instead.
     if focused:
-      s.scrollLines(-e.y * 3)
+      s.wheelScroll(e.y)
 
   else: discard
 
