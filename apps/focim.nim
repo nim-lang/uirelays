@@ -26,7 +26,9 @@ each with its own *flipped* edit semantics:
   that is editable: it doubles as the path field and as a filter. Typing
   narrows the listing, Enter on a directory descends into it, and Enter on a
   partial name accepts the first match -- so there is no need for a modal
-  "open file" dialog.
+  "open file" dialog. Under `..` are the two places one keeps wanting to get
+  back to: `[Editor]` for the directory of the file in the editor,
+  `[Terminal]` for the one the terminal is in.
 
 The same idea applied to the window itself: tab 0 is `[config]`, and its text
 IS the NIF `(config ...)` this app is built from -- the `(layout ...)` that
@@ -444,8 +446,17 @@ proc resolveIn(base, s: string): string =
   if e.len == 0: return ""
   result = if isAbsolute(e): e else: base / e
 
+const NavEntries = ["..", "[Editor]", "[Terminal]"]
+  ## The lines every unfiltered listing starts with, before the directory
+  ## itself: up one level, the directory of the file in the editor, and the
+  ## directory the terminal is in -- the two places one keeps wanting to get
+  ## back to once the listing has wandered off somewhere else. The brackets
+  ## are the tell that these are not entries of this directory; no file is
+  ## named like that, and the position decides anyway.
+
 proc listDir(dir, filter: string): seq[string] =
-  ## ".." first, then directories, then files. Dotfiles are hidden.
+  ## The navigation lines first, then directories, then files. Dotfiles are
+  ## hidden.
   var dirs: seq[string] = @[]
   var files: seq[string] = @[]
   let f = filter.toLowerAscii
@@ -459,7 +470,11 @@ proc listDir(dir, filter: string): seq[string] =
   sort dirs
   sort files
   result = @[]
-  if filter.len == 0: result.add ".."
+  # Filtering is a search through this directory, and the navigation lines are
+  # not part of it -- they would survive every filter and be in the way of the
+  # first match, which is what Enter takes.
+  if filter.len == 0:
+    for n in NavEntries: result.add n
   for d in dirs: result.add d
   for x in files: result.add x
 
@@ -495,13 +510,36 @@ proc applyHeader(ex: var Explorer; header: string) =
   ex.entries = listDir(ex.dir, filter)
   ex.renderExplorer(header, ex.ed.cursor)
 
-proc activateEntry(ex: var Explorer; name: string;
+proc navShown(ex: Explorer): bool =
+  ## Are the navigation lines in the listing? ".." gives it away: a filtered
+  ## listing never contains it. Asking this instead of comparing the line's
+  ## text means a real file could be called "[Editor]" and would still open --
+  ## it is a different line, further down, and only the position decides.
+  ex.entries.len >= NavEntries.len and ex.entries[0] == NavEntries[0]
+
+proc activateEntry(ex: var Explorer; idx: int;
                    buffers: var seq[BufferEntry]; current: var int;
-                   font: Font; focus: var string) =
-  if name == "..":
-    let up = ex.dir.parentDir
-    if up.len > 0: ex.showDir(up)
-  elif name.endsWith($DirSep):
+                   font: Font; focus: var string;
+                   termDir: string; note: var string) =
+  if idx < 0 or idx >= ex.entries.len: return
+  if ex.navShown and idx < NavEntries.len:
+    case idx
+    of 0:
+      let up = ex.dir.parentDir
+      if up.len > 0: ex.showDir(up)
+    of 1:
+      # The file in the editor, not the tab list's idea of it: an unsaved
+      # buffer has no directory to go to and says so rather than jumping
+      # somewhere plausible.
+      let p = buffers[current].path
+      if p.len > 0: ex.showDir(p.parentDir)
+      else: note = "this buffer has no file yet"
+    else:
+      if termDir.len > 0 and dirExists(termDir): ex.showDir(termDir)
+      else: note = "the terminal is in " & termDir & ", which is gone"
+    return
+  let name = ex.entries[idx]
+  if name.endsWith($DirSep):
     ex.showDir(ex.dir / name[0 ..< name.len - 1])
   else:
     let p = ex.dir / name
@@ -846,11 +884,13 @@ proc main =
             focus = "editor"
           elif explorer.entries.len > 0:
             # A partial name accepts the first match.
-            explorer.activateEntry(explorer.entries[0], buffers, current,
-                                   fonts.fontForSize(editorFontSize), focus)
+            explorer.activateEntry(0, buffers, current,
+                                   fonts.fontForSize(editorFontSize), focus,
+                                   term.cwd, tabs.note)
         elif line - 1 < explorer.entries.len:
-          explorer.activateEntry(explorer.entries[line - 1], buffers, current,
-                                 fonts.fontForSize(editorFontSize), focus)
+          explorer.activateEntry(line - 1, buffers, current,
+                                 fonts.fontForSize(editorFontSize), focus,
+                                 term.cwd, tabs.note)
         e = default Event
     else: discard
 
@@ -886,8 +926,9 @@ proc main =
         if e.kind == MouseDownEvent:
           let line = explorer.ed.currentLine
           if line > 0 and line - 1 < explorer.entries.len:
-            explorer.activateEntry(explorer.entries[line - 1], buffers, current,
-                                   fonts.fontForSize(editorFontSize), focus)
+            explorer.activateEntry(line - 1, buffers, current,
+                                   fonts.fontForSize(editorFontSize), focus,
+                                   term.cwd, tabs.note)
         else:
           let header = explorer.ed.getLineText(0)
           if header != explorer.header:
