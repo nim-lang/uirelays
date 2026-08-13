@@ -249,6 +249,8 @@ const
   ButtonReleaseMask = 1 shl 3
   PointerMotionMask = 1 shl 6
   StructureNotifyMask = 1 shl 17
+  SubstructureNotifyMask = 1 shl 19
+  SubstructureRedirectMask = 1 shl 20
   FocusChangeMask = 1 shl 21
 
   # Modifier masks
@@ -765,6 +767,14 @@ proc x11CreateWindow(layout: var ScreenLayout) =
     layout.width = XDisplayWidth(gDisplay, gScreen)
     layout.height = XDisplayHeight(gDisplay, gScreen)
 
+  # A negative dimension is MaxWindowWidth/MaxWindowHeight. The window is
+  # created at the display size and then asked to maximize below: the window
+  # manager is the one that knows where its panels are, and it answers with a
+  # ConfigureNotify carrying the size that was actually granted.
+  let maximized = layout.width < 0 or layout.height < 0
+  if layout.width < 0: layout.width = XDisplayWidth(gDisplay, gScreen)
+  if layout.height < 0: layout.height = XDisplayHeight(gDisplay, gScreen)
+
   gWindow = XCreateSimpleWindow(gDisplay, XRootWindow(gDisplay, gScreen),
     0, 0, layout.width.cuint, layout.height.cuint, 0,
     XBlackPixel(gDisplay, gScreen), XBlackPixel(gDisplay, gScreen))
@@ -786,6 +796,32 @@ proc x11CreateWindow(layout: var ScreenLayout) =
 
   discard XStoreName(gDisplay, gWindow, "NimEdit")
   discard XMapWindow(gDisplay, gWindow)
+
+  if maximized:
+    # _NET_WM_STATE_MAXIMIZED_{HORZ,VERT} is what a panel's maximize button
+    # sends, so the window manager keeps its panels and docks visible --
+    # unlike the _NET_WM_STATE_FULLSCREEN that `layout.fullScreen` asks for.
+    # The message goes to the root window, as the EWMH spec requires, and only
+    # after XMapWindow: a window manager ignores state changes for a window it
+    # has not taken over yet.
+    const NetWmStateAdd = 1
+    let wmState = XInternAtom(gDisplay, "_NET_WM_STATE", 0)
+    let maxHorz = XInternAtom(gDisplay, "_NET_WM_STATE_MAXIMIZED_HORZ", 0)
+    let maxVert = XInternAtom(gDisplay, "_NET_WM_STATE_MAXIMIZED_VERT", 0)
+    if wmState != 0 and maxHorz != 0 and maxVert != 0:
+      var ev = XEvent()
+      ev.xclient.theType = ClientMessage
+      ev.xclient.window = gWindow
+      ev.xclient.message_type = wmState
+      ev.xclient.format = 32
+      ev.xclient.data[0] = NetWmStateAdd
+      ev.xclient.data[1] = maxHorz.clong
+      ev.xclient.data[2] = maxVert.clong
+      ev.xclient.data[3] = 1  # a normal application, per the spec's source field
+      discard XSendEvent(gDisplay, XRootWindow(gDisplay, gScreen), 0,
+                         (SubstructureNotifyMask or SubstructureRedirectMask).clong,
+                         addr ev)
+      discard XFlush(gDisplay)
 
   gGC = XCreateGC(gDisplay, gWindow, 0, nil)
 
@@ -826,15 +862,17 @@ proc x11SetClipRect(r: coords.Rect) =
   discard XSetClipRectangles(gDisplay, gGC, 0, 0, addr xr, 1, 0)
   discard XftDrawSetClipRectangles(gXftDraw, 0, 0, addr xr, 1)
 
-proc x11OpenFont(path: string; size: int;
+proc x11OpenFont(path: string; size: int; style: FontStyles;
                  metrics: var FontMetrics): screen.Font =
-  # Detect bold/italic from filename.
+  # Asked for outright, or -- for a path that names one face of a family --
+  # detected from the filename.
   # Note: `substr in str` is avoided on purpose -- Nimony's system `in`
   # template early-binds `contains` and never sees strutils' string overload,
   # so we call `.contains` explicitly here.
   let lpath = path.toLowerAscii()
-  let isBold = lpath.contains("bold")
-  let isItalic = lpath.contains("italic") or lpath.contains("oblique")
+  let isBold = FontStyle.bold in style or lpath.contains("bold")
+  let isItalic = FontStyle.italics in style or
+                 lpath.contains("italic") or lpath.contains("oblique")
 
   # Map known font filenames to fontconfig names
   var faceName = "monospace"  # safe default

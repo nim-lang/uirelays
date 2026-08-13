@@ -102,29 +102,39 @@ proc queueEvent(e: input.Event) =
   eventQueue.addLast(e)
 
 proc resolveFontPath(path: string): string =
+  ## An empty path means "the platform default", and for this library that is
+  ## a *monospaced* font: the native drivers pick Consolas (Windows) and
+  ## fontconfig's `monospace` (X11), and the apps are text editors that expect
+  ## a fixed advance. So the candidate lists here are mono-only too -- a
+  ## proportional fallback would silently break column arithmetic.
+  ##
+  ## Only `.ttf`/`.otf` are listed: pixie's `readTypeface` rejects anything
+  ## else, so macOS' `.ttc` collections (Menlo, Courier) are unreachable from
+  ## here, and SFNSMono.ttf is a variable font whose default instance is the
+  ## too-thin Light weight.
   if path.len > 0:
     return path
 
   when defined(windows):
     let candidates = [
-      "Segoe UI",
-      "segoeui.ttf",
-      "Arial",
-      "arial.ttf"
+      "Consolas",
+      "consola.ttf",
+      "Courier New",
+      "cour.ttf"
     ]
   elif defined(macosx):
     let candidates = [
-      "SFNS.ttf",
-      "Helvetica",
-      "Arial Unicode.ttf",
-      "Arial.ttf"
+      "Monaco.ttf",
+      "Andale Mono.ttf",
+      "Courier New.ttf",
+      "DejaVuSansMono.ttf"
     ]
   else:
     let candidates = [
-      "NotoSans[wght].ttf",
-      "LiberationSans-Regular.ttf",
-      "Cantarell-VF.otf",
-      "DejaVuSans.ttf"
+      "DejaVuSansMono.ttf",
+      "LiberationMono-Regular.ttf",
+      "NotoSansMono[wdth,wght].ttf",
+      "monospace"
     ]
 
   for candidate in candidates:
@@ -393,6 +403,13 @@ proc renderQueuedOps() =
   drawOps.setLen(0)
 
 proc figCreateWindow(layout: var ScreenLayout) =
+  # MaxWindowWidth/MaxWindowHeight arrive as negative sizes. Neither backend
+  # is available to test against here, so this driver does the safe half of
+  # the contract: it substitutes a sane size instead of handing a negative one
+  # to the toolkit. The window is then merely large, not maximized -- wiring
+  # that up is a one-liner once the backend's own maximize can be verified.
+  if layout.width < 0: layout.width = 1024
+  if layout.height < 0: layout.height = 768
   if not windyInitialized:
     appWindow = newWindyWindow(
       size = ivec2(layout.width.int32, layout.height.int32),
@@ -517,7 +534,13 @@ proc figSetClipRect(r: coords.Rect) =
   currentState.clipActive = true
   currentState.clipRect = r
 
-proc figOpenFont(path: string; size: int; metrics: var FontMetrics): screen.Font =
+proc figOpenFont(path: string; size: int; style: FontStyles;
+                 metrics: var FontMetrics): screen.Font =
+  # `style` is accepted and ignored: pixie draws the typeface in the file it
+  # was handed and has nothing to synthesize a bold or an italic cut with, so
+  # styled text comes out upright here. Picking a sibling file -- the
+  # `-Bold.ttf` next to the `-Regular.ttf` -- is the way to fix that, once
+  # there is a machine to try it on.
   let resolvedPath = resolveFontPath(path)
   if resolvedPath.len == 0:
     return screen.Font(0)

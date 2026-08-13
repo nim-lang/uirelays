@@ -10,6 +10,15 @@ type
   Font* = distinct int    ## opaque handle; 0 = invalid
   Image* = distinct int   ## opaque handle; 0 = invalid
 
+  FontStyle* {.pure.} = enum
+    bold, italics
+  FontStyles* = set[FontStyle]
+    ## What a font is asked to look like beyond its size. `{}` is the upright
+    ## regular face every driver can produce; the rest are a wish. A family
+    ## without a bold or an italic face -- and a driver that cannot ask for one
+    ## -- draws the regular face instead, so styled text is at worst plain,
+    ## never missing.
+
   TextExtent* = object
     w*, h*: int
 
@@ -49,7 +58,7 @@ type
     setWindowTitle*: proc (title: string) {.nimcall.}
 
   FontRelays* = object
-    openFont*: proc (path: string; size: int;
+    openFont*: proc (path: string; size: int; style: FontStyles;
                      metrics: var FontMetrics): Font {.nimcall.}
     closeFont*: proc (f: Font) {.nimcall.}
     getFontMetrics*: proc (f: Font): FontMetrics {.nimcall.}
@@ -80,7 +89,8 @@ var windowRelays* = WindowRelays(
   setWindowTitle: proc (title: string) = discard)
 
 var fontRelays* = FontRelays(
-  openFont: proc (path: string; size: int; metrics: var FontMetrics): Font = Font(0),
+  openFont: proc (path: string; size: int; style: FontStyles;
+                  metrics: var FontMetrics): Font = Font(0),
   closeFont: proc (f: Font) = discard,
   getFontMetrics: proc (f: Font): FontMetrics = FontMetrics(),
   measureText: proc (f: Font; text: string): TextExtent = TextExtent(),
@@ -95,10 +105,29 @@ var drawRelays* = DrawRelays(
   freeImage: proc (img: Image) = discard,
   drawImage: proc (img: Image; src, dst: Rect) = discard)
 
+const
+  MaxWindowWidth* = -1
+    ## Pass as `createWindow`'s width for "every bit of width the desktop
+    ## gives a window". See `MaxWindowHeight`.
+  MaxWindowHeight* = -1
+    ## Pass as `createWindow`'s height for "every bit of height the desktop
+    ## gives a window" -- the screen minus the menu bar, the Dock, the
+    ## taskbar, whatever the platform reserves.
+    ##
+    ## This is not `fullScreen`: the window keeps its title bar and its place
+    ## among the other windows, and on macOS it does not move to a Space of
+    ## its own. Either dimension can be given on its own, so a window can
+    ## span the full width at a fixed height.
+
 # Convenience wrappers
 proc createWindow*(requestedW, requestedH: int; fullScreen = false): ScreenLayout =
   ## The defaults are what a driver that knows nothing about display density
   ## reports, so a driver only has to write back what it actually knows.
+  ##
+  ## `MaxWindowWidth` / `MaxWindowHeight` ask for as much space as a window
+  ## may have. The layout that comes back always holds the real size in
+  ## pixels -- the sentinel never survives the call, so the rest of an app
+  ## never has to know about it.
   result = ScreenLayout(width: requestedW, height: requestedH,
                         scaleX: 1, scaleY: 1, uiScale: 100,
                         fullScreen: fullScreen)
@@ -121,9 +150,64 @@ proc setClipRect*(r: Rect) = windowRelays.setClipRect(r)
 proc setCursor*(c: CursorKind) = windowRelays.setCursor(c)
 proc setWindowTitle*(title: string) = windowRelays.setWindowTitle(title)
 
-proc openFont*(path: string; size: int; metrics: var FontMetrics): Font =
-  fontRelays.openFont(path, size, metrics)
-proc closeFont*(f: Font) = fontRelays.closeFont(f)
+type
+  StyledSlot = object
+    ## What `styledFont` needs to open a bold or italic version of a font that
+    ## is already open: the very arguments it was opened with.
+    base: Font
+    path: string
+    size: int
+    variants: array[3, Font]  ## {bold}, {italics}, {bold, italics}
+
+var openedFonts: seq[StyledSlot]
+  ## Only the upright fonts an app opened itself; the variants hang off them
+  ## and are closed with them, so an app never has to know they exist.
+
+proc variantIndex(style: FontStyles): int {.inline.} =
+  ## `{bold}` -> 0, `{italics}` -> 1, `{bold, italics}` -> 2.
+  result = (if FontStyle.bold in style: 1 else: 0) +
+           (if FontStyle.italics in style: 2 else: 0) - 1
+
+proc openFont*(path: string; size: int; metrics: var FontMetrics;
+               style: FontStyles = {}): Font =
+  ## `path` is a font file, or "" for the platform's monospaced default.
+  ## A styled font asked for here is opened outright; `styledFont` is the way
+  ## to get one from a font that is already open.
+  result = fontRelays.openFont(path, size, style, metrics)
+  if result.int != 0 and style == {}:
+    openedFonts.add StyledSlot(base: result, path: path, size: size)
+
+proc styledFont*(f: Font; style: FontStyles): Font =
+  ## The same font in bold, in italics, or in both -- opened the first time it
+  ## is asked for and closed together with `f`, so this can sit in a drawing
+  ## loop.
+  ##
+  ## Hands back `f` itself when there is nothing to do: the plain style, a font
+  ## this module never saw opened, or a face the driver could not produce. The
+  ## worst case is text drawn upright, never text not drawn at all.
+  if style == {} or f.int == 0: return f
+  let k = variantIndex(style)
+  for i in 0 ..< openedFonts.len:
+    if openedFonts[i].base == f:
+      if openedFonts[i].variants[k].int == 0:
+        var metrics = FontMetrics()
+        let v = fontRelays.openFont(openedFonts[i].path, openedFonts[i].size,
+                                    style, metrics)
+        # A failure is remembered as `f`, or every frame would try again.
+        openedFonts[i].variants[k] = (if v.int == 0: f else: v)
+      return openedFonts[i].variants[k]
+  result = f
+
+proc closeFont*(f: Font) =
+  for i in 0 ..< openedFonts.len:
+    if openedFonts[i].base == f:
+      for v in openedFonts[i].variants:
+        # `v == f` is the remembered failure above, closed once, below.
+        if v.int != 0 and v != f: fontRelays.closeFont(v)
+      openedFonts.del i
+      break
+  fontRelays.closeFont(f)
+
 proc getFontMetrics*(f: Font): FontMetrics = fontRelays.getFontMetrics(f)
 proc fontLineSkip*(f: Font): int = fontRelays.getFontMetrics(f).lineHeight
 proc measureText*(f: Font; text: string): TextExtent =

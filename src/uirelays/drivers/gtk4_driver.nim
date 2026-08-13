@@ -106,6 +106,7 @@ proc gtk_window_set_default_size(win: pointer; w, h: gint) {.importc, nodecl, cd
 proc gtk_window_set_child(win: pointer; child: pointer) {.importc, nodecl, cdecl.}
 proc gtk_window_destroy(win: pointer) {.importc, nodecl, cdecl.}
 proc gtk_window_present(win: pointer) {.importc, nodecl, cdecl.}
+proc gtk_window_maximize(win: pointer) {.importc, nodecl, cdecl.}
 proc gtk_widget_queue_draw(w: pointer) {.importc, nodecl, cdecl.}
 proc gtk_widget_grab_focus(w: pointer) {.importc, nodecl, cdecl.}
 proc gtk_widget_set_cursor(w, cursor: pointer) {.importc, nodecl, cdecl.}
@@ -189,6 +190,8 @@ proc pango_layout_get_pixel_size(layout: pointer; w, h: ptr gint) {.importc, nod
 
 proc pango_font_description_free(desc: pointer) {.importc, nodecl, cdecl.}
 proc pango_font_description_set_absolute_size(desc: pointer; size: gint) {.importc, nodecl, cdecl.}
+proc pango_font_description_set_weight(desc: pointer; weight: cint) {.importc, nodecl, cdecl.}
+proc pango_font_description_set_style(desc: pointer; style: cint) {.importc, nodecl, cdecl.}
 
 proc pango_fc_font_description_from_pattern(pat: pointer; includeSize: gboolean): pointer {.importc, nodecl, cdecl.}
 
@@ -498,7 +501,14 @@ proc gtkCreateWindow(layout: var ScreenLayout) =
     quit("GTK4 init failed")
   win = gtk_window_new()
   gtk_window_set_title(win, "NimEdit")
-  gtk_window_set_default_size(win, gint(layout.width), gint(layout.height))
+  # A negative dimension is MaxWindowWidth/MaxWindowHeight: ask the window
+  # manager to maximize, which leaves panels and docks visible (unlike
+  # gtk_window_fullscreen). The default size is what unmaximizing returns to.
+  let maximized = layout.width < 0 or layout.height < 0
+  gtk_window_set_default_size(win,
+    gint(if layout.width < 0: 1024 else: layout.width),
+    gint(if layout.height < 0: 768 else: layout.height))
+  if maximized: gtk_window_maximize(win)
   drawingArea = gtk_drawing_area_new()
   gtk_window_set_child(win, drawingArea)
   let da = cast[ptr GtkDrawingArea](drawingArea)
@@ -583,7 +593,12 @@ proc gtkSetClipRect(r: coords.Rect) =
   cairo_rectangle(backingCr, gdouble(r.x), gdouble(r.y), gdouble(r.w), gdouble(r.h))
   cairo_clip(backingCr)
 
-proc gtkOpenFont(path: string; size: int; metrics: var FontMetrics): Font =
+const
+  PangoStyleItalic = 2'i32   ## PANGO_STYLE_ITALIC
+  PangoWeightBold = 700'i32  ## PANGO_WEIGHT_BOLD
+
+proc gtkOpenFont(path: string; size: int; style: FontStyles;
+                 metrics: var FontMetrics): Font =
   discard FcInit()
   var pat = FcPatternCreate()
   if pat == nil:
@@ -603,6 +618,12 @@ proc gtkOpenFont(path: string; size: int; metrics: var FontMetrics): Font =
   if desc == nil:
     return Font(0)
   pango_font_description_set_absolute_size(desc, gint(size * PANGO_SCALE))
+  # Pango picks the face out of the family, and synthesizes an oblique one
+  # when the family has no italic of its own.
+  if FontStyle.bold in style:
+    pango_font_description_set_weight(desc, PangoWeightBold)
+  if FontStyle.italics in style:
+    pango_font_description_set_style(desc, PangoStyleItalic)
   let surf = cairo_image_surface_create(0, 8, 8)
   let cr = cairo_create(surf)
   let layout = pango_cairo_create_layout(cr)

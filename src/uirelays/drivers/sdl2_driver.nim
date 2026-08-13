@@ -43,14 +43,21 @@ var
 # display -- use the SDL3 driver there.
 
 proc sdlCreateWindow(layout: var ScreenLayout) =
-  let flags =
+  # A negative dimension is MaxWindowWidth/MaxWindowHeight; the window
+  # manager's maximize keeps taskbars visible, unlike FULLSCREEN_DESKTOP. The
+  # positive size is what the window returns to when it is unmaximized.
+  let maximized = layout.width < 0 or layout.height < 0
+  let reqW = if layout.width < 0: 1024 else: layout.width
+  let reqH = if layout.height < 0: 768 else: layout.height
+  var flags =
     if layout.fullScreen:
       SDL_WINDOW_FULLSCREEN_DESKTOP or SDL_WINDOW_SHOWN
     else:
       SDL_WINDOW_RESIZABLE or SDL_WINDOW_SHOWN
+  if maximized: flags = flags or SDL_WINDOW_MAXIMIZED
   window = createWindow("NimEdit",
     SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-    layout.width.cint, layout.height.cint, flags)
+    reqW.cint, reqH.cint, flags)
   renderer = createRenderer(window, -1, Renderer_Software)
   var w, h: cint
   window.getSize(w, h)
@@ -82,10 +89,27 @@ proc sdlSetClipRect(r: coords.Rect) =
   var sdlRect = toSdlRect(r)
   discard renderer.setClipRect(addr sdlRect)
 
-proc sdlOpenFont(path: string; size: int;
+const
+  TtfStyleBold = 0x01'i32
+  TtfStyleItalic = 0x02'i32
+
+proc ttfSetFontStyle(font: FontPtr; style: cint)
+  {.importc: "TTF_SetFontStyle", cdecl.}
+  ## Declared here rather than taken from the wrapper: the C name is the one
+  ## thing about SDL_ttf that cannot drift.
+
+proc sdlOpenFont(path: string; size: int; style: FontStyles;
                  metrics: var FontMetrics): Font =
   let f = openFont(cstring(path), size.cint)
   if f == nil: return Font(0)
+  # SDL_ttf has no notion of a font family, so it emboldens and shears the
+  # face it was given. Cruder than a real bold or italic cut, but it is what
+  # this backend can do, and the metrics below are read afterwards so the
+  # widened glyphs are accounted for.
+  var flags = 0'i32
+  if FontStyle.bold in style: flags = flags or TtfStyleBold
+  if FontStyle.italics in style: flags = flags or TtfStyleItalic
+  if flags != 0: ttfSetFontStyle(f, flags.cint)
   metrics.ascent = fontAscent(f)
   metrics.descent = fontDescent(f)
   metrics.lineHeight = fontLineSkip(f)

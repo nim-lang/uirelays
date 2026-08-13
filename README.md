@@ -4,7 +4,7 @@ Native Nim UI library based on the idea of "relays" -- dependency injection
 via global callbacks. Has Windows API, X11, Cocoa, GTK4, SDL2, SDL3 and FigDraw
 support. Write UI apps as easily as terminal apps!
 
-![focim](screenshots/synedit_demo.png)
+![focim](screenshots/focim.png)
 
 ## Getting started
 

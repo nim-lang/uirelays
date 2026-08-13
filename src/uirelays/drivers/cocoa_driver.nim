@@ -68,7 +68,7 @@ proc cRefresh() {.importc: "cocoa_refresh", cdecl.}
 proc cPollEvent(ev: ptr NEEvent): cint {.importc: "cocoa_pollEvent", cdecl.}
 proc cWaitEvent(ev: ptr NEEvent; timeoutMs: cint): cint {.importc: "cocoa_waitEvent", cdecl.}
 
-proc cOpenFont(path: cstring; size: cint;
+proc cOpenFont(path: cstring; size, bold, italic: cint;
                outAsc, outDesc, outLH: ptr cint): cint {.importc: "cocoa_openFont", cdecl.}
 proc cCloseFont(handle: cint) {.importc: "cocoa_closeFont", cdecl.}
 proc cGetFontMetrics(handle: cint; asc, desc, lh: ptr cint) {.importc: "cocoa_getFontMetrics", cdecl.}
@@ -140,10 +140,12 @@ proc cocoaDrawImage(img: Image; src, dst: Rect) =
              src.x.cint, src.y.cint, src.w.cint, src.h.cint,
              dst.x.cint, dst.y.cint, dst.w.cint, dst.h.cint)
 
-proc cocoaOpenFont(path: string; size: int;
+proc cocoaOpenFont(path: string; size: int; style: FontStyles;
                    metrics: var FontMetrics): Font =
   var asc, desc, lh: cint
   let handle = cOpenFont(cstring(path), size.cint,
+                         cint(FontStyle.bold in style),
+                         cint(FontStyle.italics in style),
                          addr asc, addr desc, addr lh)
   if handle == 0: return Font(0)
   metrics.ascent = asc

@@ -174,27 +174,37 @@ proc evictTextCacheIfNeeded() =
 # --- Screen hook implementations ---
 
 proc resolveFontPath(path: string): string =
+  ## An empty path means "the platform default", and for this library that is
+  ## a *monospaced* font: the native drivers pick Consolas (Windows) and
+  ## fontconfig's `monospace` (X11), and the apps are text editors that expect
+  ## a fixed advance. So the candidate lists here are mono-only too -- a
+  ## proportional fallback would silently break column arithmetic.
   if path.len > 0:
     return path
 
   when defined(windows):
     let candidates = [
-      r"C:\Windows\Fonts\segoeui.ttf",
-      r"C:\Windows\Fonts\arial.ttf"
+      r"C:\Windows\Fonts\consola.ttf",
+      r"C:\Windows\Fonts\cour.ttf"
     ]
   elif defined(macosx):
+    # SDL_ttf goes through FreeType, which reads face 0 out of a .ttc, so the
+    # collections are fine here. SFNSMono.ttf is deliberately absent: it is a
+    # variable font and its default instance is the too-thin Light weight.
     let candidates = [
-      "/System/Library/Fonts/SFNS.ttf",
-      "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-      "/System/Library/Fonts/Supplemental/Arial.ttf"
+      "/System/Library/Fonts/Menlo.ttc",
+      "/System/Library/Fonts/Monaco.ttf",
+      "/System/Library/Fonts/Supplemental/Andale Mono.ttf",
+      "/System/Library/Fonts/Supplemental/Courier New.ttf"
     ]
   else:
     let candidates = [
-      "/usr/share/fonts/google-noto-vf/NotoSans[wght].ttf",
-      "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
-      "/usr/share/fonts/abattis-cantarell-vf-fonts/Cantarell-VF.otf",
-      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-      "/usr/share/fonts/TTF/DejaVuSans.ttf"
+      "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+      "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+      "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf",
+      "/usr/share/fonts/liberation-mono-fonts/LiberationMono-Regular.ttf",
+      "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+      "/usr/share/fonts/google-noto-vf/NotoSansMono[wdth,wght].ttf"
     ]
 
   for candidate in candidates:
@@ -238,11 +248,19 @@ template toPixelCoord(v: untyped): int =
 proc sdlCreateWindow(layout: var ScreenLayout) =
   if ren != nil or win != nil:
     resetSdlState()
-  let winFlags =
+  # A negative dimension is MaxWindowWidth/MaxWindowHeight. WINDOW_MAXIMIZED
+  # is the window manager's own maximize, so taskbars and docks stay visible;
+  # the size it picks comes back through syncWindowLayout below. SDL still
+  # needs a positive size to fall back on for when the window is unmaximized.
+  let maximized = layout.width < 0 or layout.height < 0
+  let reqW = if layout.width < 0: 1024 else: layout.width
+  let reqH = if layout.height < 0: 768 else: layout.height
+  var winFlags =
     if layout.fullScreen: WINDOW_FULLSCREEN or WINDOW_HIGH_PIXEL_DENSITY
     else: WINDOW_RESIZABLE or WINDOW_HIGH_PIXEL_DENSITY
+  if maximized: winFlags = winFlags or WINDOW_MAXIMIZED
   discard createWindowAndRenderer(cstring"NimEdit",
-    layout.width.cint, layout.height.cint, winFlags, win, ren)
+    reqW.cint, reqH.cint, winFlags, win, ren)
   discard startTextInput(win)
   syncWindowLayout(layout)
   currentClip = ClipState()
@@ -267,7 +285,16 @@ proc sdlSetClipRect(r: coords.Rect) =
     rect: sdl3.Rect(x: r.x.cint, y: r.y.cint, w: r.w.cint, h: r.h.cint))
   applyClipState()
 
-proc sdlOpenFont(path: string; size: int;
+const
+  TtfStyleBold = 0x01'u32
+  TtfStyleItalic = 0x02'u32
+
+proc ttfSetFontStyle(font: sdl3_ttf.Font; style: uint32)
+  {.importc: "TTF_SetFontStyle", cdecl.}
+  ## Declared here rather than taken from the wrapper: the C name is the one
+  ## thing about SDL_ttf that cannot drift.
+
+proc sdlOpenFont(path: string; size: int; style: FontStyles;
                  metrics: var FontMetrics): screen.Font =
   let resolvedPath = resolveFontPath(path)
   if resolvedPath.len == 0:
@@ -275,6 +302,14 @@ proc sdlOpenFont(path: string; size: int;
   let f = sdl3_ttf.openFont(cstring(resolvedPath), size.cfloat)
   if f == nil: return screen.Font(0)
   sdl3_ttf.setFontHinting(f, sdl3_ttf.hintingLightSubpixel)
+  # SDL_ttf has no notion of a font family, so it emboldens and shears the
+  # face it was given. Cruder than a real bold or italic cut, but it is what
+  # this backend can do, and the metrics below are read afterwards so the
+  # widened glyphs are accounted for.
+  var flags = 0'u32
+  if FontStyle.bold in style: flags = flags or TtfStyleBold
+  if FontStyle.italics in style: flags = flags or TtfStyleItalic
+  if flags != 0: ttfSetFontStyle(f, flags)
   metrics.ascent = sdl3_ttf.getFontAscent(f)
   metrics.descent = sdl3_ttf.getFontDescent(f)
   metrics.lineHeight = sdl3_ttf.getFontLineSkip(f)

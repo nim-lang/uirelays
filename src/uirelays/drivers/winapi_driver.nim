@@ -134,6 +134,7 @@ const
   MK_MBUTTON = 0x0010'u32
 
   SW_SHOW = 5'i32
+  SW_MAXIMIZE = 3'i32
   TRANSPARENT = 1
   OPAQUE = 2
 
@@ -645,13 +646,19 @@ proc winCreateWindow(layout: var ScreenLayout) =
     cast[ptr uint16](title[0].addr),
     WS_OVERLAPPEDWINDOW or WS_VISIBLE,
     0x80000000'i32, 0x80000000'i32, # CW_USEDEFAULT
-    layout.width.int32, layout.height.int32,
+    (if layout.width < 0: 0x80000000'i32 else: layout.width.int32),
+    (if layout.height < 0: 0x80000000'i32 else: layout.height.int32),
     nil, nil, gHinstance, nil)
 
   if gHwnd == nil:
     quit("CreateWindowExW failed")
 
-  discard ShowWindow(gHwnd, SW_SHOW)
+  # A negative dimension is MaxWindowWidth/MaxWindowHeight. SW_MAXIMIZE is the
+  # shell's own idea of how large a window may be, so it stops at the taskbar
+  # instead of covering it -- this is not a fullscreen window. GetClientRect
+  # below then reports whatever size that worked out to.
+  let maximized = layout.width < 0 or layout.height < 0
+  discard ShowWindow(gHwnd, if maximized: SW_MAXIMIZE else: SW_SHOW)
   discard UpdateWindow(gHwnd)
 
   var rc: WINAPIRECT
@@ -697,7 +704,7 @@ proc winSetClipRect(r: coords.Rect) =
     discard IntersectClipRect(gBackDC,
       r.x.int32, r.y.int32, (r.x + r.w).int32, (r.y + r.h).int32)
 
-proc winOpenFont(path: string; size: int;
+proc winOpenFont(path: string; size: int; style: FontStyles;
                  metrics: var FontMetrics): screen.Font =
   # Ensure the font file is available as a private resource (needed for
   # fonts outside C:\Windows\Fonts, harmless for system-installed ones).
@@ -705,10 +712,12 @@ proc winOpenFont(path: string; size: int;
   let FR_PRIVATE = 0x10'u32
   discard AddFontResourceExW(cast[ptr uint16](wpath[0].addr), FR_PRIVATE, nil)
 
-  # Detect bold/italic from filename
+  # Asked for outright, or -- for a path that names one face of a family --
+  # detected from the filename.
   let lpath = path.toLowerAscii()
-  let isBold = "bold" in lpath
-  let isItalic = "italic" in lpath or "oblique" in lpath
+  let isBold = FontStyle.bold in style or "bold" in lpath
+  let isItalic = FontStyle.italics in style or
+                 "italic" in lpath or "oblique" in lpath
   let weight = if isBold: 700'i32 else: FW_NORMAL
   let italic = if isItalic: 1'u32 else: 0'u32
   let FIXED_PITCH = 1'u32
