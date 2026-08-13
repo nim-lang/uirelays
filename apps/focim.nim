@@ -72,13 +72,51 @@ const defaultConfig = """
         (terminal)))
     (status (lines 1)))
   # Anything left out keeps the color it has; `doc/config.md` lists the fields.
+  # Every token class is written out below, so any of them can be recolored by
+  # editing the line rather than by first finding out that the class exists.
+  # A color may be followed by (bold), by (italics), or by both.
   (theme
     (bg "#15171B")
-    (fg "#E6DFD1"
-      (Keyword "#E5B94E")
-      (StringLit "#2EC4B6")
+    (fg "#E6DFD1"                     # the base color, for anything unnamed
+      (None "#E6DFD1")
+      (Whitespace "#E6DFD1")
       (DecNumber "#E8833A")
-      (Comment "#7A7365"))))
+      (BinNumber "#E8833A")
+      (HexNumber "#E8833A")
+      (OctNumber "#E8833A")
+      (FloatNumber "#E8833A")
+      (Identifier "#E6DFD1")
+      (Keyword "#E5B94E" (bold))
+      (StringLit "#2EC4B6")
+      (LongStringLit "#2EC4B6")
+      (CharLit "#2EC4B6")
+      (Backticks "#2EC4B6")
+      (EscapeSequence "#F2A65A")
+      (Operator "#C9A227")
+      (Punctuation "#8C8578")
+      (Comment "#7A7365" (italics))
+      (LongComment "#7A7365" (italics))
+      (RegularExpression "#E8833A")
+      (TagStart "#E5B94E")            # markup
+      (TagStandalone "#E5B94E")
+      (TagEnd "#E5B94E")
+      (Key "#2EC4B6")                 # ini, nif, config files
+      (Value "#E8833A")
+      (RawData "#2EC4B6")
+      (Assembler "#E5B94E")
+      (Preprocessor "#1FA398")
+      (Directive "#1FA398")
+      (Command "#E5B94E")
+      (Rule "#1FA398")
+      (Link "#4FD1C5")
+      (Label "#E8833A")
+      (Reference "#E8833A")
+      (Text "#E6DFD1")
+      (Other "#E6DFD1")
+      (Green "#4FBF9F")               # the three the terminal colors by name
+      (Yellow "#E5B94E")
+      (Red "#E4634A")
+      (MarkdownFence "#7A7365"))))
 """
 
 const

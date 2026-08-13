@@ -18,6 +18,13 @@ type
 
   Theme* = object
     fg*: array[TokenClass, Color]   ## per-token foreground colors
+    style*: array[TokenClass, FontStyles]
+      ## per-token bold and italics, `{}` for the upright regular face. A
+      ## color says what a token *is*, a style how much it wants to be read:
+      ## comments in italics step back, a keyword in bold steps forward. Both
+      ## are wishes -- a font without the face draws upright, so nothing here
+      ## can make text disappear, and none of it changes the layout: the faces
+      ## of a monospaced family share its advance width.
     bg*: Color                      ## editor background
     selBg*: Color                   ## selection background
     bracketBg*: Color               ## bracket match background

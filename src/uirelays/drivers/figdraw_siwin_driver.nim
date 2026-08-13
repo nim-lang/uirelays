@@ -519,7 +519,13 @@ proc figSetClipRect(r: coords.Rect) =
   currentState.clipActive = true
   currentState.clipRect = r
 
-proc figOpenFont(path: string; size: int; metrics: var FontMetrics): screen.Font =
+proc figOpenFont(path: string; size: int; style: FontStyles;
+                 metrics: var FontMetrics): screen.Font =
+  # `style` is accepted and ignored: pixie draws the typeface in the file it
+  # was handed and has nothing to synthesize a bold or an italic cut with, so
+  # styled text comes out upright here. Picking a sibling file -- the
+  # `-Bold.ttf` next to the `-Regular.ttf` -- is the way to fix that, once
+  # there is a machine to try it on.
   let resolvedPath = resolveFontPath(path)
   if resolvedPath.len == 0:
     return screen.Font(0)

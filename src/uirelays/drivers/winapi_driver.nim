@@ -704,7 +704,7 @@ proc winSetClipRect(r: coords.Rect) =
     discard IntersectClipRect(gBackDC,
       r.x.int32, r.y.int32, (r.x + r.w).int32, (r.y + r.h).int32)
 
-proc winOpenFont(path: string; size: int;
+proc winOpenFont(path: string; size: int; style: FontStyles;
                  metrics: var FontMetrics): screen.Font =
   # Ensure the font file is available as a private resource (needed for
   # fonts outside C:\Windows\Fonts, harmless for system-installed ones).
@@ -712,10 +712,12 @@ proc winOpenFont(path: string; size: int;
   let FR_PRIVATE = 0x10'u32
   discard AddFontResourceExW(cast[ptr uint16](wpath[0].addr), FR_PRIVATE, nil)
 
-  # Detect bold/italic from filename
+  # Asked for outright, or -- for a path that names one face of a family --
+  # detected from the filename.
   let lpath = path.toLowerAscii()
-  let isBold = "bold" in lpath
-  let isItalic = "italic" in lpath or "oblique" in lpath
+  let isBold = FontStyle.bold in style or "bold" in lpath
+  let isItalic = FontStyle.italics in style or
+                 "italic" in lpath or "oblique" in lpath
   let weight = if isBold: 700'i32 else: FW_NORMAL
   let italic = if isItalic: 1'u32 else: 0'u32
   let FIXED_PITCH = 1'u32

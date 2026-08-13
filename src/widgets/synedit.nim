@@ -2354,8 +2354,13 @@ proc drawColorChip(db: var DrawBuf; c: Color): int =
   drawLine(x, y + chipSize, x + chipSize, y + chipSize, color(30, 30, 30))
   result = chipSize + 4
 
-proc drawToken(db: var DrawBuf; fg, bg: Color) =
+proc drawToken(db: var DrawBuf; tc: TokenClass; fg, bg: Color) =
   if db.dim.y + db.lineH > db.maxY: return
+  # The face the theme asks for, for this token class only: `styledFont` opens
+  # it the first time it is needed and hands back the same handle afterwards,
+  # so this costs a lookup per token, not an open. A family without the face
+  # gives the upright font back, and the token is simply drawn plain.
+  db.font = styledFont(db.s[].font, db.s[].theme.style[tc])
   if rfColorLiterals notin db.s[].flags:
     db.drawRun(0, db.charsLen - 1, fg, bg)
     return
@@ -2407,7 +2412,7 @@ proc drawTextLine(s: var SynEdit; i: int; dim: var Rect; blink: bool): int =
           db.chars[db.charsLen] = '\0'
           db.toCursor[db.charsLen] = db.i
           if db.charsLen >= 1:
-            db.drawToken(s.theme.fg[tokenClass], styleBg)
+            db.drawToken(tokenClass, s.theme.fg[tokenClass], styleBg)
           elif db.i == s.cursor.int:
             db.cursorDim = db.dim
           # mouse click past end of line
@@ -2443,7 +2448,7 @@ proc drawTextLine(s: var SynEdit; i: int; dim: var Rect; blink: bool): int =
       db.chars[db.charsLen] = '\0'
       db.toCursor[db.charsLen] = db.i
       if db.charsLen >= 1:
-        db.drawToken(s.theme.fg[tokenClass], styleBg)
+        db.drawToken(tokenClass, s.theme.fg[tokenClass], styleBg)
         tokenClass = s.getCell(db.i).s
         styleBg = s.getBg(db.i)
 

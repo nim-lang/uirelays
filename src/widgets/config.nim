@@ -7,15 +7,16 @@
 ##       (status (lines 1)))
 ##     (theme
 ##       (bg "#15171B")
-##       (fg "#E6DFD1"              # every token class ...
-##         (Keyword "#E5B94E")      # ... except the ones named here
-##         (Comment "#7A7365"))
+##       (fg "#E6DFD1"                        # every token class ...
+##         (Keyword "#E5B94E" (bold))         # ... except the ones named here
+##         (Comment "#7A7365" (italics)))
 ##       (selBg "#35474B")))
 ##
-## The tags inside `(theme ...)` are the field names of `Theme` and the tags
-## inside `(fg ...)` are the values of `TokenClass`, both spelled exactly as
-## they are in `theme.nim` -- so there is nothing to look up, and nothing can
-## fall out of sync when a field is added.
+## The tags inside `(theme ...)` are the field names of `Theme`, the tags
+## inside `(fg ...)` are the values of `TokenClass` and the ones behind a color
+## are the values of `FontStyle`, all spelled exactly as they are in
+## `theme.nim` and `screen.nim` -- so there is nothing to look up, and nothing
+## can fall out of sync when a field is added.
 ##
 ## A color is `"#RRGGBB"` in a string literal -- what a palette hands you,
 ## quoted so that the `#` cannot start a comment. `"#RGB"` and `"#RRGGBBAA"`
@@ -111,6 +112,41 @@ proc parseColor(p: var Parser; dest: var Color) =
     return
   p.advance
 
+proc toFontStyle(s: string; fs: var FontStyle): bool =
+  ## Like `toTokenClass`: the tag is the enum value's own name.
+  result = false
+  for st in low(FontStyle)..high(FontStyle):
+    if $st == s:
+      fs = st
+      return true
+
+proc parseStyled(p: var Parser; fg: var Color; style: var FontStyles) =
+  ## What one token class looks like: `(Comment "#7A7365" (italics))`. The
+  ## color first, then how the text is cut -- neither, either or both.
+  p.readColor(fg)
+  if p.error.len > 0: return
+  # A class that names its color says everything about itself, so the style
+  # starts empty instead of carrying over from the fallback theme.
+  style = {}
+  while p.tok.kind == tkParLe:
+    var fs = FontStyle.bold
+    if not toFontStyle(p.tok.text, fs):
+      p.fail "'" & p.tok.text & "' is not a font style; expected (bold) or " &
+             "(italics)"
+      return
+    style.incl fs
+    p.advance
+    if p.error.len > 0: return
+    if p.tok.kind != tkParRi:
+      p.fail "(" & $fs & ") takes nothing; expected ')' but found " & $p.tok
+      return
+    p.advance
+    if p.error.len > 0: return
+  if p.tok.kind != tkParRi:
+    p.fail "expected ')' or a style like (italics) but found " & $p.tok
+    return
+  p.advance
+
 proc toTokenClass(s: string; tc: var TokenClass): bool =
   ## The tag is the enum value's own name, so this can never go out of date.
   result = false
@@ -134,11 +170,18 @@ proc parseFg(p: var Parser; t: var Theme) =
   while p.tok.kind == tkParLe:
     var tc = TokenClass.None
     if not toTokenClass(p.tok.text, tc):
-      p.fail "'" & p.tok.text & "' is not a token class"
+      var fs = FontStyle.bold
+      if toFontStyle(p.tok.text, fs):
+        # A style at this level would have to mean "all of them", which is not
+        # a thing anyone wants; say where it does belong.
+        p.fail "(" & p.tok.text & ") belongs behind a token class's color, " &
+               "as in (Comment \"#7A7365\" (" & p.tok.text & "))"
+      else:
+        p.fail "'" & p.tok.text & "' is not a token class"
       return
     p.advance
     if p.error.len > 0: return
-    p.parseColor(t.fg[tc])
+    p.parseStyled(t.fg[tc], t.style[tc])
     if p.error.len > 0: return
   if p.tok.kind != tkParRi:
     p.fail "expected ')' or a token class but found " & $p.tok

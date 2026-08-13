@@ -862,15 +862,17 @@ proc x11SetClipRect(r: coords.Rect) =
   discard XSetClipRectangles(gDisplay, gGC, 0, 0, addr xr, 1, 0)
   discard XftDrawSetClipRectangles(gXftDraw, 0, 0, addr xr, 1)
 
-proc x11OpenFont(path: string; size: int;
+proc x11OpenFont(path: string; size: int; style: FontStyles;
                  metrics: var FontMetrics): screen.Font =
-  # Detect bold/italic from filename.
+  # Asked for outright, or -- for a path that names one face of a family --
+  # detected from the filename.
   # Note: `substr in str` is avoided on purpose -- Nimony's system `in`
   # template early-binds `contains` and never sees strutils' string overload,
   # so we call `.contains` explicitly here.
   let lpath = path.toLowerAscii()
-  let isBold = lpath.contains("bold")
-  let isItalic = lpath.contains("italic") or lpath.contains("oblique")
+  let isBold = FontStyle.bold in style or lpath.contains("bold")
+  let isItalic = FontStyle.italics in style or
+                 lpath.contains("italic") or lpath.contains("oblique")
 
   # Map known font filenames to fontconfig names
   var faceName = "monospace"  # safe default

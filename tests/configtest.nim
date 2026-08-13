@@ -199,6 +199,39 @@ block:
         "accepted")
   check("named by the class", c.note.contains("Keyword"), c.note)
 
+block:
+  # Bold and italics, behind the color they belong to.
+  let c = parsed("""
+(config (theme
+  (fg "#C8C8C8"
+    (Keyword "#FF6464" (bold))
+    (Comment "#969696" (italics))
+    (Directive "#64FF64" (bold) (italics))
+    (StringLit "#64C8FF"))))
+""")
+  check("bold", c.theme.style[TokenClass.Keyword] == {FontStyle.bold})
+  check("italics", c.theme.style[TokenClass.Comment] == {FontStyle.italics})
+  check("both at once", c.theme.style[TokenClass.Directive] ==
+        {FontStyle.bold, FontStyle.italics})
+  check("a class without one is upright",
+        c.theme.style[TokenClass.StringLit] == {})
+  check("and so is a class the config never mentions",
+        c.theme.style[TokenClass.Operator] == {})
+  equals("the color still arrives", $c.theme.fg[TokenClass.Keyword],
+         "255,100,100")
+
+block:
+  # A style is part of what a class says about itself: naming the class without
+  # one means upright, whatever the theme it starts from does.
+  var base = defaultTheme()
+  base.style[TokenClass.Comment] = {FontStyle.italics}
+  base.style[TokenClass.Keyword] = {FontStyle.bold}
+  let c = parseConfig("(config (theme (fg (Comment \"#969696\"))))", base)
+  check("a class that names its color drops the style it had",
+        c.theme.style[TokenClass.Comment] == {})
+  check("a class the config leaves alone keeps it",
+        c.theme.style[TokenClass.Keyword] == {FontStyle.bold})
+
 echo "config errors:"
 
 proc rejects(name, src, expected: string) =
@@ -236,6 +269,21 @@ rejects("a layout error is passed along", "(config (layout (grid (a))))",
         "names a widget")
 rejects("a lexer error is passed along",
         "(config (theme (bg \"1E1E2E)))", "unterminated string")
+rejects("an unknown style",
+        "(config (theme (fg (Comment \"#969696\" (slanted)))))",
+        "is not a font style")
+rejects("the singular spelling is not the tag",
+        "(config (theme (fg (Comment \"#969696\" (italic)))))",
+        "expected (bold) or (italics)")
+rejects("a style with something in it",
+        "(config (theme (fg (Comment \"#969696\" (bold 700)))))",
+        "(bold) takes nothing")
+rejects("a style without a color",
+        "(config (theme (fg (Comment (italics)))))",
+        "expected a color like")
+rejects("a style where a token class belongs",
+        "(config (theme (fg \"#C8C8C8\" (italics))))",
+        "belongs behind a token class's color")
 
 block:
   # A config that did not parse hands back nothing usable, so a caller that

@@ -285,7 +285,16 @@ proc sdlSetClipRect(r: coords.Rect) =
     rect: sdl3.Rect(x: r.x.cint, y: r.y.cint, w: r.w.cint, h: r.h.cint))
   applyClipState()
 
-proc sdlOpenFont(path: string; size: int;
+const
+  TtfStyleBold = 0x01'u32
+  TtfStyleItalic = 0x02'u32
+
+proc ttfSetFontStyle(font: sdl3_ttf.Font; style: uint32)
+  {.importc: "TTF_SetFontStyle", cdecl.}
+  ## Declared here rather than taken from the wrapper: the C name is the one
+  ## thing about SDL_ttf that cannot drift.
+
+proc sdlOpenFont(path: string; size: int; style: FontStyles;
                  metrics: var FontMetrics): screen.Font =
   let resolvedPath = resolveFontPath(path)
   if resolvedPath.len == 0:
@@ -293,6 +302,14 @@ proc sdlOpenFont(path: string; size: int;
   let f = sdl3_ttf.openFont(cstring(resolvedPath), size.cfloat)
   if f == nil: return screen.Font(0)
   sdl3_ttf.setFontHinting(f, sdl3_ttf.hintingLightSubpixel)
+  # SDL_ttf has no notion of a font family, so it emboldens and shears the
+  # face it was given. Cruder than a real bold or italic cut, but it is what
+  # this backend can do, and the metrics below are read afterwards so the
+  # widened glyphs are accounted for.
+  var flags = 0'u32
+  if FontStyle.bold in style: flags = flags or TtfStyleBold
+  if FontStyle.italics in style: flags = flags or TtfStyleItalic
+  if flags != 0: ttfSetFontStyle(f, flags)
   metrics.ascent = sdl3_ttf.getFontAscent(f)
   metrics.descent = sdl3_ttf.getFontDescent(f)
   metrics.lineHeight = sdl3_ttf.getFontLineSkip(f)

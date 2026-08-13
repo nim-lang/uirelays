@@ -86,18 +86,23 @@ can fall out of sync when a field is added.
 ```
 (theme
   (bg "#15171B")
-  (fg "#E6DFD1"            # the base color of every token class ...
-    (Keyword "#E5B94E")    # ... and the ones that differ
+  (fg "#E6DFD1"                     # the base color of every token class ...
+    (Keyword "#E5B94E" (bold))      # ... and the ones that differ
     (StringLit "#2EC4B6")
-    (Comment "#7A7365"))
+    (Comment "#7A7365" (italics)))
   (selBg "#35474B"))
 ```
 
 A color is `"#RRGGBB"` in a string literal.
 
+focim's own config writes every token class out, so a class can be recolored
+by editing its line instead of by first finding out that it exists. Delete the
+ones you do not care about: what a config leaves unsaid keeps the color it
+has.
+
 | Tag | What it colors |
 |-----|----------------|
-| `(fg base? (Class "#RRGGBB")*)` | text, per token class; the leading color is all of them at once |
+| `(fg base? (Class "#RRGGBB" style*)*)` | text, per token class; the leading color is all of them at once |
 | `(bg ...)` | the editor background |
 | `(selBg ...)` | selection background |
 | `(bracketBg ...)` | the matching bracket |
@@ -113,4 +118,31 @@ A color is `"#RRGGBB"` in a string literal.
 
 Anything left out keeps the value it has in the fallback theme, so a config
 can change one color without restating the palette.
+
+## Bold and italics
+
+A token class may say how its text is cut, behind the color:
+
+```
+(fg
+  (Keyword "#E5B94E" (bold))
+  (Comment "#7A7365" (italics))
+  (Directive "#1FA398" (bold) (italics)))
+```
+
+| Tag | Meaning |
+|-----|---------|
+| `(bold)` | the bold face of the same family |
+| `(italics)` | the italic face |
+
+Both are wishes. A family without the face -- and a driver that cannot ask for
+one -- draws the regular face, so a style can never make text vanish. Nothing
+here moves anything: the faces of a monospaced family share its advance width,
+so a bold keyword sits on the same grid as the code around it.
+
+A class that names its color also names its style, so a class listed *without*
+`(bold)` or `(italics)` is upright, whatever the fallback theme does. The
+style tags belong behind a color, inside the class -- `(bold)` on its own
+directly under `(fg ...)` is refused, since "all classes bold" is not a thing
+anyone means to say.
 

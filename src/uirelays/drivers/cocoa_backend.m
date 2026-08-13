@@ -252,7 +252,10 @@ static int translateKeyEvent(NSEvent *event) {
 
 /* ---- Font management -------------------------------------------------- */
 
-#define MAX_FONTS 64
+/* A slot is 40 bytes, and one logical font size now costs up to four of them
+   -- regular, bold, italic and bold italic -- so an editor that lets every
+   panel be zoomed separately gets through the old 64 quickly. */
+#define MAX_FONTS 256
 
 typedef struct {
   CTFontRef font;
@@ -262,7 +265,7 @@ typedef struct {
 static FontSlot fonts[MAX_FONTS];
 static int fontCount = 0;
 
-int cocoa_openFont(const char *path, int size,
+int cocoa_openFont(const char *path, int size, int bold, int italic,
                    int *outAscent, int *outDescent, int *outLineHeight) {
   /* Take a slot that cocoa_closeFont freed before growing the table. Without
      the reuse this is append-only and MAX_FONTS is a lifetime budget, not a
@@ -309,6 +312,24 @@ int cocoa_openFont(const char *path, int size,
   }
 
   if (!ctFont) return 0;
+
+  if (bold || italic) {
+    /* Ask the family for the face, rather than emboldening or shearing the
+       regular one: Menlo has real Bold, Italic and Bold Italic faces, and
+       they keep the advance width of the regular face, so a monospaced grid
+       stays a grid. A family without the face returns NULL here -- then the
+       upright font stands in, which is what the styled text falls back to
+       anyway. */
+    CTFontSymbolicTraits traits = 0;
+    if (bold) traits |= kCTFontTraitBold;
+    if (italic) traits |= kCTFontTraitItalic;
+    CTFontRef styled = CTFontCreateCopyWithSymbolicTraits(ctFont, 0.0, NULL,
+                                                          traits, traits);
+    if (styled) {
+      CFRelease(ctFont);
+      ctFont = styled;
+    }
+  }
 
   if (idx < 0) idx = fontCount++;  /* fontCount stays the high-water mark, so
                                       the `idx < fontCount` guards below hold */

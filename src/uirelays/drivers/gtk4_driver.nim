@@ -190,6 +190,8 @@ proc pango_layout_get_pixel_size(layout: pointer; w, h: ptr gint) {.importc, nod
 
 proc pango_font_description_free(desc: pointer) {.importc, nodecl, cdecl.}
 proc pango_font_description_set_absolute_size(desc: pointer; size: gint) {.importc, nodecl, cdecl.}
+proc pango_font_description_set_weight(desc: pointer; weight: cint) {.importc, nodecl, cdecl.}
+proc pango_font_description_set_style(desc: pointer; style: cint) {.importc, nodecl, cdecl.}
 
 proc pango_fc_font_description_from_pattern(pat: pointer; includeSize: gboolean): pointer {.importc, nodecl, cdecl.}
 
@@ -591,7 +593,12 @@ proc gtkSetClipRect(r: coords.Rect) =
   cairo_rectangle(backingCr, gdouble(r.x), gdouble(r.y), gdouble(r.w), gdouble(r.h))
   cairo_clip(backingCr)
 
-proc gtkOpenFont(path: string; size: int; metrics: var FontMetrics): Font =
+const
+  PangoStyleItalic = 2'i32   ## PANGO_STYLE_ITALIC
+  PangoWeightBold = 700'i32  ## PANGO_WEIGHT_BOLD
+
+proc gtkOpenFont(path: string; size: int; style: FontStyles;
+                 metrics: var FontMetrics): Font =
   discard FcInit()
   var pat = FcPatternCreate()
   if pat == nil:
@@ -611,6 +618,12 @@ proc gtkOpenFont(path: string; size: int; metrics: var FontMetrics): Font =
   if desc == nil:
     return Font(0)
   pango_font_description_set_absolute_size(desc, gint(size * PANGO_SCALE))
+  # Pango picks the face out of the family, and synthesizes an oblique one
+  # when the family has no italic of its own.
+  if FontStyle.bold in style:
+    pango_font_description_set_weight(desc, PangoWeightBold)
+  if FontStyle.italics in style:
+    pango_font_description_set_style(desc, PangoStyleItalic)
   let surf = cairo_image_surface_create(0, 8, 8)
   let cr = cairo_create(surf)
   let layout = pango_cairo_create_layout(cr)

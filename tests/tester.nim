@@ -17,6 +17,8 @@ template execBackend(cmd: string) =
 exec "nim c -r tests/tinyniftest.nim"
 exec "nim c -r tests/configtest.nim"
 exec "nim c -r tests/markdowntest.nim"
+# Bold and italics reach the drawing path through stub relays.
+exec "nim c -r tests/styletest.nim"
 
 # The app, once, with the platform's default backend.
 exec "nim c apps/focim.nim"
