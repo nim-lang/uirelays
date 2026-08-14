@@ -5,6 +5,9 @@ typed. Type on to narrow the list, `Up`/`Down` to pick, `Enter` or `Tab` to
 take it, `Esc` to drop it. One `Ctrl+Z` takes the whole completion back --
 not one character of it.
 
+The same words are always on show in the `prediction` panel, which needs no
+key to appear. See [The panel](#the-panel) below.
+
 Nothing here is semantic. There is no compiler in the loop and nothing knows
 that `add` is a proc or what its arguments are. What it knows is which names
 exist, which is enough to never have to type one twice.
@@ -36,6 +39,28 @@ Candidates come in three groups, in this order, alphabetical within each:
    everything after it ignores case and underscores, so `add_float` is offered
    for `addF`,
 3. what merely contains it.
+
+## The panel
+
+The `prediction` cell shows the same candidates as the popup, numbered, and
+`Ctrl+1` .. `Ctrl+9` take a row -- as does clicking it, which hands the caret
+straight back to the editor. Nine rows, because a tenth would be one no key
+could accept.
+
+Nothing has to be summoned and nothing has to be dismissed, so there is no
+selection to move and the arrow keys never leave the editor. That is the point
+of a panel over a popup: a popup has to cover the code it is about, so it must
+be modal, and being modal costs a key to open, a key to close, and the arrows
+while it is up.
+
+It is a cell like any other, so leaving it out of the `(layout ...)` turns it
+off -- and then `Ctrl+<digit>` does nothing, since a numbered row nobody can
+read is not a row anyone can pick. `(prediction (lines 9))` is the size that
+shows all nine; a smaller one scrolls, and the numbers stay put either way.
+
+Since both ask `complete` with the same prefix, row 3 of the panel is row 3 of
+the popup whenever both are up. What the panel does *not* have yet is anything
+to say when the caret is not behind a word; it says so in place of the rows.
 
 ## The prompt
 

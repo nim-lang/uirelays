@@ -147,6 +147,52 @@ block:
   equals("redo puts it back", ed.fullText, "addFloat\naddFloat")
 
 block:
+  # `gotoLine` has to reach the last line: it is how the tab list and the
+  # history panel act on a row, and the bottom row is a row like any other.
+  var ed = createSynEdit(Font(0))
+  ed.setText("aa\nbb\ncc")
+  ed.gotoLine(3, 0)
+  equals("the last line is reachable", $ed.currentLine, "2")
+  ed.deleteLine()
+  equals("so acting on it acts on it", ed.fullText, "aa\nbb")
+  ed.gotoLine(99, 0)
+  equals("past the end is the last line", $ed.currentLine, "1")
+
+block:
+  # The multi-token prefix: what a suggestion longer than a word completes.
+  var ed = createSynEdit(Font(0))
+  ed.setText("x = 1\nresult.add x")
+  ed.gotoPos(ed.len)
+  equals("one token is the word", ed.getSpanPrefix(1).text, "x")
+  equals("two reach over the space", ed.getSpanPrefix(2).text, "add x")
+  equals("punctuation is a token of its own", ed.getSpanPrefix(3).text,
+         ".add x")
+  equals("and four take the line", ed.getSpanPrefix(4).text, "result.add x")
+  equals("asking for more than there is stops at the line start",
+         ed.getSpanPrefix(99).text, "result.add x")
+  check("the offset is where the text begins",
+        ed.getSpanPrefix(99).start == ed.len - "result.add x".len)
+  ed.gotoLine(2, 7)
+  equals("a token can be the punctuation itself", ed.getSpanPrefix(1).text, ".")
+  ed.gotoPos(ed.len)
+  ed.insertText(" ")
+  equals("a trailing space comes along", ed.getSpanPrefix(1).text, "x ")
+  ed.gotoLine(1, 0)
+  equals("at the start of a line there is nothing behind the caret",
+         ed.getSpanPrefix(3).text, "")
+
+block:
+  # Replacing a span is one undo step, however many tokens it spans.
+  var ed = createSynEdit(Font(0))
+  ed.setText("case x")
+  ed.gotoPos(ed.len)
+  let span = ed.getSpanPrefix(2)
+  ed.replaceSpan(span.start, "case typ.kind")
+  equals("the whole span is swapped", ed.fullText, "case typ.kind")
+  ed.undo()
+  equals("and one undo takes all of it back", ed.fullText, "case x")
+
+block:
   # A completion in the middle of a line keeps what follows it.
   var ed = createSynEdit(Font(0))
   ed.setText("x = ad + 1")

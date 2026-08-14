@@ -1581,12 +1581,45 @@ proc getWordPrefix*(s: SynEdit): string =
   result = newStringOfCap(s.cursor.int - i)
   for j in i ..< s.cursor.int: result.add s[j]
 
-proc replaceWordPrefix*(s: var SynEdit; word: string) =
-  ## Swap the identifier the cursor sits behind for `word` -- what accepting a
-  ## completion does. Everything this touches shares one `version`, so Ctrl+Z
-  ## takes the completion back in one step instead of one character at a time.
-  let prefix = s.getWordPrefix()
-  if word.len == 0 or word == prefix: return
+proc getSpanPrefix*(s: SynEdit; tokens: int): tuple[text: string; start: int] =
+  ## The last `tokens` tokens before the cursor, verbatim -- the text a
+  ## multi-token completion completes, and the offset it begins at. A token is
+  ## an identifier or a single character of punctuation, and the space between
+  ## them comes along as it was written, so what is returned is exactly what is
+  ## in the buffer rather than a normalization of it.
+  ##
+  ## The walk stops at the start of the line: a suggestion that reached back
+  ## over a line break would be completing something the eye does not read as
+  ## one thing. Asking for more tokens than the line has is therefore not an
+  ## error -- it yields the line so far.
+  let cursor = s.cursor.int
+  var lineStart = cursor
+  while lineStart > 0 and s[lineStart - 1] != '\L': dec lineStart
+  var start = cursor
+  var left = tokens
+  while left > 0:
+    var i = start
+    while i > lineStart and s[i - 1] in {' ', '\t'}: dec i
+    if i <= lineStart: break
+    if s[i - 1] in Letters:
+      while i > lineStart and s[i - 1] in Letters: dec i
+    else:
+      dec i
+    start = i
+    dec left
+  result.start = start
+  result.text = newStringOfCap(cursor - start)
+  for j in start ..< cursor: result.text.add s[j]
+
+proc replaceSpan*(s: var SynEdit; start: int; text: string) =
+  ## Swap the buffer range `start ..< cursor` for `text`. Everything this
+  ## touches shares one `version`, so Ctrl+Z takes the whole swap back in one
+  ## step instead of one character at a time -- which is the entire reason a
+  ## completion goes through here rather than through `insertText`.
+  let cursor = s.cursor.int
+  if start < 0 or start > cursor: return
+  let n = cursor - start
+  if n == 0 and text.len == 0: return
   inc s.version
   s.deselect()
   # Without this the first backspace would be appended to whatever deletion
@@ -1595,9 +1628,16 @@ proc replaceWordPrefix*(s: var SynEdit; word: string) =
   s.actions.setLen(clamp(s.undoIdx + 1, 0, s.actions.len))
   if s.actions.len > 0 and s.actions[^1].k == dele:
     s.actions[^1].k = delFinished
-  for i in 0 ..< prefix.len: s.backspaceNoSelect(overrideUtf8 = true)
-  s.insertNoSelect(word, singleUndoOp = true)
+  for i in 0 ..< n: s.backspaceNoSelect(overrideUtf8 = true)
+  if text.len > 0: s.insertNoSelect(text, singleUndoOp = true)
   s.cursorMoved()
+
+proc replaceWordPrefix*(s: var SynEdit; word: string) =
+  ## Swap the identifier the cursor sits behind for `word` -- what accepting a
+  ## single-word completion does.
+  let prefix = s.getWordPrefix()
+  if word.len == 0 or word == prefix: return
+  s.replaceSpan(s.cursor.int - prefix.len, word)
 
 proc backspace*(s: var SynEdit; smartIndent: bool) =
   inc s.version
@@ -1704,7 +1744,11 @@ proc dedent(s: var SynEdit) =
       else: break
 
 proc gotoLine*(s: var SynEdit; line, col: int) =
-  let line = clamp(line - 1, 0, max(0, s.numberOfLines.int - 1))
+  # `numberOfLines` counts the line breaks, so it *is* the index of the last
+  # line -- the same bound `currentLine` is clamped to everywhere else. Taking
+  # one off here made the last line unreachable, which is why the (x) on the
+  # bottom row of the tab list used to close the row above it.
+  let line = clamp(line - 1, 0, s.numberOfLines.int)
   s.cursor = s.getLineOffset(line).Natural
   s.currentLine = line.Natural
   let span = if s.span > 0: s.span else: 30
@@ -1746,13 +1790,18 @@ proc deleteLine*(s: var SynEdit) =
   while lineEnd < s.len and s[lineEnd] != '\L': inc lineEnd
   # include the trailing newline if present
   let delEnd = if lineEnd < s.len: lineEnd else: lineEnd - 1
+  # The last line has no newline of its own, so it takes the one in front of
+  # it instead. Otherwise deleting it would leave an empty row where it was,
+  # and a list whose rows are its contents -- the tab list, the history panel
+  # -- would keep a row nothing is behind.
+  let stop = if lineEnd < s.len: lineStart else: max(0, lineStart - 1)
   s.cursor = (delEnd + 1).Natural
   s.setCurrentLine()
   let oldCursor = s.cursor
   s.actions.setLen(clamp(s.undoIdx + 1, 0, s.actions.len))
   s.actions.add(Action(k: delFinished, pos: s.cursor, word: "", version: s.version))
   s.edit()
-  while s.cursor.int > lineStart and s.cursor > 0:
+  while s.cursor.int > stop and s.cursor > 0:
     if s.cursor.int - 1 <= s.readOnly: break
     s.prepareForEdit()
     s.rawBackspace(overrideUtf8 = true, s.actions[^1].word)

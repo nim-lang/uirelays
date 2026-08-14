@@ -56,6 +56,12 @@ Ctrl+Space completes a word. There is no compiler in the loop and nothing
 here knows what a name *means*; what it knows is which names exist -- in the
 open buffers, in a directory that `index <path>` was pointed at, and in the
 Nimony vocabulary that ships with the editor. See `doc/completion.md`.
+
+The same words are always on show in the `prediction` cell, one numbered row
+each, and Ctrl+1 .. Ctrl+9 take a row. A panel needs no key to appear and
+covers nothing, so nothing has to be dismissed and the arrow keys never leave
+the editor -- which is what makes it the place for suggestions longer than a
+word, where a popup sitting on the line it would replace stops being readable.
 ]##
 
 import std/[tables, os, algorithm]
@@ -65,7 +71,7 @@ from std/cmdline import paramCount, paramStr
 import uirelays
 import uirelays/layout
 import widgets/[synedit, terminal, config, wordindex]
-import completion
+import completion, prediction
 
 const defaultConfig = """
 (config
@@ -76,6 +82,7 @@ const defaultConfig = """
         (explorer))
       (editor (stretch 4))
       (rows (stretch 2)
+        (prediction (lines 9))
         (history (lines 5))
         (terminal)))
     (status (lines 1)))
@@ -737,16 +744,17 @@ proc adjustFocusedFontSize(
     fonts: var Table[int, Font];
     history: var SynEdit;
     tabs: var TabList; explorer: var Explorer;
-    term, status: var Terminal;
+    term, status: var Terminal; pred: var Prediction;
     buffers: var seq[BufferEntry]; current: int;
     panelFontSize, historyFontSize,
     terminalFontSize, statusFontSize, editorFontSize: var int) =
   case focus
-  of "tabs", "explorer":
+  of "tabs", "explorer", "prediction":
     panelFontSize = clamp(panelFontSize + delta, MinFontSize, MaxFontSize)
     let f = fonts.fontForSize(panelFontSize)
     tabs.ed.setFont(f)
     explorer.ed.setFont(f)
+    pred.setFont(f)
   of "history":
     historyFontSize = clamp(historyFontSize + delta, MinFontSize, MaxFontSize)
     history.setFont(fonts.fontForSize(historyFontSize))
@@ -869,6 +877,10 @@ proc main =
   loadWordSets(words)
   var job = IndexJob()
   var comp = initCompletion(fonts.fontForSize(editorFontSize))
+  # The same words as the overlay, in a cell of their own and numbered. Both
+  # ask `complete` with the same prefix, so row 3 of the panel is row 3 of the
+  # overlay whenever both are up.
+  var pred = initPrediction(fonts.fontForSize(panelFontSize))
 
   var running = true
   while running:
@@ -894,6 +906,7 @@ proc main =
     status.ed.theme = theme
     comp.theme = theme
     comp.setFont buffers[current].ed.getFont
+    pred.theme = theme
     for b in buffers.mitems: b.ed.theme = theme
 
     # The word index, a slice of one buffer per frame: whichever buffer the
@@ -967,6 +980,7 @@ proc main =
       of "tabs": tabs.ed.wheelScroll(e.y)
       of "explorer": explorer.ed.wheelScroll(e.y)
       of "history": history.wheelScroll(e.y)
+      of "prediction": pred.wheelScroll(e.y)
       of "terminal": term.ed.wheelScroll(e.y)
       of "status": status.ed.wheelScroll(e.y)
       else: discard
@@ -979,10 +993,12 @@ proc main =
       if hit.name.len > 0:
         focus = hit.name
     of TextInputEvent:
-      # Ctrl+Space is a command, not a space. X11 hands the app both, and the
-      # space would land in the buffer right where the completion is about to
-      # go; the key event above has already been dealt with.
-      if CtrlPressed in e.mods and e.text[0] == ' ' and e.text[1] == '\0':
+      # Ctrl+Space and Ctrl+<digit> are commands, not text. X11 hands the app
+      # both, and the character would land in the buffer right where the
+      # completion is about to go; the key event above has already dealt with
+      # it.
+      if CtrlPressed in e.mods and e.text[1] == '\0' and
+         e.text[0] in {' ', '1'..'9'}:
         e = default Event
     of KeyDownEvent:
       let cmd = CtrlPressed in e.mods or GuiPressed in e.mods
@@ -1000,9 +1016,17 @@ proc main =
       elif cmd and (e.key == KeyEqual or e.key == KeyPlus or e.key == KeyMinus):
         let delta = if e.key == KeyMinus: -1 else: 1
         adjustFocusedFontSize(focus, delta, fonts, history,
-                              tabs, explorer, term, status, buffers, current,
+                              tabs, explorer, term, status, pred,
+                              buffers, current,
                               panelFontSize, historyFontSize,
                               terminalFontSize, statusFontSize, editorFontSize)
+        e = default Event  # consume the event
+      elif cmd and e.key in {Key1 .. Key9} and focus == "editor" and
+           "prediction" in cells:
+        # The panel is numbered, so a row is taken by its number rather than by
+        # being selected first. Nothing has to be up, nothing has to be aimed
+        # at, and the arrow keys stay where they belong.
+        discard pred.accept(ord(e.key) - ord(Key1) + 1, buffers[current].ed)
         e = default Event  # consume the event
       elif cmd and e.key == KeySpace and focus == "editor":
         comp.show(words, buffers[current].ed)
@@ -1114,6 +1138,20 @@ proc main =
       discard # the editor has no close buttons
     of noAction:
       buffers[current].ed.underline(-1, -1)
+
+    # Prediction panel -- after the editor, because it is the caret as the
+    # keystroke left it that says what could come next. Updated only when the
+    # layout shows it: a panel nobody can read is a panel nobody can pick a
+    # numbered row out of, which is also why Ctrl+<digit> checks the same thing.
+    if "prediction" in cells:
+      pred.update(words, buffers[current].ed)
+      let predRow = pred.draw(e, cells["prediction"], focus == "prediction")
+      if predRow > 0:
+        # Clicking a row is the same acceptance as Ctrl+<digit>, and it hands
+        # the caret straight back: nobody clicks a suggestion in order to end
+        # up in the panel.
+        discard pred.accept(predRow, buffers[current].ed)
+        focus = "editor"
 
     # History panel -- its lines ARE the command list, so a click re-runs a line
     # and the (x) deletes one. The ingest runs even when the layout leaves the
