@@ -71,87 +71,23 @@ const
 proc isWordStart(c: char): bool {.inline.} =
   c in {'a'..'z', 'A'..'Z', '_', '\128'..'\255'}
 
-const
-  MaxCharLit = 8
-    ## `'\255'` is the longest character literal there is. A quote with more
-    ## than this behind it is not one.
-
-proc charLitEnd(text: string; j, n: int): int =
-  ## Just past the character literal at `j` -- `'A'`, `'\n'`, `'\255'` -- or
-  ## -1 when that quote begins something else. Skipping one whole is what
-  ## keeps `xAB` out of the index when somebody writes `'\xAB'`.
-  var k = j + 1
-  if k < n and text[k] == '\\':
-    inc k
-    if k < n and text[k] != '\L': inc k
-  while k < n and k - j <= MaxCharLit and text[k] notin {'\'', '\L'}: inc k
-  result = if k < n and text[k] == '\'' and k > j + 1: k + 1 else: -1
-
 proc scanWords*(text: string; dest: var WordBag; skipAround = -1) =
   ## Every identifier in `text`, in the order it occurs. A token that starts
   ## with a digit is not a word at all -- that keeps `0xffff` from becoming
   ## one. The word containing `skipAround` is left out: that is where the
   ## cursor is, and a half-typed name must not turn up as its own completion.
-  ##
-  ## Nothing is taken out of a comment or a string literal. What is written
-  ## there is English -- `because`, `otherwise`, `example` -- and a listing of
-  ## identifiers with English in it is a listing nobody reads. It is not a
-  ## small share either: half of what Nimony's standard library appeared to
-  ## know was prose. This is a scanner and not a parser, so a raw string with a
-  ## backslash in it is read wrong; what that costs is a word too many, once.
   var i = 0
-  var inBlock = 0   ## 0 none, 1 `/* */`, 2 `#[ ]#`, 3 `""" """`
-  let n = text.len
-  template toEndOfLine() =
-    while i < n and text[i] != '\L': inc i
-  while i < n:
-    let c = text[i]
-    if inBlock == 1:
-      if c == '*' and i + 1 < n and text[i+1] == '/': inBlock = 0; inc i, 2
-      else: inc i
-    elif inBlock == 2:
-      if c == ']' and i + 1 < n and text[i+1] == '#': inBlock = 0; inc i, 2
-      else: inc i
-    elif inBlock == 3:
-      if c == '"' and i + 2 < n and text[i+1] == '"' and text[i+2] == '"':
-        inBlock = 0; inc i, 3
-      else: inc i
-    elif c == '#':
-      if i + 1 < n and text[i+1] == '[': inBlock = 2; inc i, 2
-      else: toEndOfLine()
-    elif c == '/' and i + 1 < n and text[i+1] == '/':
-      toEndOfLine()
-    elif c == '/' and i + 1 < n and text[i+1] == '*':
-      inBlock = 1; inc i, 2
-    elif c == '"':
-      if i + 2 < n and text[i+1] == '"' and text[i+2] == '"':
-        inBlock = 3; inc i, 3
-      else:
-        inc i
-        # A string that is never closed ends with its line: an editor holds
-        # half-written code most of the time, and one apostrophe must not eat
-        # the rest of the file.
-        while i < n and text[i] notin {'"', '\L'}:
-          if text[i] == '\\': inc i
-          inc i
-        if i < n and text[i] == '"': inc i
-    elif c == '\'':
-      let e = charLitEnd(text, i, n)
-      i = if e > 0: e else: i + 1
-    elif isWordStart(c):
+  while i < text.len:
+    if isWordStart(text[i]):
       let start = i
-      while i < n and text[i] in Letters: inc i
+      while i < text.len and text[i] in Letters: inc i
       if i - start >= MinWordLen and
          not (skipAround >= start and skipAround <= i):
         dest.add text[start ..< i]
-    elif c in {'0'..'9'}:
-      # A number, with whatever letters stick to it: `0xffff`, `1e9`, `3u8`,
-      # and the type on the end of `1'u8`.
+    elif text[i] in {'0'..'9'}:
+      # A number, with whatever letters stick to it: `0xffff`, `1e9`, `3u8`.
       inc i
-      while i < n and text[i] in Letters: inc i
-      if i + 1 < n and text[i] == '\'' and isWordStart(text[i+1]):
-        inc i
-        while i < n and text[i] in Letters: inc i
+      while i < text.len and text[i] in Letters: inc i
     else:
       inc i
 

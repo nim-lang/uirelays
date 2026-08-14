@@ -41,23 +41,6 @@ block:
   equals("each word once", scanned("add add add sub"), "add sub")
 
 block:
-  # A listing of identifiers with English in it is a listing nobody reads.
-  equals("a comment is prose, not vocabulary",
-         scanned("proc addFloat # because otherwise"), "proc addFloat")
-  equals("a doc comment is prose too",
-         scanned("proc addFloat\n  ## adds them together"), "proc addFloat")
-  equals("and so is a message",
-         scanned("echo \"file not found\", path"), "echo path")
-  equals("a block comment holds across lines",
-         scanned("#[ what\nfollows ]# resumes"), "resumes")
-  equals("a triple quoted string holds across lines too",
-         scanned("let s = \"\"\"what\nfollows\"\"\"\nresumes"), "let resumes")
-  equals("an escape in a character literal is not a name",
-         scanned("if ch == '\\xAB': discard"), "if ch discard")
-  equals("an unclosed quote ends with its line",
-         scanned("echo \"half a mess\nresumes here"), "echo resumes here")
-
-block:
   # The cursor sits inside the second `addF`; a half-typed name must not be
   # offered as its own completion.
   var bag = WordBag()
