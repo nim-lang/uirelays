@@ -144,7 +144,7 @@ const
   WordsDirName = "words"
     ## Under the config dir: one file per indexed path, so that `index` is
     ## paid for once and not on every start.
-  ShippedWords = "nimony.nif"
+  ShippedWords = "nimony.txt"
     ## The vocabulary that comes with the editor, next to the binary.
   MaxCompletionRows = 10
 
@@ -650,36 +650,32 @@ proc wordSetFile(name: string): string =
   for c in name:
     if c in {'a'..'z', 'A'..'Z', '0'..'9', '-', '.'}: s.add c
     elif s.len > 0 and s[^1] != '_': s.add '_'
-  result = WordsDirName / s.strip(chars = {'_'}) & ".nif"
+  result = WordsDirName / s.strip(chars = {'_'}) & ".txt"
 
-proc loadWordSet(words: var WordIndex; file: string; note: var string): bool =
+proc loadWordSet(words: var WordIndex; file: string) =
   ## Best effort, like everything else that reads a file the editor wrote: a
-  ## word list is a cache, and a broken one must not keep the editor shut.
+  ## word list is a cache, and a cache that is gone or unreadable is a reason
+  ## to have fewer words, never a reason to stop.
   var text = ""
   try:
     text = readFile(file)
   except CatchableError:
-    return false
-  var ws = WordSet()
-  let err = parseWordSet(text, ws)
-  if err.len > 0:
-    note = file & ": " & err
-    return false
+    return
+  var ws = parseWordSet(text)
   if ws.name.len == 0: ws.name = file
   words.addSet ws
-  result = true
 
-proc loadWordSets(words: var WordIndex; note: var string) =
+proc loadWordSets(words: var WordIndex) =
   ## The shipped vocabulary, then everything `index` stored in earlier runs.
   for p in [getAppDir() / "data" / ShippedWords,
             getAppDir().parentDir / "data" / ShippedWords]:
     if fileExists(p):
-      discard loadWordSet(words, p, note)
+      loadWordSet(words, p)
       break
   try:
     for kind, p in walkDir(configPath(WordsDirName)):
-      if kind == pcFile and p.endsWith(".nif"):
-        discard loadWordSet(words, p, note)
+      if kind == pcFile and p.endsWith(".txt"):
+        loadWordSet(words, p)
   except CatchableError:
     discard
 
@@ -948,7 +944,7 @@ proc main =
   # `index` was pointed at in an earlier run, and -- from here on, a slice per
   # frame -- everything in the open buffers.
   var words = WordIndex()
-  loadWordSets(words, tabs.note)
+  loadWordSets(words)
   var job = IndexJob()
   var comp = Completion(ed: createSynEdit(fonts.fontForSize(editorFontSize)))
   comp.ed.lang = langNone
@@ -994,7 +990,7 @@ proc main =
       else:
         let ws = doneIndexJob(job)
         words.addSet ws
-        saveConfig(wordSetFile(ws.name), ws.toNif)
+        saveConfig(wordSetFile(ws.name), ws.toText)
         tabs.note = "indexed " & ws.name & ": " & $ws.words.len & " words" &
           (if job.skipped > 0: ", " & $job.skipped & " files unreadable" else: "") &
           (if job.truncated: ", stopped at " & $MaxIndexFiles & " files" else: "")

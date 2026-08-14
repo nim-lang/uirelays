@@ -90,27 +90,25 @@ block:
          idx.complete("").join(" "), "second")
 
 block:
-  # Round trip, including the names NIF cannot spell as a bare ident.
+  # Round trip, including the names that are not identifiers at all.
   let src = WordSet(name: "/tmp/some dir", words: @["addFloat", "[]=",
                                                    "=destroy", "abs"])
-  var back = WordSet()
-  let err = parseWordSet(src.toNif, back)
-  equals("the file parses", err, "")
+  let back = parseWordSet(src.toText)
   equals("the source came through", back.name, "/tmp/some dir")
   equals("sorted, and every word intact", back.words.join(" "),
          "=destroy []= abs addFloat")
-  check("a long list is wrapped, not one endless line",
-        src.toNif.splitLines.len >= 3)
+  equals("the file is the source, then one word per line", src.toText,
+         "/tmp/some dir\n=destroy\n[]=\nabs\naddFloat\n")
 
 block:
-  var back = WordSet()
-  check("a section a later version adds is stepped over",
-        parseWordSet("(words (lang nim) (w abs) (kinds (proc abs)))",
-                     back).len == 0)
-  equals("and the words still arrive", back.words.join(" "), "abs")
-  check("a broken list is reported, not raised",
-        parseWordSet("(nonsense", back).len > 0)
-  check("so is a truncated one", parseWordSet("(words (w abs", back).len > 0)
+  # A list edited by hand: blank lines, indentation, a trailing newline.
+  let back = parseWordSet("/some/where\n\n  abs\nadd  \n\n")
+  equals("the first line is where it came from", back.name, "/some/where")
+  equals("and the rest are words", back.words.join(" "), "abs add")
+  let empty = parseWordSet("")
+  equals("an empty file is an empty set", $empty.words.len, "0")
+  equals("the first line is the source even when it reads like a word",
+         parseWordSet("abs\nadd").words.join(" "), "add")
 
 block:
   # The buffer walk: incremental, and it stops at the slice size.

@@ -15,9 +15,9 @@ exist, which is enough to never have to type one twice.
 |--------|------|
 | The open buffers | Always, a couple of hundred lines per frame |
 | `index <path>` | Once; the result is stored and comes back on the next start |
-| `data/nimony.nif` | Shipped with the editor, loaded at startup |
+| `data/nimony.txt` | Shipped with the editor, loaded at startup |
 
-The shipped list is looked for in `data/nimony.nif` next to the binary and one
+The shipped list is looked for in `data/nimony.txt` next to the binary and one
 directory above it -- the second is what a checkout looks like, where the
 binary sits in `apps/`. It is optional: without it the editor starts on the
 open buffers alone, and `index` fills the rest in.
@@ -56,25 +56,29 @@ saying so rather than grinding on quietly.
 
 ## The file
 
-A word list is NIF, with no header, so the config lexer reads it:
+A word list is a text file: the first line says where the words came from and
+every line after it is one word.
 
 ```
-(words
-  (source "/home/me/nimony/lib")
-  (w abs add addFloat align))
+/home/me/nimony/lib
+abs
+add
+addFloat
 ```
 
-Words are written as bare idents where they are one and as string literals
-where they are not -- `[]=` and `=destroy` are good Nim names and neither is a
-NIF ident. The list is sorted, so re-indexing a directory produces a diff of
-what changed rather than of everything. A section this version does not know
-is stepped over, so a newer editor's file still loads in an older one.
+A list of words wants to be a list of words. There is no nesting in it, no
+attribute and nothing to quote -- a word never contains a space or a newline
+-- so `[]=` and `=destroy` are simply themselves on a line of their own, which
+is not true of any format with an escape in it. The list is sorted, so
+re-indexing a directory produces a diff of what changed rather than of
+everything, and blank lines and indentation are ignored, so a list edited by
+hand reads the same as one written by the editor.
 
 `index` stores one file per path under `~/.config/focim/words/`. The shipped
 list is the same format, made once from a Nimony checkout:
 
 ```
-nim c -r tools/mkwordlist.nim data/nimony.nif nimony ~/nimony/lib
+nim c -r tools/mkwordlist.nim data/nimony.txt nimony ~/nimony/lib
 ```
 
 That tool takes only the *exported* names -- `name*` -- plus the keywords,

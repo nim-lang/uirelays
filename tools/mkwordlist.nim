@@ -1,6 +1,6 @@
 ## mkwordlist -- the word list focim ships with, extracted from a checkout.
 ##
-##   nim c -r tools/mkwordlist.nim data/nimony.nif nimony ~/nimony/lib
+##   nim c -r tools/mkwordlist.nim data/nimony.txt nimony ~/nimony/lib
 ##
 ## `index <path>` in the editor takes *every* word out of a tree, which is
 ## what you want for the project you are working on: a local name is worth
@@ -61,7 +61,7 @@ proc walk(root: string; dest: var WordBag; files: var int) =
 
 proc main =
   if paramCount() < 3:
-    quit "usage: mkwordlist <out.nif> <name> <path>..."
+    quit "usage: mkwordlist <out.txt> <name> <path>..."
   let outFile = paramStr(1)
   var ws = WordSet(name: paramStr(2))
   var bag = WordBag()
@@ -74,7 +74,7 @@ proc main =
     else: quit "no such path: " & p
   ws.words = bag.words
   createDir(outFile.parentDir)
-  writeFile(outFile, ws.toNif)
+  writeFile(outFile, ws.toText)
   echo ws.words.len, " words from ", files, " files -> ", outFile
 
 main()

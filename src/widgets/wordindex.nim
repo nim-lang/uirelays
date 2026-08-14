@@ -16,22 +16,24 @@
 ## * `parseWordSet` reads such a file -- which is how the Nimony vocabulary
 ##   ships with the editor rather than being re-derived on every start.
 ##
-## The file format is NIF, without a header, so it can be read with the same
-## lexer as the config:
+## The file is a text file: the first line says where the words came from and
+## every line after it is one word.
 ##
-##   (words
-##     (source "/usr/local/nimony/lib")
-##     (w abs add addFloat align))
+##   /usr/local/nimony/lib
+##   abs
+##   add
+##   addFloat
 ##
-## Words are written as bare NIF idents when they are one, and as string
-## literals when they are not -- `[]=` and `=destroy` are perfectly good Nim
-## names and neither is a NIF ident.
+## A list of words wants to be a list of words. Nothing about it needs a
+## syntax -- there is no nesting, no attribute, and nothing to quote, since a
+## word never contains a space or a newline. `[]=` and `=destroy` are perfectly
+## good Nim names and both are simply themselves on a line of their own, which
+## is not true of any format with an escape in it.
 
 import std/[algorithm, os, sets]
-# Only these two, by name: `strutils` has a `Letters` of its own, and the one
+# Only these three, by name: `strutils` has a `Letters` of its own, and the one
 # that matters here is SynEdit's -- the set of characters a word is made of.
-from std/strutils import toLowerAscii, startsWith
-import ../uirelays/tinynif
+from std/strutils import toLowerAscii, startsWith, splitLines, strip
 import synedit
 
 # ---------------------------------------------------------------------------
@@ -273,93 +275,36 @@ proc complete*(idx: var WordIndex; prefix: string; limit = 200): seq[string] =
 # Reading and writing a word list
 # ---------------------------------------------------------------------------
 
-proc isNifIdent(w: string): bool =
-  ## Would this word lex back as a single `tkIdent`? Everything else has to be
-  ## quoted.
-  if w.len == 0: return false
-  if w[0] in {'0'..'9', '-', '+', ':', '#'}: return false
-  for c in w:
-    if c in {'\0', ' ', '\t', '\r', '\n', '(', ')', '"', '\'', '.'}: return false
-  result = true
-
-proc nifString(s: string): string =
-  ## A NIF string literal. NIF knows one escape -- a backslash and two hex
-  ## digits -- so that is what everything unprintable becomes.
-  const Hex = "0123456789ABCDEF"
-  result = "\""
-  for c in s:
-    if c == '"' or c == '\\' or c < ' ' or c > '~':
-      result.add '\\'
-      result.add Hex[ord(c) shr 4]
-      result.add Hex[ord(c) and 0xf]
-    else:
-      result.add c
-  result.add '"'
-
-proc nifWord(w: string): string =
-  if w.isNifIdent: w else: nifString(w)
-
-proc toNif*(s: WordSet): string =
-  ## The set as a NIF file. Sorted, one long `(w ...)` wrapped at a readable
-  ## width, so that re-indexing a directory produces a diff of what actually
+proc toText*(s: WordSet): string =
+  ## The set as a file: where the words came from, then one word per line,
+  ## sorted -- so that re-indexing a directory produces a diff of what actually
   ## changed rather than of everything.
   var words = s.words
   sort words
-  result = "# focim word list -- see doc/completion.md\n(words\n  (source " &
-           nifString(s.name) & ")\n  (w"
-  var col = 4
+  result = newStringOfCap(words.len * 12 + s.name.len + 2)
+  result.add s.name
+  result.add '\n'
   for w in words:
-    let t = nifWord(w)
-    if col + t.len + 1 > 78:
-      result.add "\n   "
-      col = 3
-    result.add ' '
-    result.add t
-    col += t.len + 1
-  result.add "))\n"
+    result.add w
+    result.add '\n'
 
-proc parseWordSet*(text: string; s: var WordSet): string =
-  ## Read what `toNif` wrote. Returns "" or "line:col: why". Nothing raises:
-  ## a word list is a cache, and a broken one must not keep the editor from
-  ## starting.
-  s = WordSet(name: "", words: @[])
-  var lex = initLexer(text)
-  var tok = next(lex)
-  if tok.kind != tkParLe or tok.text != "words":
-    return tok.position & ": expected (words ...) but found " & $tok
-  tok = next(lex)
-  while tok.kind == tkParLe:
-    let tag = tok.text
-    tok = next(lex)
-    case tag
-    of "source":
-      if tok.kind notin {tkStringLit, tkIdent, tkSymbol}:
-        return tok.position & ": expected the source as a string but found " & $tok
-      s.name = tok.text
-      tok = next(lex)
-    of "w":
-      while tok.kind in {tkIdent, tkSymbol, tkStringLit}:
-        s.words.add tok.text
-        tok = next(lex)
-    else:
-      # Something a later version writes: step over it, balanced, so that an
-      # old editor can still read a new list.
-      var depth = 0
-      while true:
-        if tok.kind == tkParLe: inc depth
-        elif tok.kind == tkParRi:
-          if depth == 0: break
-          dec depth
-        elif tok.kind in {tkEof, tkError}: break
-        tok = next(lex)
-    if tok.kind == tkError: return tok.position & ": " & tok.text
-    if tok.kind != tkParRi:
-      return tok.position & ": expected ')' after (" & tag & " but found " & $tok
-    tok = next(lex)
-  if tok.kind == tkError: return tok.position & ": " & tok.text
-  if tok.kind != tkParRi:
-    return tok.position & ": expected ')' or a section but found " & $tok
-  result = ""
+proc parseWordSet*(text: string): WordSet =
+  ## Read what `toText` wrote, and anything close enough to it: blank lines
+  ## are skipped and every line is stripped, so a list edited by hand reads
+  ## the same as one written here. There is nothing in it that can fail to
+  ## parse, which is the point -- a word list is a cache, and a cache must
+  ## never be a reason the editor will not start.
+  result = WordSet(name: "", words: @[])
+  var first = true
+  for line in text.splitLines:
+    let w = line.strip
+    if first:
+      # Even an empty first line is the name: the file says nothing about
+      # where it came from, and the caller fills that in.
+      result.name = w
+      first = false
+    elif w.len > 0:
+      result.words.add w
 
 # ---------------------------------------------------------------------------
 # Indexing a directory tree
