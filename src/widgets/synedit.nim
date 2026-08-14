@@ -1581,22 +1581,12 @@ proc getWordPrefix*(s: SynEdit): string =
   result = newStringOfCap(s.cursor.int - i)
   for j in i ..< s.cursor.int: result.add s[j]
 
-proc lineStartOffset*(s: SynEdit): int =
-  ## Where the line the cursor is on begins. What a multi-token completion
-  ## looks back over, and no further: a suggestion reaching over a line break
-  ## would be completing something the eye does not read as one thing.
-  result = s.cursor.int
-  while result > 0 and s[result - 1] != '\L': dec result
-
-proc replaceSpan*(s: var SynEdit; start: int; text: string) =
-  ## Swap the buffer range `start ..< cursor` for `text`. Everything this
-  ## touches shares one `version`, so Ctrl+Z takes the whole swap back in one
-  ## step instead of one character at a time -- which is the entire reason a
-  ## completion goes through here rather than through `insertText`.
-  let cursor = s.cursor.int
-  if start < 0 or start > cursor: return
-  let n = cursor - start
-  if n == 0 and text.len == 0: return
+proc replaceWordPrefix*(s: var SynEdit; word: string) =
+  ## Swap the identifier the cursor sits behind for `word` -- what accepting a
+  ## completion does. Everything this touches shares one `version`, so Ctrl+Z
+  ## takes the completion back in one step instead of one character at a time.
+  let prefix = s.getWordPrefix()
+  if word.len == 0 or word == prefix: return
   inc s.version
   s.deselect()
   # Without this the first backspace would be appended to whatever deletion
@@ -1605,16 +1595,9 @@ proc replaceSpan*(s: var SynEdit; start: int; text: string) =
   s.actions.setLen(clamp(s.undoIdx + 1, 0, s.actions.len))
   if s.actions.len > 0 and s.actions[^1].k == dele:
     s.actions[^1].k = delFinished
-  for i in 0 ..< n: s.backspaceNoSelect(overrideUtf8 = true)
-  if text.len > 0: s.insertNoSelect(text, singleUndoOp = true)
+  for i in 0 ..< prefix.len: s.backspaceNoSelect(overrideUtf8 = true)
+  s.insertNoSelect(word, singleUndoOp = true)
   s.cursorMoved()
-
-proc replaceWordPrefix*(s: var SynEdit; word: string) =
-  ## Swap the identifier the cursor sits behind for `word` -- what accepting a
-  ## single-word completion does.
-  let prefix = s.getWordPrefix()
-  if word.len == 0 or word == prefix: return
-  s.replaceSpan(s.cursor.int - prefix.len, word)
 
 proc backspace*(s: var SynEdit; smartIndent: bool) =
   inc s.version

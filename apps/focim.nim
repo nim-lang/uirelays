@@ -57,11 +57,11 @@ here knows what a name *means*; what it knows is which names exist -- in the
 open buffers, in a directory that `index <path>` was pointed at, and in the
 Nimony vocabulary that ships with the editor. See `doc/completion.md`.
 
-The same words are always on show in the `prediction` cell, one numbered row
-each, and Ctrl+1 .. Ctrl+9 take a row. A panel needs no key to appear and
-covers nothing, so nothing has to be dismissed and the arrow keys never leave
-the editor -- which is what makes it the place for suggestions longer than a
-word, where a popup sitting on the line it would replace stops being readable.
+The `clipboard` cell keeps what the clipboard held. A system clipboard holds
+one thing, so copying twice before pasting once loses the first -- here the
+last thirty texts that entered it stay, from this application or from any
+other, numbered, and Ctrl+1 .. Ctrl+9 paste one at the caret. See
+`doc/clipboard.md`.
 ]##
 
 import std/[tables, os, algorithm]
@@ -70,8 +70,8 @@ from std/strutils import toLowerAscii, strip, endsWith, contains, splitLines,
 from std/cmdline import paramCount, paramStr
 import uirelays
 import uirelays/layout
-import widgets/[synedit, terminal, config, wordindex]
-import completion, prediction
+import widgets/[synedit, terminal, config, wordindex, cliphistory]
+import completion
 
 const defaultConfig = """
 (config
@@ -82,7 +82,7 @@ const defaultConfig = """
         (explorer))
       (editor (stretch 4))
       (rows (stretch 2)
-        (prediction (lines 9))
+        (clipboard (lines 9))
         (history (lines 5))
         (terminal)))
     (status (lines 1)))
@@ -744,17 +744,17 @@ proc adjustFocusedFontSize(
     fonts: var Table[int, Font];
     history: var SynEdit;
     tabs: var TabList; explorer: var Explorer;
-    term, status: var Terminal; pred: var Prediction;
+    term, status: var Terminal; clips: var ClipHistory;
     buffers: var seq[BufferEntry]; current: int;
     panelFontSize, historyFontSize,
     terminalFontSize, statusFontSize, editorFontSize: var int) =
   case focus
-  of "tabs", "explorer", "prediction":
+  of "tabs", "explorer", "clipboard":
     panelFontSize = clamp(panelFontSize + delta, MinFontSize, MaxFontSize)
     let f = fonts.fontForSize(panelFontSize)
     tabs.ed.setFont(f)
     explorer.ed.setFont(f)
-    pred.setFont(f)
+    clips.setFont(f)
   of "history":
     historyFontSize = clamp(historyFontSize + delta, MinFontSize, MaxFontSize)
     history.setFont(fonts.fontForSize(historyFontSize))
@@ -877,10 +877,11 @@ proc main =
   loadWordSets(words)
   var job = IndexJob()
   var comp = initCompletion(fonts.fontForSize(editorFontSize))
-  # The same words as the overlay, in a cell of their own and numbered. Both
-  # ask `complete` with the same prefix, so row 3 of the panel is row 3 of the
-  # overlay whenever both are up.
-  var pred = initPrediction(fonts.fontForSize(panelFontSize))
+  # What the clipboard held. Nothing reports a copy to us -- the editor's own
+  # Ctrl+C goes to the system clipboard like everybody else's -- so this is
+  # read rather than told, which is also what picks up a copy made in another
+  # application.
+  var clips = initClipHistory(fonts.fontForSize(panelFontSize))
 
   var running = true
   while running:
@@ -906,7 +907,10 @@ proc main =
     status.ed.theme = theme
     comp.theme = theme
     comp.setFont buffers[current].ed.getFont
-    pred.theme = theme
+    clips.theme = theme
+    # Whether or not the layout shows the panel: what was copied while it was
+    # hidden is exactly what somebody goes looking for after showing it.
+    clips.poll()
     for b in buffers.mitems: b.ed.theme = theme
 
     # The word index, a slice of one buffer per frame: whichever buffer the
@@ -925,11 +929,9 @@ proc main =
         let ws = doneIndexJob(job)
         words.addSet ws
         saveConfig(wordSetFile(ws.name), ws.toText)
-        tabs.note = "indexed " & ws.name & ": " & $ws.words.len & " words, " &
-          $ws.phrases.len & " phrases" &
+        tabs.note = "indexed " & ws.name & ": " & $ws.words.len & " words" &
           (if job.skipped > 0: ", " & $job.skipped & " files unreadable" else: "") &
-          (if job.truncated: ", stopped at " & $MaxIndexFiles & " files" else: "") &
-          (if job.pruned: ", too many phrases to keep the rare ones" else: "")
+          (if job.truncated: ", stopped at " & $MaxIndexFiles & " files" else: "")
         job = IndexJob()
 
     let cells = layout.resolve(width, height, fm.lineHeight, gap = 2)
@@ -982,7 +984,7 @@ proc main =
       of "tabs": tabs.ed.wheelScroll(e.y)
       of "explorer": explorer.ed.wheelScroll(e.y)
       of "history": history.wheelScroll(e.y)
-      of "prediction": pred.wheelScroll(e.y)
+      of "clipboard": clips.wheelScroll(e.y)
       of "terminal": term.ed.wheelScroll(e.y)
       of "status": status.ed.wheelScroll(e.y)
       else: discard
@@ -996,9 +998,8 @@ proc main =
         focus = hit.name
     of TextInputEvent:
       # Ctrl+Space and Ctrl+<digit> are commands, not text. X11 hands the app
-      # both, and the character would land in the buffer right where the
-      # completion is about to go; the key event above has already dealt with
-      # it.
+      # both, and the character would land in the buffer right where the paste
+      # is about to go; the key event above has already dealt with it.
       if CtrlPressed in e.mods and e.text[1] == '\0' and
          e.text[0] in {' ', '1'..'9'}:
         e = default Event
@@ -1018,17 +1019,18 @@ proc main =
       elif cmd and (e.key == KeyEqual or e.key == KeyPlus or e.key == KeyMinus):
         let delta = if e.key == KeyMinus: -1 else: 1
         adjustFocusedFontSize(focus, delta, fonts, history,
-                              tabs, explorer, term, status, pred,
+                              tabs, explorer, term, status, clips,
                               buffers, current,
                               panelFontSize, historyFontSize,
                               terminalFontSize, statusFontSize, editorFontSize)
         e = default Event  # consume the event
       elif cmd and e.key in {Key1 .. Key9} and focus == "editor" and
-           "prediction" in cells:
+           "clipboard" in cells:
         # The panel is numbered, so a row is taken by its number rather than by
         # being selected first. Nothing has to be up, nothing has to be aimed
         # at, and the arrow keys stay where they belong.
-        discard pred.accept(ord(e.key) - ord(Key1) + 1, buffers[current].ed)
+        let text = clips.entry(ord(e.key) - ord(Key1) + 1)
+        if text.len > 0: buffers[current].ed.insertText(text)
         e = default Event  # consume the event
       elif cmd and e.key == KeySpace and focus == "editor":
         comp.show(words, buffers[current].ed)
@@ -1141,18 +1143,19 @@ proc main =
     of noAction:
       buffers[current].ed.underline(-1, -1)
 
-    # Prediction panel -- after the editor, because it is the caret as the
-    # keystroke left it that says what could come next. Updated only when the
-    # layout shows it: a panel nobody can read is a panel nobody can pick a
-    # numbered row out of, which is also why Ctrl+<digit> checks the same thing.
-    if "prediction" in cells:
-      pred.update(words, buffers[current].ed)
-      let predRow = pred.draw(e, cells["prediction"], focus == "prediction")
-      if predRow > 0:
-        # Clicking a row is the same acceptance as Ctrl+<digit>, and it hands
-        # the caret straight back: nobody clicks a suggestion in order to end
-        # up in the panel.
-        discard pred.accept(predRow, buffers[current].ed)
+    # Clipboard panel -- what the clipboard held, newest first. Drawn only when
+    # the layout shows it, which is the same thing Ctrl+<digit> checks: a row
+    # nobody can read is a row nobody can pick a number out of.
+    if "clipboard" in cells:
+      let clipAct = clips.draw(e, cells["clipboard"], focus == "clipboard")
+      if clipAct.drop > 0:
+        # The (x) forgets an entry -- which is how a password copied by mistake
+        # stops being one keystroke away from every buffer.
+        clips.drop clipAct.drop
+      elif clipAct.take > 0:
+        # Clicking a row pastes it and hands the caret straight back: nobody
+        # clicks a clipping in order to end up in the panel.
+        buffers[current].ed.insertText(clips.entry(clipAct.take))
         focus = "editor"
 
     # History panel -- its lines ARE the command list, so a click re-runs a line

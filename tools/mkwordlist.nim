@@ -15,11 +15,6 @@
 ## `field*:`, `Type*[T]` and `const c* =` there is, and no multiplication
 ## except the rare `a*(b)` written without spaces. A word too many costs one
 ## line in a listing; parsing Nim to avoid it would cost a compiler.
-##
-## The phrases are not filtered that way, because "exported" means nothing to a
-## construct: `for i in 0 ..<` is how the language is written whoever wrote it.
-## What is taken is what `index` takes -- seen twice, in two different files --
-## which is also what keeps the file to a tenth of a megabyte instead of six.
 
 import std/os
 import ../src/widgets/wordindex
@@ -50,14 +45,7 @@ proc exportedNames(text: string; dest: var WordBag) =
     else:
       inc i
 
-proc take(path: string; dest: var WordBag; phrases: var CountBag) =
-  let text = readFile(path)
-  exportedNames(text, dest)
-  phrases.nextFile()
-  scanPhrases(text, phrases)
-
-proc walk(root: string; dest: var WordBag; phrases: var CountBag;
-          files: var int) =
+proc walk(root: string; dest: var WordBag; files: var int) =
   var stack = @[root]
   while stack.len > 0:
     let dir = stack.pop()
@@ -68,7 +56,7 @@ proc walk(root: string; dest: var WordBag; phrases: var CountBag;
       of pcDir, pcLinkToDir: stack.add p
       else:
         if p.splitFile.ext in [".nim", ".nims"]:
-          take(p, dest, phrases)
+          exportedNames(readFile(p), dest)
           inc files
 
 proc main =
@@ -78,19 +66,15 @@ proc main =
   var ws = WordSet(name: paramStr(2))
   var bag = WordBag()
   for k in Keywords: bag.add k
-  var phrases = CountBag()
   var files = 0
   for i in 3 .. paramCount():
     let p = expandTilde(paramStr(i))
-    if fileExists(p): take(p, bag, phrases); inc files
-    elif dirExists(p): walk(p, bag, phrases, files)
+    if fileExists(p): exportedNames(readFile(p), bag); inc files
+    elif dirExists(p): walk(p, bag, files)
     else: quit "no such path: " & p
   ws.words = bag.words
-  ws.phrases = phrases.toPhrases(minCount = MinPhraseCount,
-                                 minFiles = min(MinPhraseFiles, files))
   createDir(outFile.parentDir)
   writeFile(outFile, ws.toText)
-  echo ws.words.len, " words and ", ws.phrases.len, " phrases from ", files,
-       " files -> ", outFile
+  echo ws.words.len, " words from ", files, " files -> ", outFile
 
 main()
