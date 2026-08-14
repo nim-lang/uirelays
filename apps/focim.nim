@@ -65,6 +65,7 @@ from std/cmdline import paramCount, paramStr
 import uirelays
 import uirelays/layout
 import widgets/[synedit, terminal, config, wordindex]
+import completion
 
 const defaultConfig = """
 (config
@@ -146,7 +147,6 @@ const
     ## paid for once and not on every start.
   ShippedWords = "nimony.txt"
     ## The vocabulary that comes with the editor, next to the binary.
-  MaxCompletionRows = 10
 
 proc configPath(name: string): string =
   getConfigDir() / ConfigDirName / name
@@ -561,84 +561,6 @@ proc activateEntry(ex: var Explorer; idx: int;
       focus = "editor"
 
 # ---------------------------------------------------------------------------
-# Completion -- the words that could continue what is being typed
-# ---------------------------------------------------------------------------
-
-type
-  Completion = object
-    ## A listing of candidates under the caret. It is a SynEdit like
-    ## everything else, but nothing is ever typed *into* it: the caret stays
-    ## in the editor, so typing narrows the listing instead of leaving it.
-    ed: SynEdit
-    active: bool
-    items: seq[string]
-    sel: int
-    prefix: string   ## the word prefix `items` was built for
-    version: int     ## the index version it was built from
-
-proc highlight(c: var Completion) =
-  ## The selected row, as a marker rather than as text -- the same way the tab
-  ## list marks the active tab.
-  c.ed.clearMarkers()
-  var pos = 0
-  for i, w in c.items:
-    if i == c.sel:
-      c.ed.addMarker(pos, pos + max(w.len, 1) - 1, c.ed.theme.selBg)
-      break
-    pos += w.len + 1
-  c.ed.gotoLine(c.sel + 1, 0)
-
-proc refill(c: var Completion; words: var WordIndex; prefix: string) =
-  c.prefix = prefix
-  c.version = words.version
-  c.items = words.complete(prefix)
-  c.sel = 0
-  c.active = c.items.len > 0
-  if c.active:
-    var text = ""
-    for i, w in c.items:
-      if i > 0: text.add "\n"
-      text.add w
-    c.ed.setText(text)
-    c.highlight()
-
-proc move(c: var Completion; delta: int) =
-  if c.items.len == 0: return
-  c.sel = clamp(c.sel + delta, 0, c.items.high)
-  c.highlight()
-
-proc dismiss(c: var Completion) =
-  c.active = false
-  c.items.setLen 0
-
-proc drawCompletion(c: var Completion; ed: SynEdit; area: Rect) =
-  ## Under the caret, inside the editor's cell. The popup is drawn last, so it
-  ## is over everything; it is clipped to the cell rather than to the window,
-  ## so it cannot end up over a panel it has nothing to do with.
-  let caret = ed.cursorRect
-  if caret.h == 0:
-    # The caret is not on screen -- the buffer scrolled away from it. There is
-    # nothing to point at, so there is nothing to show.
-    c.dismiss()
-    return
-  let lineH = fontLineSkip(c.ed.getFont)
-  if lineH <= 0: return
-  var longest = 0
-  for w in c.items: longest = max(longest, w.len)
-  let charW = max(1, measureText(c.ed.getFont, "n").w)
-  let pw = clamp((longest + 3) * charW, 16 * charW, max(16 * charW, area.w - 8))
-  let ph = clamp(c.items.len, 1, MaxCompletionRows) * lineH + 4
-  let px = clamp(caret.x, area.x, max(area.x, area.x + area.w - pw - 2))
-  var py = caret.y + caret.h + 2
-  if py + ph > area.y + area.h:
-    # No room below: above the caret, unless the caret is so high up that
-    # there is no room there either.
-    py = if caret.y - ph - 2 >= area.y: caret.y - ph - 2
-         else: max(area.y, area.y + area.h - ph)
-  fillRect(rect(px - 1, py - 1, pw + 2, ph + 2), c.ed.theme.actionColor)
-  c.ed.render(rect(px, py, pw, ph), showCursor = false)
-
-# ---------------------------------------------------------------------------
 # Word sets on disk
 # ---------------------------------------------------------------------------
 
@@ -946,8 +868,7 @@ proc main =
   var words = WordIndex()
   loadWordSets(words)
   var job = IndexJob()
-  var comp = Completion(ed: createSynEdit(fonts.fontForSize(editorFontSize)))
-  comp.ed.lang = langNone
+  var comp = initCompletion(fonts.fontForSize(editorFontSize))
 
   var running = true
   while running:
@@ -971,8 +892,8 @@ proc main =
     explorer.ed.theme = theme
     term.ed.theme = theme
     status.ed.theme = theme
-    comp.ed.theme = theme
-    comp.ed.setFont buffers[current].ed.getFont
+    comp.theme = theme
+    comp.setFont buffers[current].ed.getFont
     for b in buffers.mitems: b.ed.theme = theme
 
     # The word index, a slice of one buffer per frame: whichever buffer the
@@ -1084,27 +1005,16 @@ proc main =
                               terminalFontSize, statusFontSize, editorFontSize)
         e = default Event  # consume the event
       elif cmd and e.key == KeySpace and focus == "editor":
-        let prefix = buffers[current].ed.getWordPrefix
-        comp.refill(words, prefix)
+        comp.show(words, buffers[current].ed)
         if not comp.active:
-          tabs.note = if prefix.len > 0: "no word starts with '" & prefix & "'"
+          tabs.note = if comp.prefix.len > 0:
+                        "no word starts with '" & comp.prefix & "'"
                       else: "no words indexed yet"
         e = default Event  # consume the event
-      elif comp.active and focus == "editor" and
-           e.key in {KeyUp, KeyDown, KeyPageUp, KeyPageDown, KeyEsc, KeyEnter,
-                     KeyTab}:
-        # While the listing is up these keys belong to it. Everything else --
+      elif focus == "editor" and comp.handleKey(e, buffers[current].ed):
+        # While the listing is up a few keys belong to it. Everything else --
         # letters, backspace, the arrows sideways -- goes to the editor as
         # usual and narrows the listing through the prefix.
-        case e.key
-        of KeyUp: comp.move(-1)
-        of KeyDown: comp.move(1)
-        of KeyPageUp: comp.move(-MaxCompletionRows)
-        of KeyPageDown: comp.move(MaxCompletionRows)
-        of KeyEsc: comp.dismiss()
-        else:
-          buffers[current].ed.replaceWordPrefix(comp.items[comp.sel])
-          comp.dismiss()
         e = default Event  # consume the event
       elif e.key == KeyEnter and focus == "tabs":
         # Enter activates a tab instead of inserting a newline.
@@ -1273,22 +1183,9 @@ proc main =
       runIndexCommand(statusAct, words, job, tabs.note)
     of ctrlHover, ctrlClick, noAction: discard
 
-    # The completion listing, last, so that it is over everything -- and only
-    # once the editor has drawn, since that is what says where the caret is.
-    # The prefix is read back out of the buffer instead of being tracked: that
-    # way typing, backspace and a paste all narrow the listing without the
-    # completion having to know which of them happened.
-    if comp.active:
-      if focus != "editor":
-        comp.dismiss()
-      else:
-        let p = buffers[current].ed.getWordPrefix
-        if p.len == 0 and comp.prefix.len > 0:
-          # The word it was opened on is gone.
-          comp.dismiss()
-        elif p != comp.prefix or words.version != comp.version:
-          comp.refill(words, p)
-        if comp.active: comp.drawCompletion(buffers[current].ed, cells["editor"])
+    # The completion listing, last: it goes over everything, and it can only
+    # be placed once the editor has drawn the caret it hangs from.
+    comp.draw(words, buffers[current].ed, cells["editor"], focus == "editor")
 
     # Persist the session once everything that could have changed it has run.
     let tt = tabsText(buffers)
