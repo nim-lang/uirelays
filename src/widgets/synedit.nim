@@ -1581,35 +1581,12 @@ proc getWordPrefix*(s: SynEdit): string =
   result = newStringOfCap(s.cursor.int - i)
   for j in i ..< s.cursor.int: result.add s[j]
 
-proc getSpanPrefix*(s: SynEdit; tokens: int): tuple[text: string; start: int] =
-  ## The last `tokens` tokens before the cursor, verbatim -- the text a
-  ## multi-token completion completes, and the offset it begins at. A token is
-  ## an identifier or a single character of punctuation, and the space between
-  ## them comes along as it was written, so what is returned is exactly what is
-  ## in the buffer rather than a normalization of it.
-  ##
-  ## The walk stops at the start of the line: a suggestion that reached back
-  ## over a line break would be completing something the eye does not read as
-  ## one thing. Asking for more tokens than the line has is therefore not an
-  ## error -- it yields the line so far.
-  let cursor = s.cursor.int
-  var lineStart = cursor
-  while lineStart > 0 and s[lineStart - 1] != '\L': dec lineStart
-  var start = cursor
-  var left = tokens
-  while left > 0:
-    var i = start
-    while i > lineStart and s[i - 1] in {' ', '\t'}: dec i
-    if i <= lineStart: break
-    if s[i - 1] in Letters:
-      while i > lineStart and s[i - 1] in Letters: dec i
-    else:
-      dec i
-    start = i
-    dec left
-  result.start = start
-  result.text = newStringOfCap(cursor - start)
-  for j in start ..< cursor: result.text.add s[j]
+proc lineStartOffset*(s: SynEdit): int =
+  ## Where the line the cursor is on begins. What a multi-token completion
+  ## looks back over, and no further: a suggestion reaching over a line break
+  ## would be completing something the eye does not read as one thing.
+  result = s.cursor.int
+  while result > 0 and s[result - 1] != '\L': dec result
 
 proc replaceSpan*(s: var SynEdit; start: int; text: string) =
   ## Swap the buffer range `start ..< cursor` for `text`. Everything this

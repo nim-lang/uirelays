@@ -16,24 +16,41 @@
 ## * `parseWordSet` reads such a file -- which is how the Nimony vocabulary
 ##   ships with the editor rather than being re-derived on every start.
 ##
-## The file is a text file: the first line says where the words came from and
-## every line after it is one word.
+## Beside the words are phrases -- runs of two to five tokens that somebody
+## wrote more than once, in more than one file. A word saves the rest of a
+## name; a phrase saves the rest of a construct, which is worth more per
+## keystroke and is the reason `case ` can offer `case typ.kind`. Nothing about
+## that is semantic either: it is still only what exists, counted.
+##
+## Both come out of one lexer, in one pass, and so does the text in front of
+## the caret that a phrase is looked up under (`spanPrefix`). They have to
+## agree about what a token is, or a prefix would reach a different distance
+## into the line than the phrase it is meant to find; and none of the three
+## takes anything out of a comment or a string literal.
+##
+## The file is a text file: the first line says where all of it came from, then
+## one word per line, then one phrase per line with two numbers in front of it
+## -- how often it was seen, and how often it began a line.
 ##
 ##   /usr/local/nimony/lib
 ##   abs
 ##   add
 ##   addFloat
+##   31 12 result.add
+##   9 9 case typ.kind
 ##
-## A list of words wants to be a list of words. Nothing about it needs a
-## syntax -- there is no nesting, no attribute, and nothing to quote, since a
-## word never contains a space or a newline. `[]=` and `=destroy` are perfectly
-## good Nim names and both are simply themselves on a line of their own, which
-## is not true of any format with an escape in it.
+## A list like this wants no syntax. There is no nesting, no attribute and
+## nothing to quote: a word never contains a space or a newline, and a phrase
+## never contains a newline and always begins with a name -- so a leading
+## integer can only ever be a count, and `[]=` and `=destroy` are simply
+## themselves on a line of their own, which is not true of any format with an
+## escape in it.
 
-import std/[algorithm, os, sets]
-# Only these three, by name: `strutils` has a `Letters` of its own, and the one
-# that matters here is SynEdit's -- the set of characters a word is made of.
-from std/strutils import toLowerAscii, startsWith, splitLines, strip
+import std/[algorithm, os, sets, tables]
+# Only these, by name: `strutils` has a `Letters` of its own, and the one that
+# matters here is SynEdit's -- the set of characters a word is made of.
+from std/strutils import toLowerAscii, startsWith, splitLines, strip,
+                         parseInt, allCharsInSet, Digits
 import synedit
 
 # ---------------------------------------------------------------------------
@@ -60,36 +77,348 @@ proc clear*(b: var WordBag) =
   b.seen.clear()
 
 # ---------------------------------------------------------------------------
-# Scanning text for words
+# Phrases: several tokens in a row, exactly as somebody wrote them
 # ---------------------------------------------------------------------------
+#
+# A word saves the rest of a name. A phrase saves the rest of a construct, and
+# that is worth more per keystroke -- but only if it is a construct somebody
+# actually wrote, which is the same bargain the word index makes. So phrases
+# are mined the same way words are: every run of two to `MaxPhraseTokens`
+# tokens on one line becomes a candidate, and what recurs is kept.
+#
+# The text of a phrase is the source between its first and last token, with
+# runs of whitespace collapsed. Nothing is re-spaced: the corpus is real code,
+# so its spacing is already the spacing this language is written in, and any
+# rule invented here would only be a worse version of that.
+
+const
+  MinPhraseTokens* = 2
+  MaxPhraseTokens* = 5
+    ## Five is what it takes to reach past the punctuation: `case typ.kind of`
+    ## is four tokens once a dotted name counts as one, and `result.add x` is
+    ## three.
+  MaxPhraseLen* = 60
+    ## A row of the panel, roughly. A suggestion nobody can read is a
+    ## suggestion nobody takes.
+  MinPhraseCount* = 2
+    ## What it takes for a phrase off disk to be kept. Once is a line somebody
+    ## wrote; twice is a way of writing. An open buffer is exempt -- the file
+    ## being edited is the one corpus where everything counts.
+  MinPhraseFiles* = 2
+    ## And in how many files, when there is more than one. A line repeated
+    ## three hundred times in a generated table is not three hundred people
+    ## agreeing; two files that share a phrase is the smallest thing that is.
+  MaxPhraseEntries* = 200_000
+    ## What one indexing job may hold before it throws away everything it has
+    ## seen only once. A tree big enough to hit this is a tree where a phrase
+    ## that occurs once is noise anyway.
+
+type
+  Phrase* = object
+    text*: string
+    count*: int      ## how often it was seen
+    initial*: int    ## how often it began a line -- what ranks a suggestion
+                     ## made when the caret is at the start of one
+    live*: bool      ## it came out of an open buffer rather than off disk
+
+  Tally = tuple[count, initial, files, lastFile: int]
+
+  CountBag* = object
+    ## Phrases, how often each was seen, and in how many files. A `HashSet`
+    ## cannot do this and a `seq` would be quadratic, so this is the one place
+    ## a `Table` earns its keep.
+    counts: Table[string, Tally]
+    file: int            ## which file is being added to right now
+
+proc len*(b: CountBag): int {.inline.} = b.counts.len
+
+proc nextFile*(b: var CountBag) {.inline.} =
+  ## Say that what follows comes from another file. What that buys is the
+  ## difference between a phrase written in ten places and one written ten
+  ## times in the same place -- `uint64x2(hi:` occurs 620 times in Nimony's
+  ## standard library, all of them in one machine-written file, and counting
+  ## alone cannot tell that from an idiom.
+  inc b.file
+
+proc add*(b: var CountBag; text: string; initial: bool; counting = true): bool
+         {.discardable.} =
+  ## True when the phrase was not in the bag yet. `counting = false` records
+  ## presence only, which is what an open buffer wants: its walk restarts on
+  ## every edit, so counting there would measure how often the buffer was
+  ## walked rather than how often the phrase occurs in it.
+  b.counts.withValue(text, v):
+    if counting:
+      inc v.count
+      if initial: inc v.initial
+      if v.lastFile != b.file:
+        v.lastFile = b.file
+        inc v.files
+    return false
+  do:
+    b.counts[text] = (1, ord(initial), 1, b.file)
+    return true
+
+proc prune*(b: var CountBag; minCount: int) =
+  ## Forget what has been seen fewer than `minCount` times. Called when a job
+  ## grows past `MaxPhraseEntries`, and again at the end of one.
+  var keep = initTable[string, Tally]()
+  for text, v in b.counts:
+    if v.count >= minCount: keep[text] = v
+  b.counts = ensureMove keep
+
+proc toPhrases*(b: CountBag; minCount = 1; minFiles = 1; live = false):
+               seq[Phrase] =
+  ## The bag as a list sorted by text, which is what a prefix is looked up in.
+  result = @[]
+  for text, v in b.counts:
+    if v.count >= minCount and v.files >= minFiles:
+      result.add Phrase(text: text, count: v.count, initial: v.initial,
+                        live: live)
+  sort(result, proc (a, b: Phrase): int = cmp(a.text, b.text))
+
+proc normalizeSpan*(s: string): string =
+  ## What a phrase looks like: one space where the source had any run of
+  ## whitespace. Applied to both sides of a comparison, so that a line indented
+  ## with tabs matches a phrase mined from one indented with spaces.
+  result = newStringOfCap(s.len)
+  var i = 0
+  while i < s.len:
+    if s[i] in {' ', '\t', '\r'}:
+      while i < s.len and s[i] in {' ', '\t', '\r'}: inc i
+      result.add ' '
+    else:
+      result.add s[i]
+      inc i
+
+# ---------------------------------------------------------------------------
+# The lexer -- one idea of what a token is
+# ---------------------------------------------------------------------------
+#
+# Words and phrases come out of the same pass, because they have to agree about
+# where a token begins. They also have to agree with the caret: what the panel
+# looks a phrase up under is the text in front of the cursor, tokenized right
+# here by `spanPrefix`, and a prefix that counted `'A'` as three tokens where
+# the corpus counted it as one would reach a different distance than the phrase
+# it is meant to find.
 
 const
   MinWordLen* = 2
     ## A single letter is faster to type than to pick from a list, and `i` and
     ## `x` would sit at the top of every listing.
+  OpChars = {'+', '-', '*', '/', '\\', '<', '>', '!', '?', '^', '.', '|',
+             '=', '%', '&', '$', '@', '~', ':'}
+  MaxCharLit = 8
+    ## `'\255'` is the longest character literal there is. A quote with more
+    ## than this behind it is not one, and is treated as the stray character it
+    ## is rather than swallowing the rest of the line.
 
 proc isWordStart(c: char): bool {.inline.} =
   c in {'a'..'z', 'A'..'Z', '_', '\128'..'\255'}
 
-proc scanWords*(text: string; dest: var WordBag; skipAround = -1) =
-  ## Every identifier in `text`, in the order it occurs. A token that starts
-  ## with a digit is not a word at all -- that keeps `0xffff` from becoming
-  ## one. The word containing `skipAround` is left out: that is where the
-  ## cursor is, and a half-typed name must not turn up as its own completion.
-  var i = 0
-  while i < text.len:
+type
+  TokSpan = tuple[a, b: int]   ## [a, b) into the text being scanned
+
+proc charLitEnd(text: string; j, lineEnd: int): int =
+  ## Just past the character literal that begins at `j`, or -1 when that quote
+  ## begins something else. One token, because `{'A'..'Z'}` is a thing people
+  ## write and want written for them.
+  var k = j + 1
+  if k < lineEnd and text[k] == '\\':
+    inc k, 2                   # the backslash and what it escapes
+    while k < lineEnd and k - j <= MaxCharLit and text[k] in Digits: inc k
+  else:
+    inc k
+  result = if k < lineEnd and text[k] == '\'': k + 1 else: -1
+
+proc lexLine(text: string; start, lineEnd: int; toks: var seq[TokSpan];
+             breaks: var seq[int]; inBlock: var int) =
+  ## The tokens of one line, and the indices in `toks` where a comment or a
+  ## string literal cut the line in two -- what is on either side of a literal
+  ## are two runs of tokens, not one. `inBlock` carries a block comment or a
+  ## triple-quoted string from one line to the next.
+  toks.setLen 0
+  breaks.setLen 0
+  template wall() =
+    if breaks.len == 0 or breaks[^1] != toks.len: breaks.add toks.len
+  var j = start
+  while j < lineEnd:
+    let c = text[j]
+    if inBlock == 1:
+      if c == '*' and j + 1 < lineEnd and text[j+1] == '/': inBlock = 0; inc j, 2
+      else: inc j
+    elif inBlock == 2:
+      if c == ']' and j + 1 < lineEnd and text[j+1] == '#': inBlock = 0; inc j, 2
+      else: inc j
+    elif inBlock == 3:
+      if c == '"' and j + 2 < lineEnd and text[j+1] == '"' and text[j+2] == '"':
+        inBlock = 0; inc j, 3
+      else: inc j
+    elif c in {' ', '\t', '\r'}: inc j
+    elif c == '#':
+      wall()
+      if j + 1 < lineEnd and text[j+1] == '[': inBlock = 2; inc j, 2
+      else: j = lineEnd
+    elif c == '/' and j + 1 < lineEnd and text[j+1] == '/':
+      wall(); j = lineEnd
+    elif c == '/' and j + 1 < lineEnd and text[j+1] == '*':
+      wall(); inBlock = 1; inc j, 2
+    elif c == '"':
+      wall()
+      if j + 2 < lineEnd and text[j+1] == '"' and text[j+2] == '"':
+        inBlock = 3; inc j, 3
+      else:
+        inc j
+        while j < lineEnd and text[j] != '"':
+          if text[j] == '\\': inc j
+          inc j
+        if j < lineEnd: inc j
+    elif c == '\'':
+      let e = charLitEnd(text, j, lineEnd)
+      if e > 0:
+        toks.add (j, e)
+        j = e
+      else:
+        # An unclosed quote is a character literal being typed, so it stays a
+        # token: `{'A` has to keep matching `{'A'..'Z'}` while it is written.
+        toks.add (j, j + 1)
+        inc j
+    elif isWordStart(c):
+      let a = j
+      while j < lineEnd and text[j] in Letters: inc j
+      # A dotted name reads as one thing and so costs one token: `typ.kind` is
+      # what somebody means, not three tokens they happened to write.
+      while j + 1 < lineEnd and text[j] == '.' and isWordStart(text[j+1]):
+        inc j
+        while j < lineEnd and text[j] in Letters: inc j
+      toks.add (a, j)
+    elif c in Digits:
+      let a = j
+      inc j
+      while j < lineEnd and text[j] in Letters: inc j
+      if j + 1 < lineEnd and text[j] == '.' and text[j+1] in Digits:
+        inc j
+        while j < lineEnd and text[j] in Letters: inc j
+      # `1'u8` is a number with a type on it, not a number and a literal.
+      if j + 1 < lineEnd and text[j] == '\'' and isWordStart(text[j+1]):
+        inc j
+        while j < lineEnd and text[j] in Letters: inc j
+      toks.add (a, j)
+    elif c in OpChars:
+      let a = j
+      while j < lineEnd and text[j] in OpChars: inc j
+      toks.add (a, j)
+    else:
+      toks.add (j, j + 1)
+      inc j
+
+proc takeWords(text: string; a, b: int; dest: var WordBag; skipAround: int) =
+  ## The names in one token: `typ.kind` is one token but two words.
+  var i = a
+  while i < b:
     if isWordStart(text[i]):
       let start = i
-      while i < text.len and text[i] in Letters: inc i
+      while i < b and text[i] in Letters: inc i
       if i - start >= MinWordLen and
          not (skipAround >= start and skipAround <= i):
         dest.add text[start ..< i]
-    elif text[i] in {'0'..'9'}:
-      # A number, with whatever letters stick to it: `0xffff`, `1e9`, `3u8`.
-      inc i
-      while i < text.len and text[i] in Letters: inc i
     else:
       inc i
+
+proc emitWindows(text: string; toks: seq[TokSpan]; a, b: int;
+                 dest: var CountBag; atLineStart, counting: bool) =
+  for i in a ..< b:
+    # Only a name may begin a phrase, and the same name a word index would
+    # have taken. A phrase starting with a bracket is one nobody would type
+    # their way to, and one starting with `x` or `T` is a suggestion offered
+    # after a single keystroke to save a comma -- leaving both out halves the
+    # bag, and makes a leading integer in the file unambiguously a count, since
+    # no phrase can begin with a digit.
+    if not isWordStart(text[toks[i].a]) or
+       toks[i].b - toks[i].a < MinWordLen: continue
+    for k in MinPhraseTokens .. MaxPhraseTokens:
+      let last = i + k - 1
+      if last >= b: break
+      if toks[last].b - toks[i].a > MaxPhraseLen: break
+      dest.add(normalizeSpan(text[toks[i].a ..< toks[last].b]),
+               initial = atLineStart and i == a, counting = counting)
+
+proc scanSource*(text: string; words: var WordBag; phrases: var CountBag;
+                 skipAround = -1; counting = true;
+                 wantWords = true; wantPhrases = true) =
+  ## Everything the index takes out of a piece of source, in one pass: the
+  ## identifiers, and every two-to-`MaxPhraseTokens` run of tokens on one line.
+  ##
+  ## Neither takes anything out of a comment or a string literal. The words in
+  ## there are prose -- `because`, `otherwise`, `example` -- and a listing of
+  ## identifiers with English in it is a listing nobody reads; a phrase
+  ## reaching across one would carry a sentence with it, and would be two
+  ## tokens with forty characters of message between them. This is a miner and
+  ## not a parser: a raw string with a backslash in it is read wrong, and the
+  ## phrase that comes of that occurs once and is dropped for it.
+  ##
+  ## `skipAround` is where the caret is. The word it is inside is left out --
+  ## a half-typed name must not turn up as its own completion -- and so is the
+  ## whole line it is on, because half a line is not a phrase.
+  var i = 0
+  var toks: seq[TokSpan] = @[]
+  var breaks: seq[int] = @[]
+  var inBlock = 0   ## 0 none, 1 `/* */`, 2 `#[ ]#`, 3 `""" """`
+  let n = text.len
+  while i < n:
+    var lineEnd = i
+    while lineEnd < n and text[lineEnd] != '\L': inc lineEnd
+    lexLine(text, i, lineEnd, toks, breaks, inBlock)
+    if wantWords:
+      for t in toks:
+        if isWordStart(text[t.a]): takeWords(text, t.a, t.b, words, skipAround)
+    if wantPhrases and not (skipAround >= i and skipAround <= lineEnd):
+      var a = 0
+      var atLineStart = true
+      for bi in 0 .. breaks.len:
+        let b = if bi < breaks.len: breaks[bi] else: toks.len
+        if b > a:
+          emitWindows(text, toks, a, b, phrases, atLineStart, counting)
+          atLineStart = false
+        a = b
+    i = lineEnd + 1
+
+proc scanWords*(text: string; dest: var WordBag; skipAround = -1) =
+  ## The identifiers in `text` alone -- see `scanSource`. A token that starts
+  ## with a digit is not a word at all, which is what keeps `0xffff` out.
+  var ignore = CountBag()
+  scanSource(text, dest, ignore, skipAround, wantPhrases = false)
+
+proc scanPhrases*(text: string; dest: var CountBag; skipAround = -1;
+                  counting = true) =
+  ## The token runs in `text` alone -- see `scanSource`.
+  var ignore = WordBag()
+  scanSource(text, ignore, dest, skipAround, counting, wantWords = false)
+
+proc spanPrefix*(s: SynEdit; tokens: int): tuple[text: string; start: int] =
+  ## The last `tokens` tokens in front of the cursor, verbatim, and the offset
+  ## they begin at -- the text a multi-token completion completes. The spacing
+  ## comes along as it was written, so this is what is in the buffer rather
+  ## than a normalization of it.
+  ##
+  ## The line is tokenized by the very lexer the corpus was, so that asking for
+  ## five tokens reaches exactly as far as a five-token phrase does. It stops
+  ## at the start of the line, and at a comment or a string literal on it:
+  ## there is nothing to predict inside a message, and `echo "a` asks for
+  ## nothing. Asking for more tokens than there are is not an error -- it
+  ## yields what there is.
+  let cursor = s.cursor.int
+  let lineStart = s.lineStartOffset
+  var text = newStringOfCap(cursor - lineStart)
+  for j in lineStart ..< cursor: text.add s[j]
+  var toks: seq[TokSpan] = @[]
+  var breaks: seq[int] = @[]
+  var inBlock = 0
+  lexLine(text, 0, text.len, toks, breaks, inBlock)
+  let first = if breaks.len > 0: breaks[^1] else: 0
+  let take = max(first, toks.len - tokens)
+  result.start = if take < toks.len: lineStart + toks[take].a else: cursor
+  result.text = newStringOfCap(cursor - result.start)
+  for j in result.start - lineStart ..< text.len: result.text.add text[j]
 
 # ---------------------------------------------------------------------------
 # Indexing an open buffer, a slice at a time
@@ -142,17 +471,25 @@ proc containsIgnoreCase(word, part: string): bool =
 
 type
   WordSet* = object
-    ## Words that came from one place and can be forgotten as one.
+    ## What came from one place and can be forgotten as one.
     name*: string        ## what was indexed -- a directory, or a file
     words*: seq[string]
+    phrases*: seq[Phrase]
 
   WordIndex* = object
     sets*: seq[WordSet]  ## indexed paths and loaded lists
     live: WordBag        ## words from the open buffers
     merged: WordBag
     sorted: bool
-    version*: int        ## bumped whenever a word was added or dropped, so a
-                         ## listing built from this can tell that it is stale
+    stat: seq[Phrase]    ## the sets' phrases, merged and sorted by text
+    statHead: seq[Phrase]   ## the best of them for the start of a line
+    liveBag: CountBag    ## phrases from the open buffers
+    livePhr: seq[Phrase] ## the above, sorted by text
+    liveHead: seq[Phrase]
+    liveDirty: bool
+    version*: int        ## bumped whenever a word or phrase was added or
+                         ## dropped, so a listing built from this can tell
+                         ## that it is stale
 
 proc addWord(idx: var WordIndex; w: string; live: bool) =
   if live: idx.live.add w
@@ -160,12 +497,53 @@ proc addWord(idx: var WordIndex; w: string; live: bool) =
     idx.sorted = false
     inc idx.version
 
+const
+  HeadRoom = 200
+    ## How many line-starters are kept ready. Nine are ever shown, and the
+    ## rest are the room the live ones need to push past the shipped ones.
+
+proc byRank(a, b: Phrase): int =
+  ## Live first, then what recurs, then alphabetically -- the last so that a
+  ## listing does not reshuffle itself as counts drift.
+  result = cmp(b.live.int, a.live.int)
+  if result == 0: result = cmp(b.count, a.count)
+  if result == 0: result = cmp(a.text, b.text)
+
+proc byInitial(a, b: Phrase): int =
+  result = cmp(b.initial, a.initial)
+  if result == 0: result = cmp(a.text, b.text)
+
+proc headOf(list: seq[Phrase]): seq[Phrase] =
+  result = @[]
+  for p in list:
+    if p.initial > 0: result.add p
+  sort(result, byInitial)
+  if result.len > HeadRoom: result.setLen HeadRoom
+
+proc rebuildPhrases(idx: var WordIndex) =
+  ## The sets' phrases as one list. Only `addSet` and `dropSet` reach here --
+  ## the open buffers keep a list of their own, so typing never pays for this.
+  var all = initTable[string, tuple[count, initial: int]]()
+  for s in idx.sets:
+    for p in s.phrases:
+      all.withValue(p.text, v):
+        inc v.count, p.count
+        inc v.initial, p.initial
+      do:
+        all[p.text] = (p.count, p.initial)
+  idx.stat = @[]
+  for text, v in all:
+    idx.stat.add Phrase(text: text, count: v.count, initial: v.initial)
+  sort(idx.stat, proc (a, b: Phrase): int = cmp(a.text, b.text))
+  idx.statHead = headOf(idx.stat)
+
 proc rebuild(idx: var WordIndex) =
   idx.merged.clear()
   for s in idx.sets:
     for w in s.words: idx.merged.add w
   for w in idx.live.words: idx.merged.add w
   idx.sorted = false
+  idx.rebuildPhrases()
   inc idx.version
 
 proc addSet*(idx: var WordIndex; s: WordSet) =
@@ -179,6 +557,9 @@ proc addSet*(idx: var WordIndex; s: WordSet) =
       return
   idx.sets.add s
   for w in s.words: idx.addWord(w, live = false)
+  if s.phrases.len > 0:
+    idx.rebuildPhrases()
+    inc idx.version
 
 proc dropSet*(idx: var WordIndex; name: string): bool =
   ## Forget one set. Words it shared with another set stay, which is why this
@@ -209,30 +590,30 @@ proc indexSlice*(idx: var WordIndex; s: SynEdit; st: var BufferIndexer;
   if st.walking != s.textVersion:
     st.walking = s.textVersion
     st.pos = 0
-  var left = lines
-  var i = st.pos
-  let cursor = s.cursor
+  # Lift the slice out as one string and scan that, rather than walking the gap
+  # buffer twice with two nearly identical loops. A couple of hundred lines is
+  # a few kilobytes; the copy does not show up next to the scanning.
   let n = s.len
-  while i < n:
-    let c = s[i]
-    if c == '\L':
-      dec left
-      if left <= 0:
-        st.pos = i + 1
-        return true
-      inc i
-    elif isWordStart(c):
-      let start = i
-      while i < n and s[i] in Letters: inc i
-      if i - start >= MinWordLen and not (cursor >= start and cursor <= i):
-        var w = newStringOfCap(i - start)
-        for j in start ..< i: w.add s[j]
-        idx.addWord(w, live = true)
-    elif c in {'0'..'9'}:
-      inc i
-      while i < n and s[i] in Letters: inc i
-    else:
-      inc i
+  var last = st.pos
+  var left = lines
+  while last < n and left > 0:
+    if s[last] == '\L': dec left
+    inc last
+  var text = newStringOfCap(last - st.pos)
+  for j in st.pos ..< last: text.add s[j]
+  let cursor = s.cursor.int - st.pos
+  var bag = WordBag()
+  let before = idx.liveBag.len
+  # Presence, not frequency: this walk starts over on every edit, so counting
+  # here would measure how often the buffer was walked.
+  scanSource(text, bag, idx.liveBag, skipAround = cursor, counting = false)
+  for w in bag.words: idx.addWord(w, live = true)
+  if idx.liveBag.len != before:
+    idx.liveDirty = true
+    inc idx.version
+  if last < n:
+    st.pos = last
+    return true
   st.version = s.textVersion
   st.walking = 0
   st.pos = 0
@@ -257,8 +638,18 @@ proc complete*(idx: var WordIndex; prefix: string; limit = 200): seq[string] =
   # limit is already full without is never computed, and the last of them --
   # the substring search -- is the expensive one. On a large index that is the
   # difference between a listing that appears and one that is waited for.
+  #
+  # The first group is split in two so that a name out of a buffer that is open
+  # comes before one out of the shipped vocabulary. Alphabetical order alone
+  # buried the name defined three lines up under five from the standard
+  # library, which is the wrong way round: what is on screen is what is being
+  # written about.
   for w in idx.merged.words:
-    if w.startsWith(prefix):
+    if w.startsWith(prefix) and w in idx.live:
+      result.add w
+      if result.len >= limit: return
+  for w in idx.merged.words:
+    if w.startsWith(prefix) and w notin idx.live:
       result.add w
       if result.len >= limit: return
   for w in idx.merged.words:
@@ -271,22 +662,127 @@ proc complete*(idx: var WordIndex; prefix: string; limit = 200): seq[string] =
       result.add w
       if result.len >= limit: return
 
+proc materialize(idx: var WordIndex) =
+  if not idx.liveDirty: return
+  idx.livePhr = idx.liveBag.toPhrases(live = true)
+  idx.liveHead = headOf(idx.livePhr)
+  idx.liveDirty = false
+
+proc collect(list: seq[Phrase]; prefix: string; dest: var seq[Phrase]) =
+  ## The phrases that begin with `prefix` and say more than it does. The list
+  ## is sorted by text, so this is a range and not a search: what a listing
+  ## costs stops depending on how much has been indexed.
+  var i = lowerBound(list, prefix,
+                     proc (p: Phrase; key: string): int = cmp(p.text, key))
+  while i < list.len and list[i].text.startsWith(prefix):
+    if list[i].text.len > prefix.len: dest.add list[i]
+    inc i
+
+proc completePhrases*(idx: var WordIndex; prefix: string; limit = 20):
+                     seq[string] =
+  ## The token runs that could continue `prefix`, best first. `prefix` is
+  ## matched literally, so it has to have been through `normalizeSpan` -- which
+  ## is also what makes a trailing space meaningful: `case ` asks what follows
+  ## the word, `case` asks what the word itself could still become.
+  result = @[]
+  if prefix.len == 0: return
+  idx.materialize()
+  var hits: seq[Phrase] = @[]
+  collect(idx.livePhr, prefix, hits)
+  collect(idx.stat, prefix, hits)
+  # Mining every window at once produces chains -- `for i in`, `for i in 0`,
+  # `for i in 0 ..<` -- and three rows that say nested things are two rows
+  # wasted. A phrase whose extension was seen exactly as often as it was never
+  # occurs on its own, so it says nothing the longer one does not; sorting by
+  # text puts a phrase directly in front of its shortest extension, which is
+  # what makes this the one comparison it takes to find out.
+  sort(hits, proc (a, b: Phrase): int = cmp(a.text, b.text))
+  var keep = newSeq[Phrase](0)
+  for i in 0 ..< hits.len:
+    if i + 1 < hits.len and hits[i+1].count == hits[i].count and
+       hits[i+1].live == hits[i].live and
+       hits[i+1].text.startsWith(hits[i].text):
+      continue
+    keep.add hits[i]
+  sort(keep, byRank)
+  var seen = initHashSet[string]()
+  for p in keep:
+    # Two rows that differ only in where the spaces are -- `0 ..< n` and
+    # `0..<n` -- are one suggestion written twice, and the more common spelling
+    # of it got here first.
+    var squeezed = newStringOfCap(p.text.len)
+    for c in p.text:
+      if c != ' ': squeezed.add c
+    if seen.containsOrIncl(squeezed): continue
+    result.add p.text
+    if result.len >= limit: return
+
+proc completeInitial*(idx: var WordIndex; limit = 20): seq[string] =
+  ## What could begin a line, for the caret that sits at the start of one and
+  ## has told us nothing yet. Ranked by how often each did begin one, which is
+  ## the only thing there is to go on when there is no prefix at all.
+  result = @[]
+  idx.materialize()
+  var seen = initHashSet[string]()
+  for list in [idx.liveHead, idx.statHead]:
+    for p in list:
+      if seen.containsOrIncl(p.text): continue
+      result.add p.text
+      if result.len >= limit: return
+
+proc phraseCount*(idx: var WordIndex): int =
+  idx.materialize()
+  idx.stat.len + idx.livePhr.len
+
 # ---------------------------------------------------------------------------
 # Reading and writing a word list
 # ---------------------------------------------------------------------------
 
 proc toText*(s: WordSet): string =
-  ## The set as a file: where the words came from, then one word per line,
-  ## sorted -- so that re-indexing a directory produces a diff of what actually
-  ## changed rather than of everything.
+  ## The set as a file: where it came from, then the words one per line, then
+  ## the phrases. Each of the two runs is sorted, so that re-indexing a
+  ## directory produces a diff of what actually changed rather than of
+  ## everything.
+  ##
+  ## A phrase line carries two numbers in front of it -- how often it was seen
+  ## and how often it began a line -- and a word line carries none. Nothing has
+  ## to say which is which, because a phrase always begins with a name and so
+  ## can never begin with a digit.
   var words = s.words
   sort words
-  result = newStringOfCap(words.len * 12 + s.name.len + 2)
+  var phrases = s.phrases
+  sort(phrases, proc (a, b: Phrase): int = cmp(a.text, b.text))
+  result = newStringOfCap(words.len * 12 + phrases.len * 24 + s.name.len + 2)
   result.add s.name
   result.add '\n'
   for w in words:
     result.add w
     result.add '\n'
+  for p in phrases:
+    result.add $p.count
+    result.add ' '
+    result.add $p.initial
+    result.add ' '
+    result.add p.text
+    result.add '\n'
+
+proc splitCounts(line: string): tuple[count, initial, at: int] =
+  ## The two leading numbers of a phrase line, and where the phrase itself
+  ## begins. `at = 0` when there are none, which is what a word line looks
+  ## like. One number is accepted as well, so that a file somebody has edited
+  ## by hand is still read the way it looks.
+  result = (0, 0, 0)
+  var i = 0
+  var fields = 0
+  while fields < 2:
+    var j = i
+    while j < line.len and line[j] in Digits: inc j
+    if j == i or j >= line.len or line[j] != ' ': break
+    let v = parseInt(line[i ..< j])
+    if fields == 0: result.count = v else: result.initial = v
+    inc fields
+    i = j + 1
+    result.at = i
 
 proc parseWordSet*(text: string): WordSet =
   ## Read what `toText` wrote, and anything close enough to it: blank lines
@@ -294,7 +790,7 @@ proc parseWordSet*(text: string): WordSet =
   ## the same as one written here. There is nothing in it that can fail to
   ## parse, which is the point -- a word list is a cache, and a cache must
   ## never be a reason the editor will not start.
-  result = WordSet(name: "", words: @[])
+  result = WordSet(name: "", words: @[], phrases: @[])
   var first = true
   for line in text.splitLines:
     let w = line.strip
@@ -303,8 +799,15 @@ proc parseWordSet*(text: string): WordSet =
       # where it came from, and the caller fills that in.
       result.name = w
       first = false
-    elif w.len > 0:
-      result.words.add w
+    elif w.len == 0:
+      discard
+    else:
+      let (count, initial, at) = splitCounts(w)
+      if at > 0 and at < w.len:
+        result.phrases.add Phrase(text: w[at .. ^1], count: max(count, 1),
+                                  initial: initial)
+      else:
+        result.words.add w
 
 # ---------------------------------------------------------------------------
 # Indexing a directory tree
@@ -326,6 +829,9 @@ type
     skipped*: int          ## files too large, or unreadable
     truncated*: bool       ## the tree had more files than `MaxIndexFiles`
     bag*: WordBag
+    phrases*: CountBag
+    pruned*: bool          ## the bag grew past `MaxPhraseEntries` and what had
+                           ## been seen once was thrown away to make room
     active*: bool
 
 proc indexable(path: string): bool =
@@ -376,14 +882,27 @@ proc stepIndexJob*(job: var IndexJob; files = 8): bool {.discardable.} =
       if getFileSize(path) > MaxIndexFileSize:
         inc job.skipped
       else:
-        scanWords(readFile(path), job.bag)
+        let text = readFile(path)
+        job.phrases.nextFile()
+        scanSource(text, job.bag, job.phrases)
     except CatchableError:
       inc job.skipped
+  if job.phrases.len > MaxPhraseEntries:
+    job.phrases.prune(MinPhraseCount)
+    job.pruned = true
   job.active = job.pending.len > 0
   result = job.active
 
 proc doneIndexJob*(job: IndexJob): WordSet =
-  WordSet(name: job.name, words: job.bag.words)
+  ## Only what recurred: a phrase seen once in a whole tree is a line somebody
+  ## wrote, not a way of writing. In a tree it also has to have been written in
+  ## two different files, which is what separates an idiom from a machine-
+  ## written table of the same line -- and cannot be asked of a single file,
+  ## since there the second file does not exist.
+  WordSet(name: job.name, words: job.bag.words,
+          phrases: job.phrases.toPhrases(
+            minCount = MinPhraseCount,
+            minFiles = if job.total > 1: MinPhraseFiles else: 1))
 
 proc progress*(job: IndexJob): string =
   ## What to put in a status bar while the job runs.

@@ -12,13 +12,21 @@
 ##   selection to move and the arrow keys never leave the editor.
 ## * The caret never comes here, so nothing has to be handed back afterwards.
 ##
-## That makes it the right home for suggestions that are longer than a word --
-## a construct spelled across a whole row is unreadable in a popup that sits on
-## top of the line it would replace. This first version predicts from the word
-## index all the same, which is what proves the interaction; what it does not
-## have yet is anything to say when the caret is not behind a word, and that is
-## what a notion of context is for.
+## That makes it the right home for suggestions longer than a word -- a
+## construct spelled across a whole row is unreadable in a popup sitting on top
+## of the line it would replace.
+##
+## Which is what it offers. A row is a run of tokens somebody has written
+## before, looked up under as much of the current line as agrees with one, so
+## `case ` finds `case typ.kind` and `result.` finds `result.add(`. Rows are
+## tried widest first, because a suggestion that agrees with four tokens of
+## what is already there is worth more than one that agrees with one. When
+## there is a name being typed, plain words keep the last rows, since a phrase
+## beginning with a name implies the name but not the other way round; and when
+## the caret is at the start of a line, with nothing to go on at all, what is
+## offered is what tends to begin one.
 
+import std/sets
 import uirelays
 import widgets/[synedit, wordindex]
 
@@ -28,14 +36,27 @@ const
     ## would be one nothing could accept. A layout that gives the panel fewer
     ## lines than this scrolls; the numbers stay put either way, so a row does
     ## not change key under the pointer.
+  WordRoom = 2
+    ## Rows kept back for plain words when there is a name being typed. A
+    ## phrase that starts with a name implies the name, but not the other way
+    ## round -- so without this, `addFloat(` and its friends could fill the
+    ## panel and leave nowhere to take `addFloat` on its own.
 
 type
+  Row = object
+    text: string
+    start: int           ## what the row replaces: everything from here to the
+                         ## caret. A phrase matched three tokens back reaches
+                         ## further left than a word does, and each row knows
+                         ## how far its own does.
+
   Prediction* = object
     ed: SynEdit          ## the panel is a listing, and a listing is text
-    items: seq[string]
-    pre: string          ## the prefix `items` was built for
-    hasPre: bool         ## whether there was a prefix at all
-    version: int         ## the index version it was built from
+    items: seq[Row]
+    pre: string          ## the longest prefix `items` was looked up under
+    at: int              ## the caret they were built for
+    textVer: int         ## the buffer version they were built from
+    version: int         ## the index version they were built from
 
 proc initPrediction*(font: Font): Prediction =
   result = Prediction(ed: createSynEdit(font))
@@ -46,10 +67,12 @@ proc initPrediction*(font: Font): Prediction =
 
 proc setFont*(p: var Prediction; f: Font) {.inline.} = p.ed.setFont f
 proc `theme=`*(p: var Prediction; t: Theme) {.inline.} = p.ed.theme = t
-proc rows*(p: Prediction): seq[string] {.inline.} = p.items
+proc rows*(p: Prediction): seq[string] =
   ## What the panel is offering, in the order it shows it -- row 1 first. Empty
   ## when it has nothing to offer, which is the one state it draws a line of
   ## explanation in instead.
+  result = @[]
+  for it in p.items: result.add it.text
 proc wheelScroll*(p: var Prediction; delta: int) {.inline.} =
   p.ed.wheelScroll delta
 
@@ -60,16 +83,16 @@ proc rebuildText(p: var Prediction; words: WordIndex) =
     # nothing to offer says what would fill it instead.
     text = if words.wordCount == 0:
              "nothing indexed yet -- try: index <path>"
-           elif p.hasPre:
+           elif p.pre.len > 0:
              "nothing continues '" & p.pre & "'"
            else:
-             "type a name to see what could continue it"
+             "type, and this says what could come next"
   else:
-    for i, w in p.items:
+    for i, it in p.items:
       if i > 0: text.add "\n"
       text.add $(i + 1)
       text.add ' '
-      text.add w
+      text.add it.text
   # A row is framed because it can be clicked; the line of explanation cannot,
   # so it is not framed and does not invite the click it would ignore.
   p.ed.setActionLines(if p.items.len == 0: -1 else: 0)
@@ -79,29 +102,53 @@ proc rebuildText(p: var Prediction; words: WordIndex) =
   # rebuild apart from someone typing into the panel.
   p.ed.markSaved()
 
-proc refill(p: var Prediction; words: var WordIndex; prefix: string;
-            hasPre: bool) =
-  p.pre = prefix
-  p.hasPre = hasPre
+proc refill(p: var Prediction; words: var WordIndex; ed: SynEdit) =
   p.version = words.version
+  p.at = ed.cursor
+  p.textVer = ed.textVersion
   p.items.setLen 0
-  if hasPre:
-    # One more than fits, because an exact hit is dropped below: offering the
-    # word that is already written is a row spent saying nothing.
-    for w in words.complete(prefix, limit = MaxRows + 1):
-      if w != prefix:
-        p.items.add w
-        if p.items.len >= MaxRows: break
+  p.pre = ""
+  var seen = initHashSet[string]()
+  let word = ed.getWordPrefix
+  # A phrase asked for with more tokens is a phrase that agrees with more of
+  # what is already written, so the widest reach goes first. Asking for more
+  # tokens than the line holds lands on the same place twice, which is what
+  # `lastStart` notices.
+  let room = if word.len > 0: MaxRows - WordRoom else: MaxRows
+  var lastStart = -1
+  for k in countdown(MaxPhraseTokens, 1):
+    if p.items.len >= room: break
+    let span = spanPrefix(ed, k)
+    if span.start == lastStart or span.text.len == 0: continue
+    lastStart = span.start
+    let pre = normalizeSpan(span.text)
+    if p.pre.len == 0: p.pre = pre
+    for t in words.completePhrases(pre, limit = room):
+      if seen.containsOrIncl(t): continue
+      p.items.add Row(text: t, start: span.start)
+      if p.items.len >= room: break
+  if word.len > 0:
+    if p.pre.len == 0: p.pre = word
+    # One more than fits, because an exact hit is dropped: offering the word
+    # that is already written is a row spent saying nothing.
+    for w in words.complete(word, limit = MaxRows + 1):
+      if w == word or seen.containsOrIncl(w): continue
+      p.items.add Row(text: w, start: ed.cursor - word.len)
+      if p.items.len >= MaxRows: break
+  elif p.items.len == 0:
+    # Nothing at all in front of the caret on this line. What is left to go on
+    # is what tends to begin one.
+    for t in words.completeInitial(limit = MaxRows):
+      p.items.add Row(text: t, start: ed.cursor)
   p.rebuildText(words)
 
 proc update*(p: var Prediction; words: var WordIndex; ed: SynEdit) =
-  ## Bring the panel in line with where the caret is. Called every frame: the
-  ## work happens only when the prefix or the index actually moved, so the
-  ## common frame costs a string compare.
-  let prefix = ed.getWordPrefix
-  let hasPre = prefix.len > 0
-  if prefix != p.pre or hasPre != p.hasPre or words.version != p.version:
-    p.refill(words, prefix, hasPre)
+  ## Bring the panel in line with where the caret is. Called every frame: it
+  ## looks things up again only when the caret, the text or the index moved,
+  ## so a frame in which nothing happened costs three integer compares.
+  if ed.cursor != p.at or ed.textVersion != p.textVer or
+     words.version != p.version:
+    p.refill(words, ed)
   elif p.ed.changed:
     # Someone typed into the panel. It is a listing, not a buffer, so put back
     # what it is supposed to say.
@@ -111,7 +158,8 @@ proc accept*(p: var Prediction; row: int; ed: var SynEdit): bool =
   ## Take row `row`, counting from 1 as the panel does. False when there is no
   ## such row, so the caller can leave the keystroke alone.
   if row < 1 or row > p.items.len: return false
-  ed.replaceWordPrefix(p.items[row - 1])
+  let it = p.items[row - 1]
+  ed.replaceSpan(it.start, it.text)
   result = true
 
 proc draw*(p: var Prediction; e: Event; area: Rect; focused: bool): int =

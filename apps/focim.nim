@@ -925,9 +925,11 @@ proc main =
         let ws = doneIndexJob(job)
         words.addSet ws
         saveConfig(wordSetFile(ws.name), ws.toText)
-        tabs.note = "indexed " & ws.name & ": " & $ws.words.len & " words" &
+        tabs.note = "indexed " & ws.name & ": " & $ws.words.len & " words, " &
+          $ws.phrases.len & " phrases" &
           (if job.skipped > 0: ", " & $job.skipped & " files unreadable" else: "") &
-          (if job.truncated: ", stopped at " & $MaxIndexFiles & " files" else: "")
+          (if job.truncated: ", stopped at " & $MaxIndexFiles & " files" else: "") &
+          (if job.pruned: ", too many phrases to keep the rare ones" else: "")
         job = IndexJob()
 
     let cells = layout.resolve(width, height, fm.lineHeight, gap = 2)
