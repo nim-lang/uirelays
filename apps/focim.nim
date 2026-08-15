@@ -177,6 +177,12 @@ var gUiScale = 100
   ## A global because every `fontForSize` call needs it and none of them cares
   ## about anything else the window knows.
 
+proc scaledPx(value: int): int {.inline.} =
+  ## The same turn from logical to physical that `fontForSize` does for a font
+  ## size, for the handful of pixel sizes this file states itself. The `(px N)`
+  ## sizes in a layout are `resolve`'s business, not this one's.
+  value * gUiScale div 100
+
 proc fontForSize(fonts: var Table[int, Font]; size: int): Font =
   ## `size` and the cache key are logical; only what reaches `openFont` is
   ## physical.
@@ -429,7 +435,9 @@ proc reparseConfig(src: string; width, height, lineHeight: int;
   if parsed.error.len > 0:
     note = "config: " & parsed.error
     return
-  let cells = parsed.layout.resolve(width, height, lineHeight, gap = 2)
+  let cells = parsed.layout.resolve(width, height, lineHeight,
+                                    padding = scaledPx(6), gap = scaledPx(2),
+                                    uiScale = gUiScale)
   for name in RequiredCells:
     if name notin cells:
       note = "config: no '" & name & "' cell"
@@ -934,7 +942,9 @@ proc main =
           (if job.truncated: ", stopped at " & $MaxIndexFiles & " files" else: "")
         job = IndexJob()
 
-    let cells = layout.resolve(width, height, fm.lineHeight, gap = 2)
+    let cells = layout.resolve(width, height, fm.lineHeight,
+                               padding = scaledPx(6), gap = scaledPx(2),
+                               uiScale = gUiScale)
     # A layout may have dropped the cell that had the focus.
     if focus notin cells: focus = "editor"
 

@@ -60,7 +60,7 @@ vertically, so its children state heights.
 
 | Size | Meaning |
 |------|---------|
-| `(px 250)` | 250 of whatever unit the driver draws in. |
+| `(px 250)` | 250 *logical* pixels: `resolve`'s `uiScale` turns them into the display's, so the same config gives the same window on a 4K laptop panel as on a 96 dpi monitor. |
 | `(lines 5)` | `5 * lineHeight`, plus `padding` above and below. |
 | `(stretch 2)` | Two shares of what the fixed sizes leave over. |
 

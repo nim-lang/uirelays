@@ -60,7 +60,11 @@ proc main =
           running = false
       else: discard
 
-    let cells = parsed.resolve(width, height, fm.lineHeight)
+    # `uiScale` is what makes the `(px 30)` and `(px 200)` above hold as many
+    # pixels as they are worth on this display, exactly as `scaled` did for
+    # the font size.
+    let cells = parsed.resolve(width, height, fm.lineHeight,
+                               uiScale = win.uiScale)
 
     # hit test
     let hit = cells.hitTest(mouseX, mouseY)

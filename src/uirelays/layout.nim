@@ -24,7 +24,9 @@
 # A box may state its size along the axis its parent divides -- a height inside
 # `rows`, a width inside `cols`:
 #
-#   (px 250)     250 of whatever unit the driver draws in
+#   (px 250)     250 *logical* pixels: `resolve`'s `uiScale` turns them into
+#                the display's, so one layout describes the same window on a
+#                4K laptop panel as on a 96 dpi monitor
 #   (lines 5)    5 * lineHeight, plus the padding above and below
 #   (stretch 2)  two shares of what the fixed sizes leave over
 #
@@ -218,13 +220,13 @@ proc parseLayout*(s: string): Layout =
 # Resolving
 # ---------------------------------------------------------------------------
 
-proc fixedSize(sz: CellSize; lineHeight, padding: int): int =
+proc fixedSize(sz: CellSize; lineHeight, padding, uiScale: int): int =
   case sz.kind
-  of skPixels: result = sz.value
+  of skPixels: result = sz.value * uiScale div 100
   of skLines: result = sz.value * lineHeight + 2 * padding
   of skStretch: result = 0
 
-proc place(n: Node; r: Rect; lineHeight, padding, gap: int;
+proc place(n: Node; r: Rect; lineHeight, padding, gap, uiScale: int;
            res: var Table[string, Rect]) =
   if n.kind == nkCell:
     res[n.name] = r
@@ -245,7 +247,7 @@ proc place(n: Node; r: Rect; lineHeight, padding, gap: int;
       weights += sz.value
       lastStretch = i
     else:
-      sizes[i] = fixedSize(sz, lineHeight, padding)
+      sizes[i] = fixedSize(sz, lineHeight, padding, uiScale)
       fixed += sizes[i]
 
   let remaining = max(0, axis - fixed - gaps)
@@ -265,21 +267,27 @@ proc place(n: Node; r: Rect; lineHeight, padding, gap: int;
   for i in 0 ..< n.children.len:
     let sub = if vertical: Rect(x: r.x, y: pos, w: r.w, h: sizes[i])
               else: Rect(x: pos, y: r.y, w: sizes[i], h: r.h)
-    place(n.children[i], sub, lineHeight, padding, gap, res)
+    place(n.children[i], sub, lineHeight, padding, gap, uiScale, res)
     pos += sizes[i] + gap
 
 proc resolve*(layout: Layout; screenW, screenH: int;
               lineHeight: int = 20; padding: int = 6;
-              gap: int = 0): Table[string, Rect] =
+              gap: int = 0; uiScale: int = 100): Table[string, Rect] =
   ## Resolve the layout into named Rects given the window's dimensions.
   ## `lineHeight` resolves `(lines N)` sizes, `padding` is added above and
   ## below such a text area, and `gap` inserts pixel gaps between adjacent
   ## boxes so that the background can show through as a border.
+  ##
+  ## `uiScale` is `ScreenLayout.uiScale`, and enlarges the `(px N)` sizes in
+  ## the layout text -- the only sizes here a caller cannot scale on its own.
+  ## Everything passed in above is in the driver's own unit already, so a
+  ## caller that scales its font has to scale `padding` and `gap` with it.
+  ##
   ## A layout that did not parse resolves to nothing.
   result = initTable[string, Rect]()
   if layout.error.len > 0: return
   place(layout.root, Rect(x: 0, y: 0, w: screenW, h: screenH),
-        lineHeight, padding, gap, result)
+        lineHeight, padding, gap, uiScale, result)
 
 proc hasCell(n: Node; name: string): bool =
   if n.kind == nkCell:

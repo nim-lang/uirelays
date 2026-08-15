@@ -626,6 +626,12 @@ proc wndProc(hwnd: HWND; msg: UINT; wp: WPARAM; lp: LPARAM): LRESULT {.stdcall.}
 # ---- Screen hook implementations ----
 
 proc winCreateWindow(layout: var ScreenLayout) =
+  # Seed the scale before there is a window: `CreateWindowExW` and `ShowWindow`
+  # below both send WM_SIZE synchronously, and the event that lands in the
+  # queue carries `gUiScale` with it. Left at the 100 default, that event
+  # reaches the app one frame later and tells it the display is a 96 dpi one,
+  # undoing the real scale this proc goes on to report.
+  gUiScale = currentUiScale()
   gHinstance = GetModuleHandleW(nil)
   let className = newWideCString("NimEditWinAPI")
 
@@ -671,6 +677,12 @@ proc winCreateWindow(layout: var ScreenLayout) =
   layout.scaleY = 1
   gUiScale = currentUiScale()
   layout.uiScale = gUiScale
+  # The seed above is the system DPI, which is not this window's on a desktop
+  # of mixed density -- only now can `GetDpiForWindow` be asked. Anything the
+  # messages during creation already queued gets the same answer this call
+  # hands back, so that no event ever contradicts it.
+  for e in eventQueue.mitems:
+    if e.kind == WindowMetricsEvent: e.uiScale = gUiScale
 
   recreateBackBuffer()
 

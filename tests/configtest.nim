@@ -64,6 +64,21 @@ block:
   equals("and all three are readable", c.note, "")
 
 block:
+  # A `(px N)` is logical, so the same config has to describe the same window
+  # on a display of any density: at 200% the sidebar takes twice the pixels
+  # and the editor keeps whatever that leaves.
+  let c = parsed("(config (layout (cols (sidebar (px 30)) (editor))))")
+  let normal = c.layout.resolve(100, 100, lineHeight = 10, padding = 0)
+  let dense = c.layout.resolve(100, 100, lineHeight = 10, padding = 0,
+                               uiScale = 200)
+  equals("a px size is logical", $normal["sidebar"].w & " -> " & $dense["sidebar"].w,
+         "30 -> 60")
+  equals("and the stretching neighbour gives way",
+         $normal["editor"].w & " -> " & $dense["editor"].w, "70 -> 40")
+  equals("the dense sidebar still starts at the left edge",
+         $dense["sidebar"].x & "," & $dense["editor"].x, "0,60")
+
+block:
   let c = parsed("(config (theme (bg \"#14141E\")) (layout (editor)))")
   check("theme before layout", c.layout.cell("editor"))
   equals("and both took effect", $c.theme.bg, "20,20,30")
