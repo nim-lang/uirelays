@@ -249,6 +249,8 @@ proc SetWindowTextW(hWnd: HWND; lpString: ptr uint16): BOOL
   {.stdcall, dynlib: "user32", importc.}
 proc LoadCursorW(hInstance: HINSTANCE; lpCursorName: ptr uint16): HCURSOR
   {.stdcall, dynlib: "user32", importc.}
+proc LoadIconW(hInstance: HINSTANCE; lpIconName: ptr uint16): HICON
+  {.stdcall, dynlib: "user32", importc.}
 proc SetCursorWin(hCursor: HCURSOR): HCURSOR
   {.stdcall, dynlib: "user32", importc: "SetCursor".}
 proc GetKeyState(nVirtKey: int32): int16
@@ -640,6 +642,10 @@ proc winCreateWindow(layout: var ScreenLayout) =
   wc.style = CS_HREDRAW or CS_VREDRAW
   wc.lpfnWndProc = wndProc
   wc.hInstance = gHinstance
+  # Resource ID 1 is the app icon when the binary was linked with a `.res`
+  # (see apps/focim.rc). Nil is fine when no such resource was linked.
+  wc.hIcon = LoadIconW(gHinstance, cast[ptr uint16](1))
+  wc.hIconSm = LoadIconW(gHinstance, cast[ptr uint16](1))
   wc.hCursor = LoadCursorW(nil, IDC_ARROW)
   wc.lpszClassName = cast[ptr uint16](className[0].addr)
 
@@ -990,7 +996,9 @@ proc initWinapiDriver*() =
     refresh: winRefresh,
     saveState: winSaveState, restoreState: winRestoreState,
     setClipRect: winSetClipRect, setCursor: winSetCursor,
-    setWindowTitle: winSetWindowTitle)
+    setWindowTitle: winSetWindowTitle,
+    setWindowClass: proc (instance, className: string) = discard,
+    setWindowIcon: proc (cardinals: pointer; n: int) = discard)
   fontRelays = FontRelays(
     openFont: winOpenFont, closeFont: winCloseFont,
     getFontMetrics: winGetFontMetrics, measureText: winMeasureText,

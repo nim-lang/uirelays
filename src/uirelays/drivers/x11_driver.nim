@@ -57,6 +57,10 @@ type
     x, y: cshort
     width, height: cushort
 
+  XClassHint {.pure.} = object
+    res_name: cstring
+    res_class: cstring
+
   XColor {.pure, used.} = object
     pixel: culong
     red, green, blue: cushort
@@ -225,6 +229,7 @@ const
   CurrentTime = 0.XTime
   XA_ATOM = 4.Atom
   XA_STRING = 31.Atom
+  XA_CARDINAL = 6.Atom
   PropModeReplace = 0.cint
 
   # Event types
@@ -393,6 +398,8 @@ proc XPending(dpy: pointer): cint
 proc XFlush(dpy: pointer): cint
   {.cdecl, dynlib: libX11, importc.}
 proc XStoreName(dpy: pointer; w: XID; name: cstring): cint
+  {.cdecl, dynlib: libX11, importc.}
+proc XSetClassHint(dpy: pointer; w: XID; class_hints: ptr XClassHint): cint
   {.cdecl, dynlib: libX11, importc.}
 proc XInternAtom(dpy: pointer; name: cstring; onlyIfExists: XBool): Atom
   {.cdecl, dynlib: libX11, importc.}
@@ -983,6 +990,26 @@ proc x11SetWindowTitle(title: string) =
   var t = title
   discard XStoreName(gDisplay, gWindow, cstr(t))
 
+proc x11SetWindowClass(instance, className: string) =
+  if gDisplay == nil or gWindow == 0: return
+  var hint = XClassHint(res_name: instance.cstring, res_class: className.cstring)
+  discard XSetClassHint(gDisplay, gWindow, addr hint)
+
+proc x11SetWindowIcon(cardinals: pointer; n: int) =
+  ## `cardinals` is a packed `uint32` `_NET_WM_ICON` payload. Xlib's format-32
+  ## `XChangeProperty` wants an array of `clong` (8 bytes each on LP64) with the
+  ## value in the low 32 bits -- expand before the call.
+  if gDisplay == nil or gWindow == 0 or cardinals == nil or n <= 0: return
+  let atom = XInternAtom(gDisplay, "_NET_WM_ICON", 0)
+  if atom == 0: return
+  let src = cast[ptr UncheckedArray[uint32]](cardinals)
+  var longs = newSeq[clong](n)
+  for i in 0 ..< n:
+    longs[i] = clong(src[i])
+  discard XChangeProperty(gDisplay, gWindow, atom, XA_CARDINAL, 32,
+                          PropModeReplace, addr longs[0], n.cint)
+  discard XFlush(gDisplay)
+
 # ---- Input hook implementations ----
 
 proc x11PollEvent(e: var input.Event; flags: set[InputFlag]): bool =
@@ -1086,7 +1113,9 @@ proc initX11Driver*() =
     refresh: x11Refresh,
     saveState: x11SaveState, restoreState: x11RestoreState,
     setClipRect: x11SetClipRect, setCursor: x11SetCursor,
-    setWindowTitle: x11SetWindowTitle)
+    setWindowTitle: x11SetWindowTitle,
+    setWindowClass: x11SetWindowClass,
+    setWindowIcon: x11SetWindowIcon)
   fontRelays = FontRelays(
     openFont: x11OpenFont, closeFont: x11CloseFont,
     getFontMetrics: x11GetFontMetrics, measureText: x11MeasureText,

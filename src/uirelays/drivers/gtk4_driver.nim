@@ -96,12 +96,15 @@ proc g_error_free(err: ptr GError) {.importc, nodecl, cdecl.}
 proc g_free(p: pointer) {.importc, nodecl, cdecl.}
 proc g_get_monotonic_time(): int64 {.importc, nodecl, cdecl.}
 proc g_usleep(micros: culong) {.importc, nodecl, cdecl.}
+proc g_set_prgname(name: cstring) {.importc, nodecl, cdecl.}
+proc g_get_prgname(): cstring {.importc, nodecl, cdecl.}
 
 proc g_main_context_iteration(ctx: pointer; mayBlock: gboolean): gboolean {.importc, nodecl, cdecl.}
 
 proc gtk_init_check(): gboolean {.importc, nodecl, cdecl.}
 proc gtk_window_new(): pointer {.importc, nodecl, cdecl.}
 proc gtk_window_set_title(win: pointer; title: cstring) {.importc, nodecl, cdecl.}
+proc gtk_window_set_icon_name(win: pointer; name: cstring) {.importc, nodecl, cdecl.}
 proc gtk_window_set_default_size(win: pointer; w, h: gint) {.importc, nodecl, cdecl.}
 proc gtk_window_set_child(win: pointer; child: pointer) {.importc, nodecl, cdecl.}
 proc gtk_window_destroy(win: pointer) {.importc, nodecl, cdecl.}
@@ -147,6 +150,7 @@ proc gtk_im_context_focus_in(im: pointer) {.importc, nodecl, cdecl.}
 proc gdk_event_get_modifier_state(ev: pointer): guint {.importc, nodecl, cdecl.}
 proc gdk_keyval_to_lower(k: guint): guint {.importc, nodecl, cdecl.}
 proc gdk_cursor_new_from_name(name: cstring; fallback: pointer): pointer {.importc, nodecl, cdecl.}
+proc gdk_set_program_class(name: cstring) {.importc, nodecl, cdecl.}
 proc gdk_display_get_default(): pointer {.importc, nodecl, cdecl.}
 proc gdk_display_get_clipboard(disp: pointer): pointer {.importc, nodecl, cdecl.}
 proc gdk_clipboard_set_text(clip: pointer; text: cstring) {.importc, nodecl, cdecl.}
@@ -750,6 +754,21 @@ proc gtkSetWindowTitle(title: string) =
   if win != nil:
     gtk_window_set_title(win, cstring(title))
 
+proc gtkSetWindowClass(instance, className: string) =
+  g_set_prgname(instance.cstring)
+  gdk_set_program_class(className.cstring)
+  if win != nil:
+    gtk_window_set_icon_name(win, instance.cstring)
+
+proc gtkSetWindowIcon(cardinals: pointer; n: int) =
+  ## GTK takes the taskbar icon from the icon theme (`Icon=` in the .desktop
+  ## file). The cardinals payload is an X11 thing; here we just re-apply the
+  ## program name as an icon-theme lookup.
+  discard cardinals
+  discard n
+  if win != nil:
+    gtk_window_set_icon_name(win, g_get_prgname())
+
 # --- Input hooks ---
 
 proc pumpGtk() =
@@ -821,7 +840,9 @@ proc initGtk4Driver*() =
     refresh: gtkRefresh,
     saveState: gtkSaveState, restoreState: gtkRestoreState,
     setClipRect: gtkSetClipRect, setCursor: gtkSetCursor,
-    setWindowTitle: gtkSetWindowTitle)
+    setWindowTitle: gtkSetWindowTitle,
+    setWindowClass: gtkSetWindowClass,
+    setWindowIcon: gtkSetWindowIcon)
   fontRelays = FontRelays(
     openFont: gtkOpenFont, closeFont: gtkCloseFont,
     getFontMetrics: gtkGetFontMetrics, measureText: gtkMeasureText,

@@ -62,6 +62,16 @@ one thing, so copying twice before pasting once loses the first -- here the
 last thirty texts that entered it stay, from this application or from any
 other, numbered, and Ctrl+1 .. Ctrl+9 paste one at the caret. See
 `doc/clipboard.md`.
+
+Icon: `focim-icon.png` is the source art. On Windows, `focim.ico` /
+`focim.rc` / `focim.res` stamp the .exe (rebuild with
+`windres focim.rc -O coff -o focim.res`). On Linux / macOS, install once with
+`tools/install_desktop.nim` -- FreeDesktop entry on Linux, `focim.app` bundle
+on macOS. `StartupWMClass` / the bundle id stem must match `setWindowClass`:
+
+    nim c -r tools/install_desktop.nim focim apps/focim \
+      --generic-name "Text Editor" --comment "Focussed Nim Editor" \
+      --categories "Development;TextEditor;"
 ]##
 
 import std/[tables, os, algorithm]
@@ -72,6 +82,21 @@ import uirelays
 import uirelays/layout
 import widgets/[synedit, terminal, config, wordindex, cliphistory]
 import completion
+
+# Windows PE icon: `windres focim.rc -O coff -o focim.res` (see focim.rc).
+# Linux taskbar: embedded `_NET_WM_ICON` below + one-shot `tools/install_desktop.nim`.
+when defined(windows):
+  {.link: "focim.res".}
+
+when defined(linux):
+  const focimIconNetWm = staticRead("focim-icon.netwm")
+
+  proc focimIconCardinals(): seq[uint32] =
+    var raw = focimIconNetWm
+    let n = raw.len div 4
+    result = newSeq[uint32](n)
+    if n > 0:
+      copyMem(addr result[0], addr raw[0], n * 4)
 
 const defaultConfig = """
 (config
@@ -789,6 +814,12 @@ proc main =
   var width = screen.width
   var height = screen.height
   gUiScale = screen.uiScale
+
+  # Taskbar identity: WM_CLASS / StartupWMClass "focim", plus the bitmap the
+  # window manager shows when no .desktop entry is installed yet.
+  setWindowClass("focim", "Focim")
+  when defined(linux):
+    setWindowIcon(focimIconCardinals())
 
   var fonts: Table[int, Font]
   let font = fonts.fontForSize(DefaultFontSize)

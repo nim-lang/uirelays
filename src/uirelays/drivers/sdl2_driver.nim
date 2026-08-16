@@ -374,7 +374,9 @@ proc initSdl2Driver*() =
     refresh: sdlRefresh,
     saveState: sdlSaveState, restoreState: sdlRestoreState,
     setClipRect: sdlSetClipRect, setCursor: sdlSetCursor,
-    setWindowTitle: sdlSetWindowTitle)
+    setWindowTitle: sdlSetWindowTitle,
+    setWindowClass: proc (instance, className: string) = discard,
+    setWindowIcon: proc (cardinals: pointer; n: int) = discard)
   fontRelays = FontRelays(
     openFont: sdlOpenFont, closeFont: sdlCloseFont,
     getFontMetrics: sdlGetFontMetrics, measureText: sdlMeasureText,

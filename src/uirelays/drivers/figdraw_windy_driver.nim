@@ -709,6 +709,8 @@ proc initFigDrawWindyDriver*() =
     setClipRect: figSetClipRect,
     setCursor: figSetCursor,
     setWindowTitle: figSetWindowTitle,
+    setWindowClass: proc (instance, className: string) = discard,
+    setWindowIcon: proc (cardinals: pointer; n: int) = discard,
   )
   fontRelays = FontRelays(
     openFont: figOpenFont,
