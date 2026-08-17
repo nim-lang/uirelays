@@ -149,7 +149,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb libx11-6 libxft2 fonts-dejavu-core
+          sudo apt-get install -y xvfb libx11-6 libxft2 fonts-dejavu-core x11-utils
 
       - name: Setup Nim
         uses: alaviss/setup-nim@0.1.1
@@ -199,25 +199,133 @@ jobs:
           libxft2) along with at least one font fontconfig can find.
           EOF
 
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            cat >> "$stage/NIGHTLY.txt" <<'MAC'
+
+          focim.app is this same build as an application bundle, which is what
+          carries the icon on macOS -- drag it to /Applications. The bare focim
+          runs from a terminal just as well. Neither is signed, so the first
+          start needs the right-click Open, or:
+              xattr -dr com.apple.quarantine focim.app
+          MAC
+          fi
+
       - name: Smoke test under Xvfb (Linux)
         if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
-          # focim opens a window and stays up, so "still running when the
-          # timeout kills it" is the pass. A driver that cannot open a display,
-          # a missing runtime library or a startup crash all exit early with a
-          # different code.
-          set +e
-          xvfb-run -a --server-args='-screen 0 1280x800x24' \
-            timeout 8 staging/focim/focim
-          code=$?
-          set -e
-          if [ "$code" != 124 ]; then
-            echo "focim exited with $code instead of running until killed" >&2
+          # focim opens a window and stays up, so the check is that it is still
+          # there a moment later -- a driver that cannot open a display, a
+          # missing runtime library or a startup crash all end it early. While
+          # the window is up it is asked what it carries: the icon is a
+          # property on the window, so this is the icon as a desktop would
+          # find it, not merely bytes that made it into the binary.
+          cat > smoke.sh <<'SMOKE'
+          set -euo pipefail
+          staging/focim/focim &
+          pid=$!
+          # The window is looked up by WM_CLASS rather than by name: under a
+          # reparenting window manager the frame answers to the name too and
+          # carries none of the client's properties. And the icon is waited
+          # for separately -- the window exists for a moment before it is set.
+          win=""
+          icon=""
+          for _ in $(seq 1 60); do
+            if [ -z "$win" ]; then
+              for id in $(xwininfo -root -tree | grep -o '0x[0-9a-f]\+'); do
+                case "$(xprop -id "$id" WM_CLASS 2>/dev/null || true)" in
+                  *'"focim"'*) win=$id; break;;
+                esac
+              done
+            fi
+            if [ -n "$win" ]; then
+              icon=$(xprop -id "$win" _NET_WM_ICON 2>/dev/null || true)
+              case "$icon" in *"32 x 32"*|*"= 32, 32,"*) break;; esac
+            fi
+            sleep 0.25
+          done
+          if ! kill -0 "$pid" 2>/dev/null; then
+            echo "focim exited before it had a window" >&2
             exit 1
           fi
-          echo "focim stayed up for 8s under Xvfb"
+          [ -n "$win" ] || { echo "no window with WM_CLASS focim" >&2; exit 1; }
+          # A taskbar matches this against StartupWMClass in a .desktop entry.
+          xprop -id "$win" WM_CLASS
+          # xprop draws the icon itself since 1.2.5 and lists raw cardinals
+          # before that; either way the first image in the property is the
+          # 32x32 one, and the 64 and 128 follow it.
+          case "$icon" in
+            *"Icon (32 x 32)"*|*"= 32, 32,"*)
+              echo "_NET_WM_ICON:" \
+                $(echo "$icon" | grep -o 'Icon ([0-9]* x [0-9]*)' | tr '\n' ' ') ;;
+            "") echo "the window carries no _NET_WM_ICON" >&2; exit 1 ;;
+            *)  echo "_NET_WM_ICON does not start with a 32x32 image" >&2; exit 1 ;;
+          esac
+          kill "$pid"
+          SMOKE
+          xvfb-run -a --server-args='-screen 0 1280x800x24' bash smoke.sh
+          echo "focim opened a window and it has its icon on it"
+
+      # macOS shows the icon of an application bundle, never of a bare binary,
+      # so the mac artifact carries a focim.app next to the executable. It is
+      # built by iconbundler -- the same tool that made the checked-in .netwm
+      # and .ico -- from the same PNG, so all three platforms show one picture.
+      - name: Bundle focim.app (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.nimble/bin:$PATH"
+          nimble install -y https://github.com/Araq/iconbundler
+          # The art is copied out of the checkout first: iconbundler writes
+          # what it derives next to the source PNG, and the working tree is
+          # not the place for that.
+          work=$(mktemp -d)
+          cp apps/focim-icon.png "$work/"
+          iconbundler focim apps/focim "$work/focim-icon.png" \
+            --name focim --comment 'Focussed Nim Editor' \
+            --bundle-id org.nim-lang.focim \
+            --out staging/focim/focim.app
+          app=staging/focim/focim.app
+          test -x "$app/Contents/MacOS/focim"
+          plutil -lint "$app/Contents/Info.plist"
+          icns="$app/Contents/Resources/AppIcon.icns"
+          size=$(wc -c < "$icns")
+          echo "AppIcon.icns is $size bytes"
+          # An .icns that iconutil wrote from ten images is tens of kilobytes;
+          # anything tiny means the iconset went in empty.
+          if [ "$size" -lt 20000 ]; then
+            echo "AppIcon.icns is too small to hold the icon" >&2
+            exit 1
+          fi
+          # It has to name the icon file, or the Finder shows a blank page.
+          plutil -extract CFBundleIconFile raw "$app/Contents/Info.plist"
+
+      # The .res that focim.nim links is checked in, so a missing icon here
+      # would have failed the build rather than shipped quietly -- but the
+      # frames are cheap to look for, and finding them says the resource
+      # really made it into the executable.
+      - name: Check the icon is in the exe (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          py=python; command -v python >/dev/null || py=python3
+          # Take the largest frame out of the .ico and look for those exact
+          # bytes in the executable: that is the resource the linker was
+          # supposed to carry over, byte for byte, not a guess about one.
+          "$py" - <<'PY'
+          import struct, sys
+          ico = open('apps/focim.ico', 'rb').read()
+          n = struct.unpack('<H', ico[4:6])[0]
+          *_, size, off = struct.unpack('<BBBBHHII', ico[6+(n-1)*16 : 6+n*16])
+          frame = ico[off:off+size]
+          exe = open('staging/focim/focim.exe', 'rb').read()
+          at = exe.find(frame)
+          print(f"largest icon frame: {size} bytes, found in the exe at {at}")
+          sys.exit(0 if at >= 0 else 1)
+          PY
 
       - name: Check the binary (macOS, Windows)
         if: runner.os != 'Linux'
@@ -289,8 +397,10 @@ jobs:
           - Windows x86_64: focim-${V}-${S}-windows_amd64.zip
 
           Extract and run focim. On Linux, libX11.so.6 and libXft.so.2 are
-          loaded at runtime and have to be present. Tab 0 is [config]: its text
-          is the window's layout and color theme.
+          loaded at runtime and have to be present. The macOS archive also
+          holds focim.app, the same build as a bundle, which is what shows the
+          icon there. Tab 0 is [config]: its text is the window's layout and
+          color theme.
           EOF
           )
           gh release edit '${{ needs.prepare.outputs.tag }}' --repo "$GITHUB_REPOSITORY" --notes "$notes"
