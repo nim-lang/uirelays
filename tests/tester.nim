@@ -26,6 +26,8 @@ exec "nim c -r tests/styletest.nim"
 exec "nim c -r tests/wordindextest.nim"
 # The clipboard is a relay, so the test can hold the text itself.
 exec "nim c -r tests/cliphistorytest.nim"
+# Search and replace is a walk over a buffer; nothing there draws either.
+exec "nim c -r tests/searchtest.nim"
 
 # The app, once, with the platform's default backend.
 exec "nim c apps/focim.nim"

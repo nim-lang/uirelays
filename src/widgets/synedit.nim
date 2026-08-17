@@ -1014,6 +1014,17 @@ proc highlightIncrementally(s: var SynEdit) =
     s.highlighter.version = s.version
     s.highlighter.currentlyIndexing = 0
 
+proc setLanguage*(s: var SynEdit; lang: SourceLanguage) =
+  ## Change the language of a buffer that already holds text -- what a
+  ## "save as" under another extension needs. The highlighter is caught up on
+  ## a version of the text and would otherwise keep the previous language's
+  ## colors, so it is put one version behind and walks the buffer again.
+  if s.lang == lang: return
+  s.lang = lang
+  s.highlighter.version = s.version - 1
+  s.highlighter.currentlyIndexing = 0
+  s.highlighter.position = 0
+
 # ---------------------------------------------------------------------------
 # Line offset helpers
 # ---------------------------------------------------------------------------
@@ -1571,6 +1582,18 @@ proc insertText*(s: var SynEdit; text: string) =
   inc s.version
   s.removeSelectedText()
   s.insertNoSelect(text, singleUndoOp = true)
+  s.cursorMoved()
+
+proc replaceRange*(s: var SynEdit; a, b: int; text: string) =
+  ## Swap the range [a..b] for `text`. The delete and the insert share one
+  ## version, so Ctrl+Z takes the whole replacement back in a single step --
+  ## which is what a search-and-replace wants for every one of its matches.
+  if a < 0 or b >= s.len or a > b: return
+  inc s.version
+  s.selected = (a, b)
+  s.removeSelectedText()
+  if text.len > 0:
+    s.insertNoSelect(text, singleUndoOp = true)
   s.cursorMoved()
 
 proc getWordPrefix*(s: SynEdit): string =

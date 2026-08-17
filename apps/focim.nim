@@ -44,6 +44,29 @@ its own background is refused the same way. Every color in it is written as
 `"#RRGGBB"`, which SynEdit draws a chip of, so the palette is visible while it
 is being edited.
 
+Both the terminal and the status bar take commands, and some of them act on the
+buffer rather than on the machine: `o <file>` / `open <file>` opens one, `s` /
+`save` writes the current one back, `s <file>` writes it somewhere else. A
+relative path means what it would mean where it was typed: in the terminal,
+relative to the directory the terminal is in; on the prompt, relative to the
+file being edited. A name that is not found as written is looked for in the
+directory of every open tab, and then as an abbreviation of a file in one of
+them, so `o synedit` finds `src/widgets/synedit.nim`. Ctrl+P is `open ` already
+typed into the prompt, for the muscle memory other editors have trained.
+
+`find`, `findall`, `next`, `prev`, `replace` and `replaceall` are the same idea
+applied to searching: no dialog, one line of text, and every match highlighted
+in place -- in the other open tabs as well. Ctrl+F, F3 and Shift+F3 are there
+for the fingers that expect them. See `doc/search.md`.
+
+A command that has to ask something -- overwriting a file, replacing a match --
+puts the question in the status bar and moves the caret there: the next line
+typed *in the prompt* is the answer to it rather than a command. The terminal
+is never asked anything, because it is where programs run and `yes` is one of
+them. Both are the same SynEdit-backed `Terminal` widget; what makes one of
+them a prompt is that the app points its `baseDir` at the current tab and lets
+it carry a `question`.
+
 The config and the list of open tabs are stored under `getConfigDir()` in
 `focim/config.nif` and `focim/tabs.txt`, so both survive a restart.
 
@@ -88,7 +111,7 @@ from std/strutils import toLowerAscii, strip, endsWith, contains, splitLines,
 from std/cmdline import paramCount, paramStr
 import uirelays
 import uirelays/layout
-import widgets/[synedit, terminal, config, wordindex, cliphistory]
+import widgets/[synedit, terminal, config, wordindex, cliphistory, search]
 import completion
 
 # Derived from focim-icon.png by `iconbundler --prepare focim`.
@@ -273,15 +296,22 @@ type
     path: string        ## "" for generated buffers
     isConfig: bool      ## this buffer's text IS the window's config
     idx: BufferIndexer  ## how far the word index has walked this buffer
+    search: BufferSearch ## the hits of the last search in this buffer
+
+proc applyFileKind(ed: var SynEdit; path: string) =
+  ## What the name of a file says about how to show it. Runs when a buffer is
+  ## created and again after a `save <other-name>`: a buffer that just became a
+  ## `.md` is a markdown buffer from then on.
+  let ext = path.splitFile.ext.toLowerAscii
+  ed.setLanguage fileExtToLanguage(ext)
+  ed.flags = {rfColorLiterals}
+  if ext == ".md" or ext == ".markdown":
+    ed.flags.incl rfMarkdownImages
 
 proc newBuffer(font: Font; path: string): BufferEntry =
   var ed = createSynEdit(font)
   ed.showLineNumbers = true
-  let ext = path.splitFile.ext.toLowerAscii
-  ed.lang = fileExtToLanguage(ext)
-  ed.flags = {rfColorLiterals}
-  if ext == ".md" or ext == ".markdown":
-    ed.flags.incl rfMarkdownImages
+  ed.applyFileKind(path)
   # The explorer makes it easy to click anything at all, so a file that
   # cannot be read must not take the editor down with it.
   try:
@@ -677,10 +707,12 @@ proc handleTermCtrlClick(buf: SynEdit; pos: int;
                          focus: var string) =
   let (file, ln, fc, a, b) = buf.extractFilePosition(pos)
   if file.len == 0: return
-  let path = if isAbsolute(file): file else: os.getCurrentDir() / file
+  let path = if isAbsolute(file): file else: term.base / file
   term.ed.underline(a, b)
   if dirExists(path):
-    os.setCurrentDir(path)
+    # The terminal's own idea of where it is -- the same thing `cd` moves, and
+    # what the next command is run in.
+    term.cwd = path
     setWindowTitle("focim - " & path)
     term.ed.appendOutput("\L")
     term.insertPrompt()
@@ -753,6 +785,15 @@ proc updateStatus(status: var Terminal; ed: SynEdit; path, note: string) =
   status.ed.lang = langConsole
   status.ed.appendOutput(info)
 
+proc prepareCommand(status: var Terminal; buffers: seq[BufferEntry];
+                    current: int; cmd, note: string) =
+  ## Leave the prompt as if `cmd` had just been typed into it. `updateStatus`
+  ## rewrites the line on every frame the status bar is *not* focused, so this
+  ## is only ever a keystroke away from being undone -- the caller moves the
+  ## focus there.
+  updateStatus(status, buffers[current].ed, buffers[current].path, note)
+  status.ed.insertText(cmd)
+
 proc addHistoryLine(history: var SynEdit; cmd: string) =
   ## Append a command to the history panel as an ordinary edit, so that the (x)
   ## button, a hand-made deletion and Ctrl+Z all act on it the same way. An
@@ -768,16 +809,377 @@ proc addHistoryLine(history: var SynEdit; cmd: string) =
   # One insertText, so one Ctrl+Z takes the whole row back out again.
   history.insertText(if history.len > 0: "\n" & cmd else: cmd)
 
-proc tryOpenFile(arg: string; buffers: var seq[BufferEntry];
-                 current: var int; font: Font; focus: var string) =
-  let path = if isAbsolute(arg): arg else: os.getCurrentDir() / arg
-  if fileExists(path):
+# ---------------------------------------------------------------------------
+# `o` and `save` -- the two commands that act on the buffer rather than on the
+# machine. Both are typed in a Terminal (the status prompt or the terminal
+# itself), and both take a path that is relative to whatever that widget
+# considers current: the directory of the file being edited for the prompt,
+# the directory the terminal is in for the terminal.
+# ---------------------------------------------------------------------------
+
+proc searchDirs(buffers: seq[BufferEntry]; base: string): seq[string] =
+  ## Where a name that is not a path is looked for: the directory the command
+  ## was typed against first, then the directory of every open tab. This is
+  ## nimedit's search path without a list to maintain -- the open tabs already
+  ## say which directories a session is about.
+  result = @[]
+  if base.len > 0 and dirExists(base): result.add normDir(base)
+  for b in buffers:
+    if b.path.len > 0:
+      let d = normDir(b.path.parentDir)
+      if d notin result and dirExists(d): result.add d
+
+proc abbrevMatch(dir, name: string): string =
+  ## The file in `dir` that `name` is an abbreviation of, or "". A name that
+  ## the listing *starts* with wins over one that merely contains it, and among
+  ## equals the alphabetically first -- the answer must not depend on the order
+  ## the file system happens to hand out.
+  var starts: seq[string] = @[]
+  var inside: seq[string] = @[]
+  let n = name.toLowerAscii
+  for kind, p in walkDir(dir):
+    if kind notin {pcFile, pcLinkToFile}: continue
+    let f = p.extractFilename
+    # `'.' in f`: a source file has an extension, and a name without one is
+    # far more often a binary that got built here than the file that was meant.
+    if f.ignoreFile or '.' notin f: continue
+    let l = f.toLowerAscii
+    if l.startsWith(n): starts.add f
+    elif n in l: inside.add f
+  sort starts
+  sort inside
+  if starts.len > 0: result = dir / starts[0]
+  elif inside.len > 0: result = dir / inside[0]
+  else: result = ""
+
+proc findFileSmart(buffers: seq[BufferEntry]; base, arg: string): string =
+  ## nimedit's `findFile` followed by its `findFileAbbrev`: the path as given,
+  ## then the same name in a directory this session has a file open in, and
+  ## only then a file whose name merely *contains* what was typed -- so that
+  ## `o synedit` finds `src/widgets/synedit.nim` from anywhere in the tree.
+  ## Directories are found too; the caller decides what to do with one.
+  if arg.len == 0: return ""
+  let e = expandTilde(arg)
+  if isAbsolute(e):
+    return if fileExists(e) or dirExists(e): e else: ""
+  let dirs = searchDirs(buffers, base)
+  for d in dirs:
+    let p = d / e
+    if fileExists(p) or dirExists(p): return p
+  # Only a bare name is guessed at: `sub/dir/thing` was meant to be a path, and
+  # answering it with a file from somewhere else would be a surprise.
+  if e.parentDir.len == 0:
+    for d in dirs:
+      let p = abbrevMatch(d, e)
+      if p.len > 0: return p
+  result = ""
+
+proc runOpenCommand(act: TermAction; base: string;
+                    buffers: var seq[BufferEntry]; current: var int;
+                    font: Font; focus: var string; explorer: var Explorer;
+                    note: var string) =
+  if act.arg.len == 0:
+    note = "open what? try 'o <file>'"
+    return
+  # `act.file` is what the widget resolved; anything smarter than that is this
+  # application's business, because only it knows which files are open.
+  var path = act.file
+  if not fileExists(path) and not dirExists(path):
+    path = findFileSmart(buffers, base, act.arg)
+  if path.len == 0:
+    note = "cannot open: " & act.arg
+  elif dirExists(path):
+    # A directory is not a buffer; it is what the explorer is for.
+    explorer.showDir(path)
+    focus = "explorer"
+    note = ""
+  else:
     current = buffers.openFile(font, path, -1, -1)
     setWindowTitle("focim - " & path.extractFilename)
     focus = "editor"
-  elif dirExists(path):
-    os.setCurrentDir(path)
-    setWindowTitle("focim - " & path)
+    note = ""
+
+proc saveCurrent(buffers: var seq[BufferEntry]; current: int;
+                 note: var string) =
+  ## Write the buffer back to the file it came from. A buffer that has no file
+  ## says so instead of quietly doing nothing.
+  if buffers[current].path.len == 0:
+    note =
+      if buffers[current].isConfig: "[config] saves itself"
+      else: "this buffer has no file yet: try 's <name>'"
+    return
+  try:
+    buffers[current].ed.saveToFile(buffers[current].path)
+    note = ""
+  except CatchableError:
+    note = "cannot save " & buffers[current].path & ": " &
+           getCurrentExceptionMsg()
+
+proc saveBufferAs(buffers: var seq[BufferEntry]; current: int; path: string;
+                  note: var string) =
+  ## Write the buffer to `path` and let it belong there from now on.
+  try:
+    buffers[current].ed.saveToFile(path)
+  except CatchableError:
+    note = "cannot save " & path & ": " & getCurrentExceptionMsg()
+    return
+  if buffers[current].isConfig:
+    # A copy of the config, not a move: tab 0 is where the window is edited,
+    # and `config.nif` under the config dir is where it is read from.
+    note = "wrote " & path.extractFilename & "; [config] stays where it is"
+    return
+  var full = path
+  try: full = expandFilename(path)
+  except OSError: discard
+  buffers[current].path = full
+  buffers[current].ed.applyFileKind(full)
+  setWindowTitle("focim - " & full.extractFilename)
+  note = ""
+
+type
+  SaveOutcome = enum
+    saveOver     ## nothing more to do, whether or not a file was written
+    saveAsk      ## the name is taken; the answer to that decides
+
+proc runSaveCommand(act: TermAction; buffers: var seq[BufferEntry];
+                    current: int; note: var string): SaveOutcome =
+  result = saveOver
+  if act.arg.len == 0:
+    saveCurrent(buffers, current, note)
+    return
+  let path = act.file
+  if path.extractFilename.len == 0:
+    note = "not a file name: " & act.arg
+    return
+  # A name that is already taken is a question, never a silent overwrite.
+  if fileExists(path) and cmpPaths(path, buffers[current].path) != 0:
+    return saveAsk
+  saveBufferAs(buffers, current, path, note)
+
+# ---------------------------------------------------------------------------
+# Search and replace -- the commands, and the exchange a replace turns into.
+# The hits live in the buffers; `Finder` is what a `next` or an answer needs to
+# know to carry on.
+# ---------------------------------------------------------------------------
+
+type
+  Finder = object
+    term, replacement: string
+    opts: SearchOptions
+    replacing: bool      ## the search was started by `replace`, not by `find`
+    allBuffers: bool     ## `findall` / `replaceall`: every open tab, not one
+    replaced: int        ## how many replacements the running exchange made
+
+  AskKind = enum
+    askNothing
+    askOverwrite   ## "<file> exists. Overwrite? [yes|no]"
+    askReplace     ## "Replace? [yes|no|all|abort]"
+
+  Ask = object
+    ## What the window is waiting to hear, and what the answer will mean. One
+    ## per window, and the prompt's alone: the question is shown in the status
+    ## bar, so that is the line it is answered in, whichever of the two places
+    ## the command that raised it was typed in.
+    kind: AskKind
+    question: string
+    path: string   ## askOverwrite: where the buffer would go
+
+const ReplaceQuestion = "Replace? [yes|no|all|abort]"
+
+proc markAll(buffers: var seq[BufferEntry]; current: int; theme: Theme) =
+  ## Paint every hit in every buffer. Only the buffer the finger is in has an
+  ## active hit -- elsewhere a hit is just a hit, so that one glance says where
+  ## `next` will land.
+  for i in 0 ..< buffers.len:
+    if buffers[i].search.hits.len > 0:
+      buffers[i].search.mark(buffers[i].ed, theme.markerBg,
+                             if i == current: theme.selBg else: theme.markerBg)
+
+proc dropSearch(buffers: var seq[BufferEntry]) =
+  for b in buffers.mitems:
+    if b.search.hits.len > 0:
+      b.search.clear()
+      b.ed.clearMarkers()
+
+proc searchNote(f: Finder; buffers: seq[BufferEntry]; current: int): string =
+  let bs = buffers[current].search
+  if bs.hits.len == 0: return "'" & f.term & "': no match in this tab"
+  result = "'" & f.term & "' " & $(min(bs.active + 1, bs.hits.len)) & "/" &
+           $bs.hits.len
+  if f.allBuffers:
+    var elsewhere = 0
+    for i, b in buffers:
+      if i != current: elsewhere += b.search.hits.len
+    if elsewhere > 0: result.add " (+" & $elsewhere & " in other tabs)"
+
+proc nextWithHits(buffers: seq[BufferEntry]; current: int;
+                  backwards: bool): int =
+  ## The next buffer along that has hits, wrapping around -- `current` itself
+  ## is the last candidate, which is what makes a single-buffer search wrap
+  ## instead of stopping. -1 when nothing was found anywhere.
+  let n = buffers.len
+  for k in 1 .. n:
+    let i = ((current + (if backwards: -k else: k)) mod n + n) mod n
+    if buffers[i].search.hits.len > 0: return i
+  result = -1
+
+proc runSearchCommand(act: TermAction; buffers: var seq[BufferEntry];
+                      current: var int; f: var Finder; theme: Theme;
+                      note: var string): bool =
+  ## Start a search. True when it turned into a question -- a `replace` that
+  ## found something has to ask before it touches the text.
+  dropSearch(buffers)
+  f = Finder()
+  if act.term.len == 0:
+    # `find` with nothing to look for is how the highlighting goes away again.
+    note = ""
+    return false
+  f.term = act.term
+  f.replacement = act.replacement
+  f.opts = parseSearchOptions(act.opts)
+  f.replacing = act.replacing
+  f.allBuffers = act.allBuffers and currentFileOnly notin f.opts
+  for i in 0 ..< buffers.len:
+    if i == current or f.allBuffers:
+      buffers[i].search.run(buffers[i].ed, f.term, f.opts, f.replacement)
+  if buffers[current].search.hits.len == 0:
+    let other = nextWithHits(buffers, current, backwards = false)
+    if other >= 0: current = other
+  markAll(buffers, current, theme)
+  if buffers[current].search.hits.len == 0:
+    note = "not found: " & f.term
+    return false
+  buffers[current].search.gotoActive(buffers[current].ed)
+  note = searchNote(f, buffers, current)
+  result = f.replacing
+
+proc gotoNextMatch(buffers: var seq[BufferEntry]; current: var int;
+                   f: Finder; backwards: bool; theme: Theme;
+                   note: var string) =
+  if f.term.len == 0:
+    note = "no search yet -- try 'find <text>'"
+    return
+  var total = 0
+  for b in buffers: total += b.search.hits.len
+  if total == 0:
+    # The text was edited, so the hits went with it. The term is still the one
+    # that was asked for, so look again rather than answer "not found" about a
+    # search nobody withdrew. The finger lands at the caret, which is where
+    # this was going to move it anyway.
+    for i in 0 ..< buffers.len:
+      if i == current or f.allBuffers:
+        buffers[i].search.run(buffers[i].ed, f.term, f.opts, f.replacement)
+    if buffers[current].search.hits.len == 0:
+      let other = nextWithHits(buffers, current, backwards)
+      if other < 0:
+        note = "not found: " & f.term
+        return
+      current = other
+      buffers[current].search.rewind(toLast = backwards)
+    markAll(buffers, current, theme)
+    buffers[current].search.gotoActive(buffers[current].ed)
+    note = searchNote(f, buffers, current)
+    return
+  if not buffers[current].search.step(backwards):
+    # Off the end of this buffer: on to the next one that has something, which
+    # for a search of one buffer is this one again.
+    let nxt = nextWithHits(buffers, current, backwards)
+    if nxt < 0:
+      note = "not found: " & f.term
+      return
+    current = nxt
+    buffers[current].search.rewind(toLast = backwards)
+  markAll(buffers, current, theme)
+  buffers[current].search.gotoActive(buffers[current].ed)
+  note = searchNote(f, buffers, current)
+
+proc nextPending(buffers: var seq[BufferEntry]; current: var int;
+                 f: Finder): bool =
+  ## Put the finger on the next hit still waiting for an answer, moving on to
+  ## another buffer once this one is through. False when the exchange is over.
+  if not buffers[current].search.done: return true
+  if f.allBuffers:
+    for i in 0 ..< buffers.len:
+      if i != current and not buffers[i].search.done and
+         buffers[i].search.hits.len > 0:
+        current = i
+        return true
+  result = false
+
+proc runAnswer(word: string; asked: var Ask; f: var Finder;
+               buffers: var seq[BufferEntry]; current: var int;
+               theme: Theme; note: var string): string =
+  ## Act on the answer. Returns the next question, or "" when the exchange is
+  ## over -- the caller arms the widget that asked with whatever comes back.
+  result = ""
+  case asked.kind
+  of askNothing:
+    note = "nothing to answer"
+  of askOverwrite:
+    if word.startsWith("y"):
+      saveBufferAs(buffers, current, asked.path, note)
+    else:
+      note = "not saved"
+    asked = Ask()
+  of askReplace:
+    case word
+    of "y", "yes":
+      if not buffers[current].search.replaceActive(buffers[current].ed):
+        # The hit is not there to be replaced: the text moved under it between
+        # the question and the answer. Better to stop than to write into a
+        # place that is no longer the one that was asked about.
+        dropSearch(buffers)
+        note = "the text changed -- search again"
+        asked = Ask()
+        return ""
+      inc f.replaced
+    of "n", "no":
+      buffers[current].search.skipActive()
+    of "all":
+      # Every hit of this search, from the top of each buffer: `all` means the
+      # ones already passed over as well.
+      for b in buffers.mitems:
+        if b.search.hits.len == 0: continue
+        b.search.rewind(toLast = false)
+        while b.search.replaceActive(b.ed): inc f.replaced
+      dropSearch(buffers)
+      note = "replaced " & $f.replaced
+      asked = Ask()
+      return ""
+    of "a", "abort", "q", "quit":
+      note = (if f.replaced > 0: "stopped after " & $f.replaced
+              else: "nothing replaced")
+      asked = Ask()
+      return ""
+    else:
+      note = "'" & word & "'? " & ReplaceQuestion
+      return ReplaceQuestion
+    if nextPending(buffers, current, f):
+      markAll(buffers, current, theme)
+      buffers[current].search.gotoActive(buffers[current].ed)
+      note = searchNote(f, buffers, current) & "  " & ReplaceQuestion
+      return ReplaceQuestion
+    dropSearch(buffers)
+    note = "replaced " & $f.replaced
+    asked = Ask()
+
+proc runSave(act: TermAction; asked: var Ask; buffers: var seq[BufferEntry];
+             current: int; note: var string) =
+  ## `save`, with the question it may raise.
+  case runSaveCommand(act, buffers, current, note)
+  of saveOver: discard
+  of saveAsk:
+    asked = Ask(kind: askOverwrite, path: act.file,
+                question: act.file.extractFilename &
+                          " exists. Overwrite? [yes|no]")
+    note = asked.question
+
+proc runSearch(act: TermAction; asked: var Ask; f: var Finder;
+               buffers: var seq[BufferEntry]; current: var int; theme: Theme;
+               note: var string) =
+  if runSearchCommand(act, buffers, current, f, theme, note):
+    asked = Ask(kind: askReplace, question: ReplaceQuestion)
+    note = note & "  " & ReplaceQuestion
 
 proc adjustFocusedFontSize(
     focus: string; delta: int;
@@ -929,6 +1331,12 @@ proc main =
   # application.
   var clips = initClipHistory(fonts.fontForSize(panelFontSize))
 
+  # The last search, and what the prompt is waiting to hear about. Both are
+  # one per window: a question that nobody can see is worse than none, and
+  # there is one status bar to show it in.
+  var finder = Finder()
+  var asked = Ask()
+
   var running = true
   while running:
     # Pick up edits to the config buffer before resolving, so that the rects
@@ -954,10 +1362,32 @@ proc main =
     comp.theme = theme
     comp.setFont buffers[current].ed.getFont
     clips.theme = theme
+    # The prompt has no directory of its own, so a relative path typed there is
+    # taken to be relative to the file being edited -- the same thing that path
+    # would mean written inside that file. The terminal has a `cwd` and a `cd`
+    # to move it with, and keeps resolving against those.
+    status.baseDir =
+      if buffers[current].path.len > 0: buffers[current].path.parentDir
+      else: os.getCurrentDir()
     # Whether or not the layout shows the panel: what was copied while it was
     # hidden is exactly what somebody goes looking for after showing it.
     clips.poll()
     for b in buffers.mitems: b.ed.theme = theme
+
+    # A question is the prompt's business, wherever the command that raised it
+    # was typed: it is shown in the status bar, so that is the line it is
+    # answered in, and the focus moves there when it is put. The terminal is
+    # never armed -- it is where programs run, and `yes` is one of them.
+    # `runCommand` clears its own copy when it hands the answer over.
+    status.question = asked.question
+
+    # An edit that the search did not make has moved every hit behind it, so
+    # the hits go, and the highlighting with them. What was typed is what the
+    # user is looking at now -- not what the search found before it.
+    for b in buffers.mitems:
+      if b.search.stale(b.ed):
+        b.search.clear()
+        b.ed.clearMarkers()
 
     # The word index, a slice of one buffer per frame: whichever buffer the
     # last edit left behind is caught up on before any other work, and none of
@@ -983,6 +1413,17 @@ proc main =
     let cells = layout.resolve(width, height, fm.lineHeight,
                                padding = scaledPx(6), gap = scaledPx(2),
                                uiScale = gUiScale)
+
+    # Only ever one question is outstanding, and anything the user starts
+    # instead of answering it withdraws it -- otherwise the next line typed
+    # would be read as an answer to something nobody can see any more.
+    template endExchange() =
+      asked = Ask()
+      status.question = ""
+    template endExchange(a: TermAction) =
+      if a.kind notin {TermActionKind.noAction, TermActionKind.ctrlHover,
+                       TermActionKind.ctrlClick, answer}:
+        endExchange()
     # A layout may have dropped the cell that had the focus.
     if focus notin cells: focus = "editor"
 
@@ -1045,18 +1486,51 @@ proc main =
       if hit.name.len > 0:
         focus = hit.name
     of TextInputEvent:
-      # Ctrl+Space and Ctrl+<digit> are commands, not text. X11 hands the app
-      # both, and the character would land in the buffer right where the paste
-      # is about to go; the key event above has already dealt with it.
+      # Ctrl+Space, Ctrl+<digit> and Ctrl+<letter> are commands, not text. X11
+      # hands the app both, and the character would land in the buffer right
+      # where the paste is about to go -- or, for a letter, as the control
+      # character it stands for; the key event above has already dealt with it.
       if CtrlPressed in e.mods and e.text[1] == '\0' and
-         e.text[0] in {' ', '1'..'9'}:
+         (e.text[0] in {' ', '1'..'9'} or e.text[0] < ' '):
         e = default Event
     of KeyDownEvent:
       let cmd = CtrlPressed in e.mods or GuiPressed in e.mods
       if cmd and e.key == KeyS:
-        if buffers[current].path.len > 0:
-          buffers[current].ed.saveToFile(buffers[current].path)
-        tabs.note = ""
+        saveCurrent(buffers, current, tabs.note)
+        e = default Event  # consume the event
+      elif cmd and e.key == KeyP:
+        # "Quick open", for the muscle memory every other editor has trained:
+        # the prompt, with the command already typed, so that the file name is
+        # all that is left to do. It is the ordinary `open` command -- Tab
+        # completes it and Enter runs it like any other.
+        if "status" in cells:
+          endExchange()
+          prepareCommand(status, buffers, current, "open ", tabs.note)
+          focus = "status"
+        else:
+          # A layout without a status bar has nowhere to type it.
+          tabs.note = "no 'status' cell in the layout"
+        e = default Event  # consume the event
+      elif cmd and e.key == KeyF:
+        # The same quick way in as Ctrl+P, for the other command one reaches
+        # for without thinking. `find ` and not `f `: the long name is the one
+        # that says what the line is about while it is being typed.
+        if "status" in cells:
+          endExchange()
+          prepareCommand(status, buffers, current, "find ", tabs.note)
+          focus = "status"
+        else:
+          tabs.note = "no 'status' cell in the layout"
+        e = default Event  # consume the event
+      elif e.key == KeyF3:
+        # What every other editor puts there, and the reason `next` and `prev`
+        # do not have to be typed to walk a search. Moving the finger while a
+        # replace was asking about a match would answer for a different one,
+        # so it withdraws the question like any other command.
+        endExchange()
+        gotoNextMatch(buffers, current, finder, ShiftPressed in e.mods, theme,
+                      tabs.note)
+        focus = "editor"
         e = default Event  # consume the event
       elif cmd and e.key == KeyW:
         # Close the current tab by deleting its line, so that it goes through
@@ -1230,15 +1704,26 @@ proc main =
     var termAct = TermAction(kind: noAction)
     if "terminal" in cells:
       termAct = term.draw(e, cells["terminal"], focus == "terminal")
+    endExchange(termAct)
     case termAct.kind
     of openFile:
-      if fileExists(termAct.file):
-        current = buffers.openFile(fonts.fontForSize(editorFontSize), termAct.file, -1, -1)
-        setWindowTitle("focim - " & termAct.file.extractFilename)
-        focus = "editor"
+      runOpenCommand(termAct, term.base, buffers, current,
+                     fonts.fontForSize(editorFontSize), focus, explorer,
+                     tabs.note)
     of saveFile:
-      if buffers[current].path.len > 0:
-        buffers[current].ed.saveToFile(buffers[current].path)
+      runSave(termAct, asked, buffers, current, tabs.note)
+      # A command typed here may still end in a question, and the question is
+      # put in the prompt -- so that is where the caret goes to answer it.
+      if asked.question.len > 0: focus = "status"
+    of searchText:
+      runSearch(termAct, asked, finder, buffers, current, theme, tabs.note)
+      if asked.question.len > 0: focus = "status"
+    of gotoMatch:
+      gotoNextMatch(buffers, current, finder, termAct.backwards, theme,
+                    tabs.note)
+    of answer:
+      # Unreachable: only the prompt is ever armed with a question.
+      discard
     of indexWords:
       runIndexCommand(termAct, words, job, tabs.note)
     of ctrlHover:
@@ -1260,16 +1745,39 @@ proc main =
     var statusAct = TermAction(kind: noAction)
     if "status" in cells:
       statusAct = status.draw(e, cells["status"], focus == "status")
+    template redrawStatus() =
+      # The command has just changed what the line says about the buffer, and
+      # the prompt it left behind belongs to a terminal, not to a status bar.
+      updateStatus(status, buffers[current].ed, buffers[current].path,
+                   if configNote.len > 0: configNote else: tabs.note)
+    endExchange(statusAct)
     case statusAct.kind
     of openFile:
-      tryOpenFile(statusAct.file, buffers, current,
-                  fonts.fontForSize(editorFontSize), focus)
-      updateStatus(status, buffers[current].ed, buffers[current].path, note)
+      runOpenCommand(statusAct, status.base, buffers, current,
+                     fonts.fontForSize(editorFontSize), focus, explorer,
+                     tabs.note)
+      redrawStatus()
     of saveFile:
-      if buffers[current].path.len > 0:
-        buffers[current].ed.saveToFile(buffers[current].path)
+      runSave(statusAct, asked, buffers, current, tabs.note)
+      # A question keeps the focus here: the answer is typed into the line the
+      # question is shown in. Anything else is finished with, and the caret
+      # belongs back in the text.
+      if asked.question.len == 0: focus = "editor"
+      redrawStatus()
+    of searchText:
+      runSearch(statusAct, asked, finder, buffers, current, theme, tabs.note)
+      if asked.question.len == 0: focus = "editor"
+      redrawStatus()
+    of gotoMatch:
+      gotoNextMatch(buffers, current, finder, statusAct.backwards, theme,
+                    tabs.note)
       focus = "editor"
-      updateStatus(status, buffers[current].ed, buffers[current].path, note)
+      redrawStatus()
+    of answer:
+      asked.question = runAnswer(statusAct.word, asked, finder, buffers,
+                                 current, theme, tabs.note)
+      if asked.question.len == 0: focus = "editor"
+      redrawStatus()
     of indexWords:
       runIndexCommand(statusAct, words, job, tabs.note)
     of ctrlHover, ctrlClick, noAction: discard

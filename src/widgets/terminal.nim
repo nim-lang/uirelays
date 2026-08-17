@@ -32,7 +32,8 @@ const
     ".idx", ".ilk", ".dll", ".so", ".a"
   ]
 
-proc ignoreFile(f: string): bool =
+proc ignoreFile*(f: string): bool =
+  ## Build output and backups: what nobody means when they name a file.
   let (_, name, ext) = f.splitFile
   result = name.len > 0 and name[0] == '.' or ext in ExtensionsToIgnore or
            f == "nimcache"
@@ -301,17 +302,35 @@ createThread[void](backgroundThread, execThreadProc)
 type
   TermActionKind* = enum
     noAction,
-    openFile,           ## user typed `o <file>`
-    saveFile,           ## user typed `save`
+    openFile,           ## user typed `o <file>` / `open <file>`
+    saveFile,           ## user typed `save` / `s [<file>]`
+    searchText,         ## user typed `find` / `findall` / `replace` / `replaceall`
+    gotoMatch,          ## user typed `next` / `prev`
+    answer,             ## a line typed while `question` was up
     indexWords,         ## user typed `index <path>` or `unindex <path>`
     ctrlHover,          ## ctrl+mouse move over text
     ctrlClick           ## ctrl+click on text
 
   TermAction* = object
     case kind*: TermActionKind
-    of noAction, saveFile: discard
-    of openFile:
-      file*: string
+    of noAction: discard
+    of openFile, saveFile:
+      file*: string     ## `arg` resolved against `base`; "" when nothing was
+                        ## typed, which for `save` means "where it came from"
+      arg*: string      ## as typed, for a host that wants to look for it
+                        ## somewhere else as well
+    of searchText:
+      term*: string     ## what to look for; "" asks for the last search to be
+                        ## forgotten rather than for a search
+      replacement*: string  ## what to put there; only a `replace` has one
+      opts*: string     ## the option letters, uninterpreted -- what they mean
+                        ## is the host's business
+      replacing*: bool  ## `replace` / `replaceall` rather than a plain find
+      allBuffers*: bool ## `findall` / `replaceall` rather than this one
+    of gotoMatch:
+      backwards*: bool  ## `prev` rather than `next`
+    of answer:
+      word*: string     ## the first word of the line, lower case
     of indexWords:
       path*: string     ## absolute; "" asks what is indexed rather than
                         ## indexing anything
@@ -333,11 +352,42 @@ type
     aliases*: seq[(string, string)]
     process: string
     cwd*: string
+    question*: string   ## what the host is waiting to hear, "" when it is not
+                        ## waiting for anything. While this is set, a line
+                        ## typed here comes back as an `answer` instead of
+                        ## being run -- which is what keeps `yes` and `no`
+                        ## from having to become commands, shadowing the
+                        ## programs of those names.
+                        ##
+                        ## For a widget used as an application's *prompt*,
+                        ## like `baseDir` above: a prompt is a line one
+                        ## answers in, and a terminal is where programs run,
+                        ## so a host that has both leaves this one empty. The
+                        ## host also shows the text -- a prompt rewrites its
+                        ## own line, so the widget has nowhere to put it.
+    baseDir*: string    ## what a relative path in `o` / `save` is resolved
+                        ## against. "" means `cwd`, which is what a terminal
+                        ## wants: it has a current directory of its own and a
+                        ## `cd` to move it with. A widget used as an
+                        ## application's prompt has neither, and points this at
+                        ## whatever the application considers current.
     branch: string      ## cached result of `gitBranch`; see `insertPrompt`
     branchDir: string   ## the directory `branch` was read for. Anything else,
                         ## "" included, means the cache says nothing about the
                         ## current `cwd` -- which is also the starting state,
                         ## and what a `cd` restores.
+
+proc base*(t: Terminal): string =
+  ## The directory a relative path typed here is taken to be relative to.
+  if t.baseDir.len > 0: t.baseDir else: t.cwd
+
+proc resolve*(t: Terminal; path: string): string =
+  ## `path` as typed, made absolute. "" stays "": nothing was typed, and a
+  ## command that got no path must not end up with the base directory itself.
+  let e = expandTilde(path)
+  if e.len == 0: ""
+  elif isAbsolute(e): e
+  else: t.base / e
 
 proc getCommand(t: Terminal): string =
   result = ""
@@ -502,7 +552,9 @@ proc tabPressed(t: var Terminal) =
       for k, f in os.walkDir(path, relative = false):
         t.addFile f
     else:
-      for k, f in os.walkDir(os.getCurrentDir() / path, relative = true):
+      # The same directory the command itself would be resolved against:
+      # completing to a file that `o` then does not find would be a trap.
+      for k, f in os.walkDir(t.base / path, relative = true):
         t.addFile path / f
     t.prefix = prefix
   t.suggestPath(t.prefix)
@@ -513,7 +565,7 @@ proc tabPressed(t: var Terminal) =
 
 proc dirContents(t: var Terminal; ext: string) =
   var i = 0
-  for k, f in os.walkDir(getCurrentDir(), relative = true):
+  for k, f in os.walkDir(t.base, relative = true):
     if ext.len == 0 or cmpPaths(f.splitFile.ext, ext) == 0:
       t.ed.appendOutput(f)
       if i == 4:
@@ -527,6 +579,16 @@ proc dirContents(t: var Terminal; ext: string) =
 proc runCommand*(t: var Terminal; cmd: var string): TermAction =
   result = TermAction(kind: noAction)
   t.files.setLen 0
+  if t.question.len > 0 and not t.processRunning:
+    # This line answers what the host asked. It is not a command, and it is
+    # not history either: what was typed is one word of an exchange, and the
+    # exchange is over as soon as it is handed over.
+    var word = ""
+    discard parseWord(cmd, word, 0, convToLower = true)
+    t.question.setLen 0
+    t.ed.appendOutput "\L"
+    t.insertPrompt()
+    return TermAction(kind: answer, word: word)
   t.hist[t.process].addCmd(cmd)
   t.ran.add cmd
   if t.processRunning:
@@ -549,16 +611,48 @@ proc runCommand*(t: var Terminal; cmd: var string): TermAction =
   case a
   of "":
     t.insertPrompt()
-  of "o":
+  of "o", "open":
+    # A program of that name is still reachable as `./open` or `/usr/bin/open`:
+    # only the bare word is a command of this terminal's own.
     var b = ""
     i = parseWord(cmd, b, i)
     t.insertPrompt()
-    if b.len > 0:
-      let path = if isAbsolute(b): b else: t.cwd / b
-      result = TermAction(kind: openFile, file: path)
-  of "save":
+    result = TermAction(kind: openFile, file: t.resolve(b), arg: b)
+  of "save", "s":
+    # `save` writes the buffer back, `save <file>` writes it somewhere else.
+    # What a name that is already taken means is the host's decision, and
+    # `question` is how it gets to ask.
+    var b = ""
+    i = parseWord(cmd, b, i)
     t.insertPrompt()
-    result = TermAction(kind: saveFile)
+    result = TermAction(kind: saveFile, file: t.resolve(b), arg: b)
+  of "find", "f", "findall":
+    # `find <term> [options]`. The term goes through `parseWord`, so one with
+    # a space in it is written 'like this'.
+    var term = ""
+    i = parseWord(cmd, term, i)
+    var opts = ""
+    i = parseWord(cmd, opts, i)
+    t.insertPrompt()
+    result = TermAction(kind: searchText, term: term, opts: opts,
+                        allBuffers: a == "findall")
+  of "replace", "r", "replaceall":
+    var term = ""
+    i = parseWord(cmd, term, i)
+    var with = ""
+    i = parseWord(cmd, with, i)
+    var opts = ""
+    i = parseWord(cmd, opts, i)
+    t.insertPrompt()
+    result = TermAction(kind: searchText, term: term, replacement: with,
+                        opts: opts, replacing: true,
+                        allBuffers: a == "replaceall")
+  of "next":
+    t.insertPrompt()
+    result = TermAction(kind: gotoMatch)
+  of "prev", "v":
+    t.insertPrompt()
+    result = TermAction(kind: gotoMatch, backwards: true)
   of "index", "unindex":
     # Reported rather than done: what a word index is good for is the host's
     # business, and a terminal that grew one would have to grow a completion
@@ -566,9 +660,8 @@ proc runCommand*(t: var Terminal; cmd: var string): TermAction =
     var b = ""
     i = parseWord(cmd, b, i)
     t.insertPrompt()
-    let e = expandTilde(b)
-    let path = if e.len == 0: "" elif isAbsolute(e): e else: t.cwd / e
-    result = TermAction(kind: indexWords, path: path, forget: a == "unindex")
+    result = TermAction(kind: indexWords, path: t.resolve(b),
+                        forget: a == "unindex")
   of "cls":
     t.ed.clear()
     t.ed.lang = langConsole
