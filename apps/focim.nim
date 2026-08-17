@@ -102,7 +102,8 @@ and to install this build for the desktop as well:
       --generic-name "Text Editor" --comment "Focussed Nim Editor" \
       --categories "Development;TextEditor;"
 
-`StartupWMClass` / the bundle id stem must match `setWindowClass`.
+`StartupWMClass` / the bundle id stem must match the name of the executable,
+which is what lands in `WM_CLASS` -- so the binary has to stay called `focim`.
 ]##
 
 import std/[tables, os, algorithm]
@@ -1224,9 +1225,10 @@ proc main =
   var height = screen.height
   gUiScale = screen.uiScale
 
-  # Taskbar identity: WM_CLASS / StartupWMClass "focim", plus the bitmap the
-  # window manager shows when no .desktop entry is installed yet.
-  setWindowClass("focim", "Focim")
+  # The bitmap the window manager shows when no .desktop entry is installed to
+  # look one up in. Who the window belongs to needs nothing said about it:
+  # `createWindow` has already put the name of this executable in WM_CLASS,
+  # which is the "focim" that a StartupWMClass matches.
   when defined(linux):
     setWindowIcon(focimIconCardinals())
 

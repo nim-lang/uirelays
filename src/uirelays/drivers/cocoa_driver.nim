@@ -299,7 +299,6 @@ proc initCocoaDriver*() =
     saveState: cocoaSaveState, restoreState: cocoaRestoreState,
     setClipRect: cocoaSetClipRect, setCursor: cocoaSetCursor,
     setWindowTitle: cocoaSetWindowTitle,
-    setWindowClass: proc (instance, className: string) = discard,
     setWindowIcon: proc (cardinals: pointer; n: int) = discard)
   fontRelays = FontRelays(
     openFont: cocoaOpenFont, closeFont: cocoaCloseFont,

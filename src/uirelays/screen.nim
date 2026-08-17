@@ -56,7 +56,6 @@ type
     setClipRect*: proc (r: Rect) {.nimcall.}
     setCursor*: proc (c: CursorKind) {.nimcall.}
     setWindowTitle*: proc (title: string) {.nimcall.}
-    setWindowClass*: proc (instance, className: string) {.nimcall.}
       ## X11 `WM_CLASS` (res_name, res_class). Desktop files match the running
       ## window through this -- GNOME/KDE taskbars look it up as StartupWMClass.
     setWindowIcon*: proc (cardinals: pointer; n: int) {.nimcall.}
@@ -94,7 +93,6 @@ var windowRelays* = WindowRelays(
   setClipRect: proc (r: Rect) = discard,
   setCursor: proc (c: CursorKind) = discard,
   setWindowTitle: proc (title: string) = discard,
-  setWindowClass: proc (instance, className: string) = discard,
   setWindowIcon: proc (cardinals: pointer; n: int) = discard)
 
 var fontRelays* = FontRelays(
@@ -159,15 +157,16 @@ proc setClipRect*(r: Rect) = windowRelays.setClipRect(r)
 proc setCursor*(c: CursorKind) = windowRelays.setCursor(c)
 proc setWindowTitle*(title: string) = windowRelays.setWindowTitle(title)
 
-proc setWindowClass*(instance, className: string) =
-  ## Tell the window manager who this process is. On X11 this is `WM_CLASS`;
-  ## a FreeDesktop `.desktop` file's `StartupWMClass` must match `instance`
-  ## (or, on some shells, `className`) for the taskbar to use that entry's icon.
-  windowRelays.setWindowClass(instance, className)
-
 proc setWindowIcon*(cardinals: openArray[uint32]) =
   ## Taskbar / title-bar bitmap. `cardinals` is one or more X11 `_NET_WM_ICON`
   ## images: each is `width`, `height`, then `width*height` pixels as `0xAARRGGBB`.
+  ##
+  ## Who the window *belongs to* is not set here and cannot be: it is the
+  ## program's own name, which `createWindow` reads off the executable and puts
+  ## in `WM_CLASS`. That is what a `.desktop` file's `StartupWMClass` matches,
+  ## and matching it is the other way an icon reaches the taskbar -- through
+  ## the entry's `Icon=` and the icon theme. This one is for the window itself,
+  ## and for the desktops and moments where no entry is installed to look up.
   if cardinals.len == 0: return
   windowRelays.setWindowIcon(cast[pointer](unsafeAddr cardinals[0]), cardinals.len)
 

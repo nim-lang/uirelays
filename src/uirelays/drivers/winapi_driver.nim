@@ -997,7 +997,6 @@ proc initWinapiDriver*() =
     saveState: winSaveState, restoreState: winRestoreState,
     setClipRect: winSetClipRect, setCursor: winSetCursor,
     setWindowTitle: winSetWindowTitle,
-    setWindowClass: proc (instance, className: string) = discard,
     setWindowIcon: proc (cardinals: pointer; n: int) = discard)
   fontRelays = FontRelays(
     openFont: winOpenFont, closeFont: winCloseFont,

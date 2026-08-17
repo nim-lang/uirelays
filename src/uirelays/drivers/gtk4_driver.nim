@@ -22,7 +22,7 @@ static inline FcPattern *nimedit_fc_font_match(FcPattern *p, void *result_out) {
 }
 """.}
 
-import std/unicode
+import std/[unicode, os, strutils]
 import ../coords, ../input, ../screen
 
 const
@@ -504,7 +504,17 @@ proc gtkCreateWindow(layout: var ScreenLayout) =
   if gtk_init_check() == G_FALSE:
     quit("GTK4 init failed")
   win = gtk_window_new()
-  gtk_window_set_title(win, "NimEdit")
+  # Who this window belongs to: the program's own name, which is what a
+  # `.desktop` file's StartupWMClass matches and what GTK then looks the icon
+  # up by in the icon theme. Not the title -- that changes while it runs.
+  var instName = getEnv("RESOURCE_NAME")
+  if instName.len == 0:
+    instName = getAppFilename().extractFilename.changeFileExt("")
+  var className = instName
+  if className.len > 0: className[0] = className[0].toUpperAscii
+  g_set_prgname(instName.cstring)
+  gdk_set_program_class(className.cstring)
+  gtk_window_set_title(win, instName.cstring)
   # A negative dimension is MaxWindowWidth/MaxWindowHeight: ask the window
   # manager to maximize, which leaves panels and docks visible (unlike
   # gtk_window_fullscreen). The default size is what unmaximizing returns to.
@@ -754,12 +764,6 @@ proc gtkSetWindowTitle(title: string) =
   if win != nil:
     gtk_window_set_title(win, cstring(title))
 
-proc gtkSetWindowClass(instance, className: string) =
-  g_set_prgname(instance.cstring)
-  gdk_set_program_class(className.cstring)
-  if win != nil:
-    gtk_window_set_icon_name(win, instance.cstring)
-
 proc gtkSetWindowIcon(cardinals: pointer; n: int) =
   ## GTK takes the taskbar icon from the icon theme (`Icon=` in the .desktop
   ## file). The cardinals payload is an X11 thing; here we just re-apply the
@@ -841,7 +845,6 @@ proc initGtk4Driver*() =
     saveState: gtkSaveState, restoreState: gtkRestoreState,
     setClipRect: gtkSetClipRect, setCursor: gtkSetCursor,
     setWindowTitle: gtkSetWindowTitle,
-    setWindowClass: gtkSetWindowClass,
     setWindowIcon: gtkSetWindowIcon)
   fontRelays = FontRelays(
     openFont: gtkOpenFont, closeFont: gtkCloseFont,

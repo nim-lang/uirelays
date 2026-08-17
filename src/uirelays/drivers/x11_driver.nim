@@ -801,7 +801,23 @@ proc x11CreateWindow(layout: var ScreenLayout) =
   gTargets = XInternAtom(gDisplay, "TARGETS", 0)
   gClipProperty = XInternAtom(gDisplay, "NIMEDIT_CLIP", 0)
 
-  discard XStoreName(gDisplay, gWindow, "NimEdit")
+  # WM_CLASS: who this window belongs to, which is what groups the windows of
+  # one application in a taskbar and what a `.desktop` file's StartupWMClass
+  # has to match. It is the program's own name -- the convention every X11
+  # toolkit follows, and the one thing about the window that cannot change
+  # while it runs, unlike its title. `RESOURCE_NAME` overrides it, as it does
+  # for every other X11 client, for a binary whose name is not its identity.
+  # Set before mapping: ICCCM has the window manager read it at that point.
+  var instName = getEnv("RESOURCE_NAME")
+  if instName.len == 0:
+    instName = getAppFilename().extractFilename.changeFileExt("")
+  var className = instName
+  if className.len > 0: className[0] = className[0].toUpperAscii
+  var classHint = XClassHint(res_name: cstr(instName),
+                             res_class: cstr(className))
+  discard XSetClassHint(gDisplay, gWindow, addr classHint)
+
+  discard XStoreName(gDisplay, gWindow, instName.cstr)
   discard XMapWindow(gDisplay, gWindow)
 
   if maximized:
@@ -990,11 +1006,6 @@ proc x11SetWindowTitle(title: string) =
   var t = title
   discard XStoreName(gDisplay, gWindow, cstr(t))
 
-proc x11SetWindowClass(instance, className: string) =
-  if gDisplay == nil or gWindow == 0: return
-  var hint = XClassHint(res_name: instance.cstring, res_class: className.cstring)
-  discard XSetClassHint(gDisplay, gWindow, addr hint)
-
 proc x11SetWindowIcon(cardinals: pointer; n: int) =
   ## `cardinals` is a packed `uint32` `_NET_WM_ICON` payload. Xlib's format-32
   ## `XChangeProperty` wants an array of `clong` (8 bytes each on LP64) with the
@@ -1114,7 +1125,6 @@ proc initX11Driver*() =
     saveState: x11SaveState, restoreState: x11RestoreState,
     setClipRect: x11SetClipRect, setCursor: x11SetCursor,
     setWindowTitle: x11SetWindowTitle,
-    setWindowClass: x11SetWindowClass,
     setWindowIcon: x11SetWindowIcon)
   fontRelays = FontRelays(
     openFont: x11OpenFont, closeFont: x11CloseFont,
