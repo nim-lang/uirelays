@@ -61,6 +61,7 @@ type
   gint = cint
   gulong = culong
   gdouble = cdouble
+  GType = csize_t
   GCallback = pointer
   GConnectFlags = cint
 
@@ -98,6 +99,8 @@ proc g_get_monotonic_time(): int64 {.importc, nodecl, cdecl.}
 proc g_usleep(micros: culong) {.importc, nodecl, cdecl.}
 proc g_set_prgname(name: cstring) {.importc, nodecl, cdecl.}
 proc g_get_prgname(): cstring {.importc, nodecl, cdecl.}
+proc g_type_from_name(name: cstring): GType {.importc, nodecl, cdecl.}
+proc g_type_check_instance_is_a(inst: pointer; t: GType): gboolean {.importc, nodecl, cdecl.}
 
 proc g_main_context_iteration(ctx: pointer; mayBlock: gboolean): gboolean {.importc, nodecl, cdecl.}
 
@@ -150,7 +153,7 @@ proc gtk_im_context_focus_in(im: pointer) {.importc, nodecl, cdecl.}
 proc gdk_event_get_modifier_state(ev: pointer): guint {.importc, nodecl, cdecl.}
 proc gdk_keyval_to_lower(k: guint): guint {.importc, nodecl, cdecl.}
 proc gdk_cursor_new_from_name(name: cstring; fallback: pointer): pointer {.importc, nodecl, cdecl.}
-proc gdk_set_program_class(name: cstring) {.importc, nodecl, cdecl.}
+proc gdk_x11_display_set_program_class(disp: pointer; name: cstring) {.importc, nodecl, cdecl.}
 proc gdk_display_get_default(): pointer {.importc, nodecl, cdecl.}
 proc gdk_display_get_clipboard(disp: pointer): pointer {.importc, nodecl, cdecl.}
 proc gdk_clipboard_set_text(clip: pointer; text: cstring) {.importc, nodecl, cdecl.}
@@ -511,7 +514,15 @@ proc gtkCreateWindow(layout: var ScreenLayout; icon: pointer; iconLen: int) =
   var className = instName
   if className.len > 0: className[0] = className[0].toUpperAscii
   g_set_prgname(instName.cstring)
-  gdk_set_program_class(className.cstring)
+  # X11 only: the class half of WM_CLASS. GTK4 would otherwise take it from
+  # RESOURCE_NAME when that is set, so say it outright. Wayland has no such
+  # property -- there the app id is the prgname above. The type check keeps
+  # this off a Wayland display, where the cast inside GTK would be a critical;
+  # an unregistered type name yields 0, which matches nothing.
+  let disp = gdk_display_get_default()
+  if disp != nil and
+      g_type_check_instance_is_a(disp, g_type_from_name("GdkX11Display")) == G_TRUE:
+    gdk_x11_display_set_program_class(disp, className.cstring)
   gtk_window_set_title(win, instName.cstring)
   # GTK takes the icon from the icon theme, by this name -- `icon` holds X11
   # cardinals, which it has no use for. An installed `.desktop` entry and its
