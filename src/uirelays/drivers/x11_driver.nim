@@ -803,14 +803,13 @@ proc x11CreateWindow(layout: var ScreenLayout) =
 
   # WM_CLASS: who this window belongs to, which is what groups the windows of
   # one application in a taskbar and what a `.desktop` file's StartupWMClass
-  # has to match. It is the program's own name -- the convention every X11
+  # has to match. It is the name of the executable -- the convention every X11
   # toolkit follows, and the one thing about the window that cannot change
-  # while it runs, unlike its title. `RESOURCE_NAME` overrides it, as it does
-  # for every other X11 client, for a binary whose name is not its identity.
+  # while it runs, unlike its title. Nothing configures it: the file that is
+  # running is a fact of the running program, so an installed entry that names
+  # it cannot be pointing at the wrong thing.
   # Set before mapping: ICCCM has the window manager read it at that point.
-  var instName = getEnv("RESOURCE_NAME")
-  if instName.len == 0:
-    instName = getAppFilename().extractFilename.changeFileExt("")
+  var instName = getAppFilename().extractFilename.changeFileExt("")
   var className = instName
   if className.len > 0: className[0] = className[0].toUpperAscii
   var classHint = XClassHint(res_name: cstr(instName),

@@ -504,12 +504,10 @@ proc gtkCreateWindow(layout: var ScreenLayout) =
   if gtk_init_check() == G_FALSE:
     quit("GTK4 init failed")
   win = gtk_window_new()
-  # Who this window belongs to: the program's own name, which is what a
+  # Who this window belongs to: the name of the executable, which is what a
   # `.desktop` file's StartupWMClass matches and what GTK then looks the icon
   # up by in the icon theme. Not the title -- that changes while it runs.
-  var instName = getEnv("RESOURCE_NAME")
-  if instName.len == 0:
-    instName = getAppFilename().extractFilename.changeFileExt("")
+  var instName = getAppFilename().extractFilename.changeFileExt("")
   var className = instName
   if className.len > 0: className[0] = className[0].toUpperAscii
   g_set_prgname(instName.cstring)
