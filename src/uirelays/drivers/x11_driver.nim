@@ -760,7 +760,7 @@ proc computeUiScale(): int =
 
 # ---- Screen hook implementations ----
 
-proc x11CreateWindow(layout: var ScreenLayout) =
+proc x11CreateWindow(layout: var ScreenLayout; icon: pointer; iconLen: int) =
   gDisplay = XOpenDisplay(nil)
   if gDisplay == nil:
     quit("Cannot open X11 display")
@@ -815,6 +815,22 @@ proc x11CreateWindow(layout: var ScreenLayout) =
   var classHint = XClassHint(res_name: cstr(instName),
                              res_class: cstr(className))
   discard XSetClassHint(gDisplay, gWindow, addr classHint)
+
+  # `_NET_WM_ICON`: the taskbar bitmap, for a window whose application has no
+  # installed entry to look one up in. Also before the map, so the window
+  # manager has it the first time it draws the window rather than a frame or
+  # two later. Xlib's format-32 `XChangeProperty` wants an array of `clong`
+  # (8 bytes each on LP64) with the value in the low 32 bits, so the packed
+  # `uint32` payload is expanded on the way in.
+  if icon != nil and iconLen > 0:
+    let iconAtom = XInternAtom(gDisplay, "_NET_WM_ICON", 0)
+    if iconAtom != 0:
+      let src = cast[ptr UncheckedArray[uint32]](icon)
+      var longs = newSeq[clong](iconLen)
+      for i in 0 ..< iconLen:
+        longs[i] = clong(src[i])
+      discard XChangeProperty(gDisplay, gWindow, iconAtom, XA_CARDINAL, 32,
+                              PropModeReplace, addr longs[0], iconLen.cint)
 
   discard XStoreName(gDisplay, gWindow, instName.cstr)
   discard XMapWindow(gDisplay, gWindow)
@@ -1005,21 +1021,6 @@ proc x11SetWindowTitle(title: string) =
   var t = title
   discard XStoreName(gDisplay, gWindow, cstr(t))
 
-proc x11SetWindowIcon(cardinals: pointer; n: int) =
-  ## `cardinals` is a packed `uint32` `_NET_WM_ICON` payload. Xlib's format-32
-  ## `XChangeProperty` wants an array of `clong` (8 bytes each on LP64) with the
-  ## value in the low 32 bits -- expand before the call.
-  if gDisplay == nil or gWindow == 0 or cardinals == nil or n <= 0: return
-  let atom = XInternAtom(gDisplay, "_NET_WM_ICON", 0)
-  if atom == 0: return
-  let src = cast[ptr UncheckedArray[uint32]](cardinals)
-  var longs = newSeq[clong](n)
-  for i in 0 ..< n:
-    longs[i] = clong(src[i])
-  discard XChangeProperty(gDisplay, gWindow, atom, XA_CARDINAL, 32,
-                          PropModeReplace, addr longs[0], n.cint)
-  discard XFlush(gDisplay)
-
 # ---- Input hook implementations ----
 
 proc x11PollEvent(e: var input.Event; flags: set[InputFlag]): bool =
@@ -1123,8 +1124,7 @@ proc initX11Driver*() =
     refresh: x11Refresh,
     saveState: x11SaveState, restoreState: x11RestoreState,
     setClipRect: x11SetClipRect, setCursor: x11SetCursor,
-    setWindowTitle: x11SetWindowTitle,
-    setWindowIcon: x11SetWindowIcon)
+    setWindowTitle: x11SetWindowTitle)
   fontRelays = FontRelays(
     openFont: x11OpenFont, closeFont: x11CloseFont,
     getFontMetrics: x11GetFontMetrics, measureText: x11MeasureText,

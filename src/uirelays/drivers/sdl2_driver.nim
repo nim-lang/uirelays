@@ -42,7 +42,7 @@ var
 # all. So this driver reports `uiScale = 100` and text stays small on a HiDPI
 # display -- use the SDL3 driver there.
 
-proc sdlCreateWindow(layout: var ScreenLayout) =
+proc sdlCreateWindow(layout: var ScreenLayout; icon: pointer; iconLen: int) =
   # A negative dimension is MaxWindowWidth/MaxWindowHeight; the window
   # manager's maximize keeps taskbars visible, unlike FULLSCREEN_DESKTOP. The
   # positive size is what the window returns to when it is unmaximized.
@@ -374,8 +374,7 @@ proc initSdl2Driver*() =
     refresh: sdlRefresh,
     saveState: sdlSaveState, restoreState: sdlRestoreState,
     setClipRect: sdlSetClipRect, setCursor: sdlSetCursor,
-    setWindowTitle: sdlSetWindowTitle,
-    setWindowIcon: proc (cardinals: pointer; n: int) = discard)
+    setWindowTitle: sdlSetWindowTitle)
   fontRelays = FontRelays(
     openFont: sdlOpenFont, closeFont: sdlCloseFont,
     getFontMetrics: sdlGetFontMetrics, measureText: sdlMeasureText,

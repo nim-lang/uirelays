@@ -627,7 +627,7 @@ proc wndProc(hwnd: HWND; msg: UINT; wp: WPARAM; lp: LPARAM): LRESULT {.stdcall.}
 
 # ---- Screen hook implementations ----
 
-proc winCreateWindow(layout: var ScreenLayout) =
+proc winCreateWindow(layout: var ScreenLayout; icon: pointer; iconLen: int) =
   # Seed the scale before there is a window: `CreateWindowExW` and `ShowWindow`
   # below both send WM_SIZE synchronously, and the event that lands in the
   # queue carries `gUiScale` with it. Left at the 100 default, that event
@@ -996,8 +996,7 @@ proc initWinapiDriver*() =
     refresh: winRefresh,
     saveState: winSaveState, restoreState: winRestoreState,
     setClipRect: winSetClipRect, setCursor: winSetCursor,
-    setWindowTitle: winSetWindowTitle,
-    setWindowIcon: proc (cardinals: pointer; n: int) = discard)
+    setWindowTitle: winSetWindowTitle)
   fontRelays = FontRelays(
     openFont: winOpenFont, closeFont: winCloseFont,
     getFontMetrics: winGetFontMetrics, measureText: winMeasureText,

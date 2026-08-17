@@ -495,7 +495,7 @@ proc readClipboardSync(): string =
 
 # --- Screen hooks ---
 
-proc gtkCreateWindow(layout: var ScreenLayout) =
+proc gtkCreateWindow(layout: var ScreenLayout; icon: pointer; iconLen: int) =
   if win != nil:
     let da = cast[ptr GtkDrawingArea](drawingArea)
     layout.width = max(1, gtk_drawing_area_get_content_width(da).int)
@@ -513,6 +513,10 @@ proc gtkCreateWindow(layout: var ScreenLayout) =
   g_set_prgname(instName.cstring)
   gdk_set_program_class(className.cstring)
   gtk_window_set_title(win, instName.cstring)
+  # GTK takes the icon from the icon theme, by this name -- `icon` holds X11
+  # cardinals, which it has no use for. An installed `.desktop` entry and its
+  # hicolor PNGs are what put a picture there.
+  gtk_window_set_icon_name(win, instName.cstring)
   # A negative dimension is MaxWindowWidth/MaxWindowHeight: ask the window
   # manager to maximize, which leaves panels and docks visible (unlike
   # gtk_window_fullscreen). The default size is what unmaximizing returns to.
@@ -762,15 +766,6 @@ proc gtkSetWindowTitle(title: string) =
   if win != nil:
     gtk_window_set_title(win, cstring(title))
 
-proc gtkSetWindowIcon(cardinals: pointer; n: int) =
-  ## GTK takes the taskbar icon from the icon theme (`Icon=` in the .desktop
-  ## file). The cardinals payload is an X11 thing; here we just re-apply the
-  ## program name as an icon-theme lookup.
-  discard cardinals
-  discard n
-  if win != nil:
-    gtk_window_set_icon_name(win, g_get_prgname())
-
 # --- Input hooks ---
 
 proc pumpGtk() =
@@ -842,8 +837,7 @@ proc initGtk4Driver*() =
     refresh: gtkRefresh,
     saveState: gtkSaveState, restoreState: gtkRestoreState,
     setClipRect: gtkSetClipRect, setCursor: gtkSetCursor,
-    setWindowTitle: gtkSetWindowTitle,
-    setWindowIcon: gtkSetWindowIcon)
+    setWindowTitle: gtkSetWindowTitle)
   fontRelays = FontRelays(
     openFont: gtkOpenFont, closeFont: gtkCloseFont,
     getFontMetrics: gtkGetFontMetrics, measureText: gtkMeasureText,

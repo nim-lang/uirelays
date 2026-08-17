@@ -122,12 +122,17 @@ when defined(windows):
 when defined(linux):
   const focimIconNetWm = staticRead("focim-icon.netwm")
 
-  proc focimIconCardinals(): seq[uint32] =
+  proc focimIcon(): seq[uint32] =
+    ## The blob as the CARDINALs `createWindow` puts on the window.
     var raw = focimIconNetWm
     let n = raw.len div 4
     result = newSeq[uint32](n)
     if n > 0:
       copyMem(addr result[0], addr raw[0], n * 4)
+else:
+  proc focimIcon(): seq[uint32] = @[]
+    ## Windows takes its icon from the linked `.res` and macOS from the bundle,
+    ## so there is nothing for the window itself to carry.
 
 const defaultConfig = """
 (config
@@ -1220,17 +1225,17 @@ proc main =
   # An editor wants the whole desktop, so ask for it -- as a window, not as
   # `fullScreen`: the menu bar and the other windows stay reachable, which
   # matters for an app whose terminal is meant to be used next to a browser.
-  let screen = createWindow(MaxWindowWidth, MaxWindowHeight)
+  # The icon goes in with it: it is the bitmap a window manager shows when no
+  # .desktop entry is installed to look one up in, and it has to be there
+  # before the window is, or the desktop draws its placeholder first. Who the
+  # window belongs to needs nothing said about it -- `createWindow` puts the
+  # name of this executable in WM_CLASS, which is the "focim" a
+  # StartupWMClass matches.
+  let screen = createWindow(MaxWindowWidth, MaxWindowHeight,
+                            icon = focimIcon())
   var width = screen.width
   var height = screen.height
   gUiScale = screen.uiScale
-
-  # The bitmap the window manager shows when no .desktop entry is installed to
-  # look one up in. Who the window belongs to needs nothing said about it:
-  # `createWindow` has already put the name of this executable in WM_CLASS,
-  # which is the "focim" that a StartupWMClass matches.
-  when defined(linux):
-    setWindowIcon(focimIconCardinals())
 
   var fonts: Table[int, Font]
   let font = fonts.fontForSize(DefaultFontSize)

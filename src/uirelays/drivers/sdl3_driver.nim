@@ -245,7 +245,7 @@ template toPixelCoord(v: untyped): int =
   ## lands at a fraction of where it looked.
   int(v.float * currentLayout.uiScale.float / 100.0 + 0.5)
 
-proc sdlCreateWindow(layout: var ScreenLayout) =
+proc sdlCreateWindow(layout: var ScreenLayout; icon: pointer; iconLen: int) =
   if ren != nil or win != nil:
     resetSdlState()
   # A negative dimension is MaxWindowWidth/MaxWindowHeight. WINDOW_MAXIMIZED
@@ -681,8 +681,7 @@ proc initSdl3Driver*() =
     refresh: sdlRefresh,
     saveState: sdlSaveState, restoreState: sdlRestoreState,
     setClipRect: sdlSetClipRect, setCursor: sdlSetCursor,
-    setWindowTitle: sdlSetWindowTitle,
-    setWindowIcon: proc (cardinals: pointer; n: int) = discard)
+    setWindowTitle: sdlSetWindowTitle)
   fontRelays = FontRelays(
     openFont: sdlOpenFont, closeFont: sdlCloseFont,
     getFontMetrics: sdlGetFontMetrics, measureText: sdlMeasureText,

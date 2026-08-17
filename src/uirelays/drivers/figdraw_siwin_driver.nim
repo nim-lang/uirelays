@@ -401,7 +401,7 @@ proc renderQueuedOps() =
   renderer.endFrame()
   drawOps.setLen(0)
 
-proc figCreateWindow(layout: var ScreenLayout) =
+proc figCreateWindow(layout: var ScreenLayout; icon: pointer; iconLen: int) =
   # MaxWindowWidth/MaxWindowHeight arrive as negative sizes. Neither backend
   # is available to test against here, so this driver does the safe half of
   # the contract: it substitutes a sane size instead of handing a negative one
@@ -693,7 +693,6 @@ proc initFigDrawSiwinDriver*() =
     setClipRect: figSetClipRect,
     setCursor: figSetCursor,
     setWindowTitle: figSetWindowTitle,
-    setWindowIcon: proc (cardinals: pointer; n: int) = discard,
   )
   fontRelays = FontRelays(
     openFont: figOpenFont,

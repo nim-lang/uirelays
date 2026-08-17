@@ -48,7 +48,15 @@ type
     curCrosshair, curHand, curSizeNS, curSizeWE
 
   WindowRelays* = object
-    createWindow*: proc (layout: var ScreenLayout) {.nimcall.}
+    createWindow*: proc (layout: var ScreenLayout;
+                         icon: pointer; iconLen: int) {.nimcall.}
+      ## `icon` is a packed `_NET_WM_ICON` payload -- `iconLen` `uint32`s of
+      ## (width, height, then ARGB pixels), or nil. Everything a window is
+      ## given once and for its whole life is given here: its size, and the
+      ## picture and the name a desktop knows it by. The name is not a
+      ## parameter, because a driver can read it off the executable itself.
+      ## Ignored by the backends that take their icon from a PE resource, from
+      ## a bundle, or from an icon theme.
     getWindowLayout*: proc (): ScreenLayout {.nimcall.}
     refresh*: proc () {.nimcall.}
     saveState*: proc () {.nimcall.}
@@ -56,12 +64,9 @@ type
     setClipRect*: proc (r: Rect) {.nimcall.}
     setCursor*: proc (c: CursorKind) {.nimcall.}
     setWindowTitle*: proc (title: string) {.nimcall.}
-      ## X11 `WM_CLASS` (res_name, res_class). Desktop files match the running
-      ## window through this -- GNOME/KDE taskbars look it up as StartupWMClass.
-    setWindowIcon*: proc (cardinals: pointer; n: int) {.nimcall.}
-      ## `_NET_WM_ICON` payload: packed `uint32`s as (width, height, ARGB...).
-      ## `cardinals` is `ptr uint32`, `n` is the number of uint32 values.
-      ## No-op on backends that take their icon from a PE resource or an icon theme.
+      ## What the window says it is *showing* -- a document name, typically,
+      ## and it changes as often as that does. What it says it *is* is
+      ## `WM_CLASS`, which `createWindow` sets and nothing changes.
 
   FontRelays* = object
     openFont*: proc (path: string; size: int; style: FontStyles;
@@ -84,7 +89,8 @@ proc `==`*(a, b: Font): bool {.borrow.}
 proc `==`*(a, b: Image): bool {.borrow.}
 
 var windowRelays* = WindowRelays(
-  createWindow: proc (layout: var ScreenLayout) = discard,
+  createWindow: proc (layout: var ScreenLayout;
+                      icon: pointer; iconLen: int) = discard,
   getWindowLayout: proc (): ScreenLayout =
     ScreenLayout(scaleX: 1, scaleY: 1, uiScale: 100),
   refresh: proc () = discard,
@@ -92,8 +98,7 @@ var windowRelays* = WindowRelays(
   restoreState: proc () = discard,
   setClipRect: proc (r: Rect) = discard,
   setCursor: proc (c: CursorKind) = discard,
-  setWindowTitle: proc (title: string) = discard,
-  setWindowIcon: proc (cardinals: pointer; n: int) = discard)
+  setWindowTitle: proc (title: string) = discard)
 
 var fontRelays* = FontRelays(
   openFont: proc (path: string; size: int; style: FontStyles;
@@ -127,7 +132,8 @@ const
     ## span the full width at a fixed height.
 
 # Convenience wrappers
-proc createWindow*(requestedW, requestedH: int; fullScreen = false): ScreenLayout =
+proc createWindow*(requestedW, requestedH: int; fullScreen = false;
+                   icon: openArray[uint32] = []): ScreenLayout =
   ## The defaults are what a driver that knows nothing about display density
   ## reports, so a driver only has to write back what it actually knows.
   ##
@@ -135,10 +141,24 @@ proc createWindow*(requestedW, requestedH: int; fullScreen = false): ScreenLayou
   ## may have. The layout that comes back always holds the real size in
   ## pixels -- the sentinel never survives the call, so the rest of an app
   ## never has to know about it.
+  ##
+  ## `icon` is the taskbar and title-bar bitmap, in the layout X11 asks for:
+  ## one or more images, each `width`, `height`, then `width*height` pixels as
+  ## `0xAARRGGBB`. It belongs here rather than in a call of its own because it
+  ## is wanted before the window is on screen -- a window that is mapped first
+  ## and given its icon afterwards shows the desktop's placeholder in between.
+  ##
+  ## Who the window *belongs to* is not passed in and cannot be: it is the name
+  ## of the executable, which the driver reads for itself and puts in
+  ## `WM_CLASS`. That is what a `.desktop` file's `StartupWMClass` matches, and
+  ## matching it is the other way an icon reaches the taskbar -- through the
+  ## entry's `Icon=` and the icon theme. `icon` is for the window itself, and
+  ## for the desktops and the moments where no entry is installed to look up.
   result = ScreenLayout(width: requestedW, height: requestedH,
                         scaleX: 1, scaleY: 1, uiScale: 100,
                         fullScreen: fullScreen)
-  windowRelays.createWindow(result)
+  windowRelays.createWindow(result,
+    if icon.len > 0: cast[pointer](unsafeAddr icon[0]) else: nil, icon.len)
 
 proc getWindowLayout*(): ScreenLayout =
   ## The current size and scale. Worth re-reading after the window moved to
@@ -156,19 +176,6 @@ proc restoreState*() = windowRelays.restoreState()
 proc setClipRect*(r: Rect) = windowRelays.setClipRect(r)
 proc setCursor*(c: CursorKind) = windowRelays.setCursor(c)
 proc setWindowTitle*(title: string) = windowRelays.setWindowTitle(title)
-
-proc setWindowIcon*(cardinals: openArray[uint32]) =
-  ## Taskbar / title-bar bitmap. `cardinals` is one or more X11 `_NET_WM_ICON`
-  ## images: each is `width`, `height`, then `width*height` pixels as `0xAARRGGBB`.
-  ##
-  ## Who the window *belongs to* is not set here and cannot be: it is the
-  ## program's own name, which `createWindow` reads off the executable and puts
-  ## in `WM_CLASS`. That is what a `.desktop` file's `StartupWMClass` matches,
-  ## and matching it is the other way an icon reaches the taskbar -- through
-  ## the entry's `Icon=` and the icon theme. This one is for the window itself,
-  ## and for the desktops and moments where no entry is installed to look up.
-  if cardinals.len == 0: return
-  windowRelays.setWindowIcon(cast[pointer](unsafeAddr cardinals[0]), cardinals.len)
 
 type
   StyledSlot = object
