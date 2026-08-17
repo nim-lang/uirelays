@@ -63,15 +63,23 @@ last thirty texts that entered it stay, from this application or from any
 other, numbered, and Ctrl+1 .. Ctrl+9 paste one at the caret. See
 `doc/clipboard.md`.
 
-Icon: `focim-icon.png` is the source art. On Windows, `focim.ico` /
-`focim.rc` / `focim.res` stamp the .exe (rebuild with
-`windres focim.rc -O coff -o focim.res`). On Linux / macOS, install once with
-`tools/install_desktop.nim` -- FreeDesktop entry on Linux, `focim.app` bundle
-on macOS. `StartupWMClass` / the bundle id stem must match `setWindowClass`:
+Icon: `focim-icon.png` is the source art, and the files built from it that are
+checked in next to it -- `focim-icon.netwm` for X11, `focim.ico` / `.rc` /
+`.res` for Windows. Deriving those from the PNG, and installing the desktop
+entry or the `.app` bundle, is somebody else's job: `iconbundler`
+(https://github.com/Araq/iconbundler), which is a tool for any desktop
+application and does not belong in a UI library. After changing the PNG, from
+`apps/`:
 
-    nim c -r tools/install_desktop.nim focim apps/focim \
+    iconbundler --prepare focim
+
+and to install this build for the desktop as well:
+
+    iconbundler focim ../focim focim-icon.png \
       --generic-name "Text Editor" --comment "Focussed Nim Editor" \
       --categories "Development;TextEditor;"
+
+`StartupWMClass` / the bundle id stem must match `setWindowClass`.
 ]##
 
 import std/[tables, os, algorithm]
@@ -83,8 +91,7 @@ import uirelays/layout
 import widgets/[synedit, terminal, config, wordindex, cliphistory]
 import completion
 
-# Windows PE icon: `windres focim.rc -O coff -o focim.res` (see focim.rc).
-# Linux taskbar: embedded `_NET_WM_ICON` below + one-shot `tools/install_desktop.nim`.
+# Derived from focim-icon.png by `iconbundler --prepare focim`.
 when defined(windows):
   {.link: "focim.res".}
 
