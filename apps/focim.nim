@@ -81,6 +81,16 @@ first character of each line -- so `git diff` comes out in red and green with
 its hunk headers picked out, without anything in the pipe emitting an escape
 sequence.
 
+What it printed is protected from editing, not from being read. The caret goes
+up into the output, the arrow keys and the mouse move through it, and a
+selection can be taken out of it exactly as in the editor. What brings the
+caret back down is a key that edits -- a character, a paste, Tab, Enter -- so
+those always land on the command line wherever the caret was left standing. Up
+and Down are the command history while the caret is on that line and ordinary
+caret keys above it; Ctrl+C copies while something is selected and stops the
+running program when nothing is. A program that prints while its output is
+being read leaves both the caret and the scroll position alone.
+
 The config and the list of open tabs are stored under `getConfigDir()` in
 `focim/config.nif` and `focim/tabs.txt`, so both survive a restart.
 

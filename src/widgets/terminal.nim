@@ -403,10 +403,26 @@ proc getCommand(t: Terminal): string =
   for i in t.ed.readOnly + 1 ..< t.ed.len:
     result.add t.ed[i]
 
+proc caretToEnd(t: var Terminal) =
+  ## Put the caret back where typing goes. What a program printed is text like
+  ## any other here -- the caret walks into it and a selection can be taken out
+  ## of it -- but a key that *edits* belongs to the line being typed, so
+  ## everything that edits comes through here first.
+  if t.ed.cursor.int > t.ed.readOnly: return
+  t.ed.deselect()
+  t.ed.gotoPos(t.ed.len)
+
 proc emptyCmd(t: var Terminal) =
-  while true:
-    if t.ed.len - 1 <= t.ed.readOnly: break
+  ## Take the typed command back off the line, wherever in it the caret is
+  ## standing. Backspace is what deletes it, and backspace deletes in front of
+  ## the caret, so the caret goes to the end first -- and if a character will
+  ## not go after all, this stops instead of asking forever.
+  t.ed.deselect()
+  t.ed.gotoPos(t.ed.len)
+  while t.ed.len - 1 > t.ed.readOnly:
+    let before = t.ed.len
     t.ed.backspace(smartIndent = false)
+    if t.ed.len >= before: break
 
 # ---------------------------------------------------------------------------
 # Git branch in the prompt
@@ -536,6 +552,7 @@ proc suggestPath(t: var Terminal; prefix: string) =
   delete(t.files, sug)
 
 proc tabPressed(t: var Terminal) =
+  t.caretToEnd()
   if t.ed.changed:
     let cmd = t.getCommand()
     t.prefix.setLen 0
@@ -761,15 +778,22 @@ proc draw*(t: var Terminal; e: Event; area: Rect; focused: bool): TermAction =
   t.update()
 
   if focused:
-    # Ensure cursor is in the editable area so it's visible.
-    if t.ed.cursor <= t.ed.readOnly:
-      t.ed.gotoPos(t.ed.len)
-    # Intercept terminal-specific keys before passing to SynEdit.
-    if e.kind == KeyDownEvent:
+    # The keys the terminal answers itself. Everything it does not name here
+    # -- the arrows with a modifier on them, Home and End, the clipboard, the
+    # mouse -- reaches SynEdit untouched, and works on what a program printed
+    # exactly as it works in the editor.
+    if e.kind == TextInputEvent:
+      # Typing is for the command line, wherever the caret was left standing.
+      t.caretToEnd()
+    elif e.kind == KeyDownEvent:
       let ctrl = CtrlPressed in e.mods
+      let shift = ShiftPressed in e.mods
       case e.key
       of KeyUp:
-        if not ctrl:
+        # The history, but only from the line it belongs to: with the caret up
+        # in the output, Up is what it is in the editor and walks it further
+        # up. Shift and Ctrl always mean select and scroll.
+        if not ctrl and not shift and t.ed.cursor.int > t.ed.readOnly:
           let sug = t.hist[t.process].suggest(up = true)
           if sug.len > 0:
             t.emptyCmd()
@@ -777,7 +801,7 @@ proc draw*(t: var Terminal; e: Event; area: Rect; focused: bool): TermAction =
           t.ed.render(area, showCursor = true)
           return
       of KeyDown:
-        if not ctrl:
+        if not ctrl and not shift and t.ed.cursor.int > t.ed.readOnly:
           let sug = t.hist[t.process].suggest(up = false)
           if sug.len > 0:
             t.emptyCmd()
@@ -789,14 +813,21 @@ proc draw*(t: var Terminal; e: Event; area: Rect; focused: bool): TermAction =
         t.ed.render(area, showCursor = true)
         return
       of KeyEnter:
+        t.caretToEnd()
         result = t.enterPressed()
         t.ed.render(area, showCursor = true)
         return
       of KeyC:
-        if ctrl and t.processRunning:
+        # A selection is what Ctrl+C is for everywhere else, so it is a copy
+        # here too and SynEdit gets the key. Only with nothing selected does
+        # it mean the other thing and stop the program.
+        if ctrl and t.processRunning and not t.ed.hasSelection:
           t.sendBreak()
           t.ed.render(area, showCursor = true)
           return
+      of KeyV:
+        # Pasted text is typed text: it goes where typing goes.
+        if ctrl: t.caretToEnd()
       else: discard
 
   let edAct = t.ed.draw(e, area, focused)

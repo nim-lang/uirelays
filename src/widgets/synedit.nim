@@ -1580,8 +1580,14 @@ proc pageDown(s: var SynEdit) =
 proc selectAll(s: var SynEdit) =
   s.selected = (0, s.len - 1)
 
-proc deselect(s: var SynEdit) {.inline.} =
+proc deselect*(s: var SynEdit) {.inline.} =
+  ## Drop the selection without touching the text or the caret.
   s.selected.b = -1
+
+proc hasSelection*(s: SynEdit): bool {.inline.} = s.selected.b >= 0
+  ## Whether anything is selected. What a key does can turn on it: Ctrl+C is
+  ## a copy when there is something to copy, and whatever the widget's owner
+  ## makes of it when there is not.
 
 proc getSelectedText*(s: SynEdit): string =
   if s.selected.b < 0: return ""
@@ -2150,6 +2156,15 @@ proc saveToFile*(s: var SynEdit; filename: string) =
 proc appendOutput*(s: var SynEdit; text: string) =
   ## Append text and mark everything as read-only up to the end.
   ## For terminal/console use: output is protected, user types after it.
+  ##
+  ## The caret follows the output down only if it was at the end to begin
+  ## with. A caret left further up is a reader's -- somebody is looking at
+  ## what came before, or selecting out of it -- and a program that prints
+  ## while that is going on must not drag them away from it.
+  let stay = s.cursor.int < s.len
+  let oldCursor = s.cursor.int
+  let oldFirstLine = s.firstLine
+  let oldFirstLineOffset = s.firstLineOffset
   s.readOnly = -1
   s.gotoPos(s.len)
   s.prepareForEdit()
@@ -2162,6 +2177,12 @@ proc appendOutput*(s: var SynEdit; text: string) =
   # the rest of a buffer never comes for this text either.
   s.highlightFrom(start)
   s.readOnly = s.len - 1
+  if stay:
+    s.gotoPos(oldCursor)
+    # What was appended came after every line that was on screen, so where the
+    # view was scrolled to still means the same thing.
+    s.firstLine = oldFirstLine
+    s.firstLineOffset = oldFirstLineOffset
 
 proc setLabel*(s: var SynEdit; text: string) =
   ## Set text and make the entire buffer read-only. For labels and status bars.
@@ -2863,7 +2884,10 @@ proc renderPass(s: var SynEdit; area: Rect; showCursor: bool) =
   let fontSize = lineH
 
   var blink = false
-  if showCursor and s.readOnly < s.cursor.int:
+  if showCursor:
+    # Wherever it stands, including in text that cannot be edited: a caret
+    # that is not drawn cannot be moved with the arrow keys, and read-only
+    # text is still walked through and selected like any other.
     let ticks = getTicks()
     if ticks - s.lastBlinkTick > 500:
       s.cursorVisible = not s.cursorVisible
