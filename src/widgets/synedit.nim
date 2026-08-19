@@ -165,6 +165,9 @@ type
     # Line tracking
     firstLine*, currentLine*, numberOfLines: Natural
     firstLineOffset: Natural
+    editLow: int                    ## the earliest position edited since
+                                    ## `firstLineOffset` was worked out; see
+                                    ## `syncFirstLine`
     span*: int
     desiredCol: Natural
     # Selection
@@ -1170,6 +1173,32 @@ proc updateLineCache(s: var SynEdit; offset: int; line: Natural) =
       break
     inc idx
 
+proc setFirstLine(s: var SynEdit; line: int) =
+  ## Put the top of the view on `line` and work out where that line begins.
+  s.firstLine = clamp(line, 0, max(0, s.numberOfLines.int)).Natural
+  s.firstLineOffset = s.getLineOffset(s.firstLine).Natural
+  s.editLow = high(int)
+
+proc noteEdit(s: var SynEdit; at: int) {.inline.} =
+  ## Text was inserted or removed at `at`, so everything behind it has moved.
+  if at < s.editLow: s.editLow = at
+
+proc syncFirstLine(s: var SynEdit) =
+  ## `firstLine` is a line number and `firstLineOffset` is the position that
+  ## line starts at, and an edit in front of that position moves the text out
+  ## from under it while the number stays right. Nothing says so at the time:
+  ## the edit can be an undo of something far away, or a selection deleted
+  ## from above a view that was scrolled down. Left alone, the view starts in
+  ## the middle of a line and every line after it is counted wrong -- which
+  ## row carries the caret's band, which line a click lands on, what stands in
+  ## the number margin -- so the position is worked out again from the number.
+  ##
+  ## Which costs a walk from the top of the buffer, hence `editLow`: an edit
+  ## behind the position cannot have moved it, and that is where all the
+  ## typing happens, so the walk is for the rare edit that is in front of it.
+  if s.editLow >= s.firstLineOffset.int: return
+  s.setFirstLine(s.firstLine.int)
+
 proc setCurrentLine(s: var SynEdit) =
   s.currentLine = s.getLineFromOffset(s.cursor)
   s.currentLine = clamp(s.currentLine, 0, s.numberOfLines)
@@ -1251,6 +1280,9 @@ proc downFirstLineOffset(s: var SynEdit) =
   s.firstLineOffset = i + 1
 
 proc scrollLines(s: var SynEdit; amount: int) =
+  # The walk below starts from where the top line begins, so that had better
+  # still be where it begins.
+  s.syncFirstLine()
   let oldFirstLine = s.firstLine
   s.firstLine = clamp(s.firstLine.int + amount, 0, max(0, s.numberOfLines.int - 1)).Natural
   var a = s.firstLine.int - oldFirstLine.int
@@ -1298,6 +1330,7 @@ template edit(s: var SynEdit) =
 
 proc rawInsert(s: var SynEdit; c: char) =
   inc s.cacheId
+  s.noteEdit(s.cursor.int)
   case c
   of '\L':
     s.front.add Cell(c: '\L')
@@ -1330,19 +1363,25 @@ proc rawBackspace(s: var SynEdit; overrideUtf8: bool; undoAction: var string) =
   inc s.cacheId
   if s.cursor <= 0: return
   var x: int
+  var wasNewline = false
   let ch = s.front[s.cursor - 1].c
   if ch.ord < 128 or overrideUtf8:
     x = 1
     if ch == '\L':
       dec s.numberOfLines
-      s.scroll(-1)
+      wasNewline = true
   else:
     x = s.lastRuneLen(s.cursor - 1)
+  s.noteEdit(s.cursor.int - x)
   if undoAction.len != 0 or true:
     for i in countdown(s.front.len - 1, s.front.len - x):
       undoAction.add s.front[i].c
   s.cursor -= x
   s.front.setLen(s.cursor)
+  # Only now that the character is gone: scrolling reads the buffer to find
+  # out where the top line of the view begins, and until the `setLen` above it
+  # would count the line that is on its way out.
+  if wasNewline: s.scroll(-1)
 
 proc filterForInsert(text: string): string =
   result = newStringOfCap(text.len)
@@ -1409,8 +1448,7 @@ proc gotoPos*(s: var SynEdit; pos: int) =
   if s.currentLine >= s.firstLine + 1 and s.currentLine < s.firstLine + s.span.Natural - 1:
     discard "still in view"
   else:
-    s.firstLine = max(0, s.currentLine.int - (s.span div 2)).Natural
-    s.firstLineOffset = s.getLineOffset(s.firstLine)
+    s.setFirstLine(s.currentLine.int - (s.span div 2))
 
 proc applyUndo(s: var SynEdit; a: Action) =
   let oldCursor = s.cursor
@@ -1845,8 +1883,7 @@ proc gotoLine*(s: var SynEdit; line, col: int) =
   s.cursor = s.getLineOffset(line).Natural
   s.currentLine = line.Natural
   let span = if s.span > 0: s.span else: 30
-  s.firstLine = max(0, line - (span div 2)).Natural
-  s.firstLineOffset = s.getLineOffset(s.firstLine)
+  s.setFirstLine(line - (span div 2))
   if col > 0:
     var c = 1
     while c <= col and s[s.cursor] != '\L':
@@ -2116,6 +2153,7 @@ proc clear*(s: var SynEdit) =
   s.bracketB = -1
   s.span = 0
   s.firstLineOffset = 0
+  s.editLow = high(int)
   s.readOnly = -1
   s.clicks = 0
   s.undoIdx = 0
@@ -2180,7 +2218,8 @@ proc appendOutput*(s: var SynEdit; text: string) =
   if stay:
     s.gotoPos(oldCursor)
     # What was appended came after every line that was on screen, so where the
-    # view was scrolled to still means the same thing.
+    # view was scrolled to still means the same thing -- and so does where its
+    # top line begins, which is why this pair may be put back as it was.
     s.firstLine = oldFirstLine
     s.firstLineOffset = oldFirstLineOffset
 
@@ -2197,7 +2236,7 @@ proc setLabel*(s: var SynEdit; text: string) =
 proc createSynEdit*(font: Font; theme = defaultTheme()): SynEdit =
   result = SynEdit(front: @[], back: @[], actions: @[], cursor: 0,
     selected: (-1, -1), bracketA: -1, bracketB: -1, hotLink: (-1, -1),
-    readOnly: -1, tabSize: TabWidth, lang: langNim,
+    readOnly: -1, tabSize: TabWidth, lang: langNim, editLow: high(int),
     actionLines: -1, closeLines: -1, closeHover: -1, activeRow: (0, -1),
     rowHighlight: RowHighlight(line: -1),
     font: font, theme: theme, flags: {},
@@ -2877,6 +2916,7 @@ proc renderPass(s: var SynEdit; area: Rect; showCursor: bool) =
     s.mouseX = max(s.mouseX, dim.x)
     s.mouseY = max(s.mouseY, dim.y)
 
+  s.syncFirstLine()
   var renderLine = s.firstLine
   var i = s.firstLineOffset.int
   s.span = 0
@@ -3031,6 +3071,14 @@ proc render*(s: var SynEdit; area: Rect; showCursor: bool) =
     s.renderPass(area, showCursor)
     if s.cursorDim.h > 0: return
   elif not moved:
+    return
+  if s.currentLine < s.firstLine:
+    # Above the view -- an edit made with the caret scrolled off the top does
+    # that. One line at a time would be a walk of unknown length, and there is
+    # nothing above the caret worth keeping in sight, so its line goes to the
+    # top in one step.
+    s.setFirstLine(s.currentLine.int)
+    s.renderPass(area, showCursor)
     return
   if s.firstLine >= s.currentLine: return
   let oldFirst = s.firstLine

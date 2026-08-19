@@ -36,6 +36,8 @@ exec "nim c -r tests/consoletest.nim"
 exec "nim c -r tests/wraptest.nim"
 # Where the caret may go in a terminal, and what a key means where it stands.
 exec "nim c -r tests/terminaltest.nim"
+# And that the row the caret is on is the row that gets the band.
+exec "nim c -r tests/activelinetest.nim"
 
 # The app, once, with the platform's default backend.
 exec "nim c apps/focim.nim"
