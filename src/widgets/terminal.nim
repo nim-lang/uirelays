@@ -308,6 +308,7 @@ type
     gotoMatch,          ## user typed `next` / `prev`
     answer,             ## a line typed while `question` was up
     indexWords,         ## user typed `index <path>` or `unindex <path>`
+    resetConfig,        ## user typed `defaults`
     ctrlHover,          ## ctrl+mouse move over text
     ctrlClick           ## ctrl+click on text
 
@@ -335,6 +336,7 @@ type
       path*: string     ## absolute; "" asks what is indexed rather than
                         ## indexing anything
       forget*: bool     ## `unindex`: drop the set instead of adding it
+    of resetConfig: discard
     of ctrlHover, ctrlClick:
       pos*: int         ## buffer offset
 
@@ -371,6 +373,13 @@ type
                         ## `cd` to move it with. A widget used as an
                         ## application's prompt has neither, and points this at
                         ## whatever the application considers current.
+    isPrompt*: bool     ## whether this widget is an application's prompt
+                        ## rather than a place programs run in. It changes one
+                        ## thing: a command that acts on the application
+                        ## itself, rather than on a file or on the machine, is
+                        ## only a command here. In a terminal the same word is
+                        ## a program's name, which is where it belongs -- see
+                        ## `defaults` below.
     branch: string      ## cached result of `gitBranch`; see `insertPrompt`
     branchDir: string   ## the directory `branch` was read for. Anything else,
                         ## "" included, means the cache says nothing about the
@@ -608,6 +617,15 @@ proc runCommand*(t: var Terminal; cmd: var string): TermAction =
   # that needs the answer. `cd .` therefore doubles as a way to pick up a branch
   # that changed behind this terminal's back.
   if mentionsCd(cmd): t.branchDir.setLen 0
+  # The prompt's own command, and only its own: `defaults` puts the host's
+  # config back, which is a thing to ask an application and not a thing to ask
+  # a machine. In a terminal the word stays a program's name -- macOS has one
+  # of exactly this name -- so it is not taken out of anybody's hands there.
+  # What the config *is* remains the host's business; this only reports that
+  # it was asked for.
+  if t.isPrompt and a == "defaults":
+    t.insertPrompt()
+    return TermAction(kind: resetConfig)
   case a
   of "":
     t.insertPrompt()

@@ -54,6 +54,13 @@ directory of every open tab, and then as an abbreviation of a file in one of
 them, so `o synedit` finds `src/widgets/synedit.nim`. Ctrl+P is `open ` already
 typed into the prompt, for the muscle memory other editors have trained.
 
+`defaults`, in the prompt, puts the config the app ships with back into the
+`[config]` tab -- for a config that has been edited into a corner: a flattened
+palette, a layout with the panel one is looking for left out of it. It is an
+edit like any other, so `Ctrl+Z` in that tab brings the old config back. Only
+the prompt understands the word; in the terminal it names a program, which is
+what the terminal is for.
+
 `find`, `findall`, `next`, `prev`, `replace` and `replaceall` are the same idea
 applied to searching: no dialog, one line of text, and every match highlighted
 in place -- in the other open tabs as well. Ctrl+F, F3 and Shift+F3 are there
@@ -66,6 +73,13 @@ is never asked anything, because it is where programs run and `yes` is one of
 them. Both are the same SynEdit-backed `Terminal` widget; what makes one of
 them a prompt is that the app points its `baseDir` at the current tab and lets
 it carry a `question`.
+
+What a terminal prints is highlighted too, by the console highlighter ported
+from NimEdit: `Error:`, `Warning:` and `Hint:` take the three named colors, a
+`[Tag]` behind a compiler message reads as one, and a diff is colored by the
+first character of each line -- so `git diff` comes out in red and green with
+its hunk headers picked out, without anything in the pipe emitting an escape
+sequence.
 
 The config and the list of open tabs are stored under `getConfigDir()` in
 `focim/config.nif` and `focim/tabs.txt`, so both survive a restart.
@@ -1168,6 +1182,26 @@ proc runAnswer(word: string; asked: var Ask; f: var Finder;
     note = "replaced " & $f.replaced
     asked = Ask()
 
+proc runDefaults(buffers: var seq[BufferEntry]; note: var string) =
+  ## `defaults`: put the config the app ships with back into the [config] tab.
+  ## Written as an edit rather than as a new text, so Ctrl+Z in that tab brings
+  ## a hand-written config back -- which is why this asks nothing first: what
+  ## it replaces is one keystroke away for as long as the tab is open. The
+  ## main loop does the rest, since it already reparses and stores that buffer
+  ## whenever it changed.
+  for b in buffers.mitems:
+    if b.isConfig:
+      if b.ed.fullText == defaultConfig:
+        note = "the config already is the default one"
+      elif b.ed.len > 0:
+        b.ed.replaceRange(0, b.ed.len - 1, defaultConfig)
+        note = "config back to the defaults; Ctrl+Z in [config] undoes it"
+      else:
+        b.ed.insertText(defaultConfig)
+        note = "config back to the defaults"
+      return
+  note = "there is no [config] tab to put it in"
+
 proc runSave(act: TermAction; asked: var Ask; buffers: var seq[BufferEntry];
              current: int; note: var string) =
   ## `save`, with the question it may raise.
@@ -1244,6 +1278,11 @@ proc main =
   var history = createSynEdit(font)
   var term = createTerminal(font)
   var status = createTerminal(font)
+  # What makes this one the prompt rather than a second terminal: it takes the
+  # questions (`question`), it resolves relative paths against the current tab
+  # (`baseDir`, set every frame below), and it is where a command that acts on
+  # the app itself is typed.
+  status.isPrompt = true
   var tabs = TabList(ed: createSynEdit(font))
   var explorer = Explorer(ed: createSynEdit(font))
   tabs.ed.lang = langNone
@@ -1751,6 +1790,10 @@ proc main =
       discard
     of indexWords:
       runIndexCommand(termAct, words, job, tabs.note)
+    of resetConfig:
+      # Unreachable: `defaults` is the prompt's command, and this is the
+      # terminal -- there the word is a program's name.
+      discard
     of ctrlHover:
       let (_, _, _, a, b) = term.ed.extractFilePosition(termAct.pos)
       term.ed.underline(a, b)
@@ -1805,6 +1848,9 @@ proc main =
       redrawStatus()
     of indexWords:
       runIndexCommand(statusAct, words, job, tabs.note)
+    of resetConfig:
+      runDefaults(buffers, tabs.note)
+      redrawStatus()
     of ctrlHover, ctrlClick, noAction: discard
 
     # The completion listing, last: it goes over everything, and it can only

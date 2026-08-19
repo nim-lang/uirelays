@@ -283,6 +283,11 @@ proc setCellStyle(s: var SynEdit; i: Natural; tc: TokenClass) =
 
 proc `[]`*(s: SynEdit; i: Natural): char {.inline.} = s.getCell(i).c
 
+proc tokenClassAt*(s: SynEdit; i: Natural): TokenClass {.inline.} = s.getCell(i).s
+  ## What the highlighter made of the character at `i`. The color it is drawn
+  ## in is `theme.fg` of this, which is what makes a highlighter testable
+  ## without a window: the classes are the output, the colors only a theme.
+
 proc len*(s: SynEdit): int {.inline.} = s.front.len + s.back.len
 
 # ---------------------------------------------------------------------------
@@ -801,13 +806,82 @@ proc rustNextToken(g: var GeneralTokenizer) =
   g.length = pos - g.pos
   g.pos = pos
 
+proc consoleNextToken(g: var GeneralTokenizer) =
+  ## What a terminal's output is made of, as far as color goes: the word a
+  ## compiler puts in front of a message, the `[Tag]` it puts behind one, and
+  ## the shape of a diff. Ported from nimedit, whose console highlighter this
+  ## is; `git diff` is the most-read output there is, and every line of it
+  ## says with its first character what it is.
+  template fallback() =
+    g.kind = TokenClass.None
+    if pos < g.buf.len: inc pos
+
+  template wholeLine(col) =
+    # Only at the start of a line. A '-' in the middle of one is a minus sign
+    # or half of a word, and there is nothing behind it worth painting red.
+    if pos == 0 or g.buf[pos-1] == '\L':
+      g.kind = col
+      while g.buf[pos] != '\L': inc pos
+    else:
+      fallback()
+
+  var pos = g.pos
+  g.start = g.pos
+  case g.buf[pos]
+  of 'a'..'z', 'A'..'Z', '_', '/', '\\', '\x80'..'\xFF':
+    # A path is a word too: '/', '\' and '.' are taken into it, so a file name
+    # stays one token instead of coming apart into a dozen.
+    var id = ""
+    while g.buf[pos] in Letters + {'/', '\\', ':', '.'}:
+      id.add g.buf[pos].toLowerAscii
+      inc pos
+    case id
+    of "error:", "fatal:": g.kind = TokenClass.Red
+    of "warning:": g.kind = TokenClass.Yellow
+    of "hint:": g.kind = TokenClass.Green
+    else: g.kind = TokenClass.Identifier
+  of '[':
+    # `[Conf]`, `[XDeclaredButNotUsed]`: what the Nim compiler puts at the end
+    # of a message to say which kind of message it was.
+    if pos > 0 and g.buf[pos-1] == ' ' and g.buf[pos+1] in Letters:
+      inc pos
+      let rollback = pos
+      while g.buf[pos] in Letters: inc pos
+      if g.buf[pos] == ']':
+        inc pos
+        g.kind = TokenClass.Rule
+      else:
+        g.kind = TokenClass.None
+        pos = rollback
+    else:
+      fallback()
+  of '+': wholeLine(TokenClass.Green)
+  of '-': wholeLine(TokenClass.Red)
+  of '@':
+    # A hunk header, `@@ -1,4 +1,7 @@`, up to and including its closing '@@'.
+    if g.buf[pos+1] == '@':
+      g.kind = TokenClass.Directive
+      inc pos, 2
+      while g.buf[pos] != '\L':
+        if g.buf[pos] == '@' and g.buf[pos+1] == '@':
+          inc pos, 2
+          break
+        inc pos
+    else:
+      fallback()
+  else:
+    fallback()
+  g.length = pos - g.pos
+  g.pos = pos
+
 proc getNextToken(g: var GeneralTokenizer; lang: SourceLanguage) =
   case lang
-  of langNone, langConsole:
+  of langNone:
     g.start = g.pos
     if g.pos < g.buf.len: inc g.pos
     g.kind = TokenClass.None
     g.length = g.pos - g.start
+  of langConsole: consoleNextToken(g)
   of langNim: nimNextToken(g)
   of langCpp: clikeNextToken(g, cppKeywords)
   of langC: clikeNextToken(g, cKeywords)
@@ -996,6 +1070,19 @@ proc highlightLine(s: var SynEdit; oldCursor: Natural) =
   let last = i
   let initialState = if first == 0: TokenClass.None else: s.getCell(first-1).s
   s.highlight(first, last, initialState)
+
+proc highlightFrom(s: var SynEdit; pos: Natural) =
+  ## Re-highlight from the start of the line `pos` is in to the end of the
+  ## buffer. What appended output needs: a chunk of it is many lines at once,
+  ## and it may well continue the line the chunk before it ended on.
+  if s.lang == langNone or s.len == 0: return
+  if s.lang == langMarkdown:
+    s.highlightMarkdown(0, s.len - 1)
+    return
+  var first = pos.int
+  while first >= 1 and s[first-1] != '\L': dec first
+  let initialState = if first == 0: TokenClass.None else: s.getCell(first-1).s
+  s.highlight(first, s.len - 1, initialState)
 
 proc highlightEverything(s: var SynEdit) =
   if s.lang == langNone: return
@@ -2063,8 +2150,14 @@ proc appendOutput*(s: var SynEdit; text: string) =
   s.readOnly = -1
   s.gotoPos(s.len)
   s.prepareForEdit()
+  let start = s.cursor.int
   s.rawInsert(text)
-  s.highlightLine(s.cursor)
+  # Not `highlightLine`: what a program prints arrives in chunks of many lines
+  # at a time, and the last of them is usually the empty one after the final
+  # newline. Highlighting that one line would leave the output colorless --
+  # and appending does not bump `version`, so the incremental pass that walks
+  # the rest of a buffer never comes for this text either.
+  s.highlightFrom(start)
   s.readOnly = s.len - 1
 
 proc setLabel*(s: var SynEdit; text: string) =

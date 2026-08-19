@@ -28,6 +28,9 @@ exec "nim c -r tests/wordindextest.nim"
 exec "nim c -r tests/cliphistorytest.nim"
 # Search and replace is a walk over a buffer; nothing there draws either.
 exec "nim c -r tests/searchtest.nim"
+# A highlighter's output is token classes, which are colorless until a theme
+# gets them -- so the console one is tested without a window as well.
+exec "nim c -r tests/consoletest.nim"
 
 # The app, once, with the platform's default backend.
 exec "nim c apps/focim.nim"
