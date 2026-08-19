@@ -551,13 +551,13 @@ const NavEntries = ["..", "[Editor]", "[Terminal]"]
 
 proc listDir(dir, filter: string): seq[string] =
   ## The navigation lines first, then directories, then files. Dotfiles are
-  ## hidden.
+  ## listed too; a hidden file one cannot see is a file one cannot open.
   var dirs: seq[string] = @[]
   var files: seq[string] = @[]
   let f = filter.toLowerAscii
   for kind, path in walkDir(dir):
     let name = path.extractFilename
-    if name.len == 0 or name[0] == '.': continue
+    if name.len == 0: continue
     if f.len > 0 and not name.toLowerAscii.contains(f): continue
     case kind
     of pcDir, pcLinkToDir: dirs.add name & $DirSep
