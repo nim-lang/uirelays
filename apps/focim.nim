@@ -1361,14 +1361,21 @@ proc main =
     # The theme goes out to every widget every frame. Buffers come and go and
     # the colors can change with any keystroke in the config, so there is no
     # single place to hook this that could not be forgotten later.
-    history.theme = theme
-    tabs.ed.theme = theme
-    explorer.ed.theme = theme
-    term.ed.theme = theme
-    status.ed.theme = theme
-    comp.theme = theme
+    #
+    # Everything that is not the text being edited draws on `panelBg` instead
+    # of on `bg`: one color for the whole window makes a tab list, a listing
+    # and a terminal look like more of the document, and the eye has to find
+    # the seams before it can find the text.
+    var panelTheme = theme
+    panelTheme.bg = theme.panelBg
+    history.theme = panelTheme
+    tabs.ed.theme = panelTheme
+    explorer.ed.theme = panelTheme
+    term.ed.theme = panelTheme
+    status.ed.theme = panelTheme
+    comp.theme = panelTheme
     comp.setFont buffers[current].ed.getFont
-    clips.theme = theme
+    clips.theme = panelTheme
     # The prompt has no directory of its own, so a relative path typed there is
     # taken to be relative to the file being edited -- the same thing that path
     # would mean written inside that file. The terminal has a `cwd` and a `cd`
@@ -1792,6 +1799,19 @@ proc main =
     # The completion listing, last: it goes over everything, and it can only
     # be placed once the editor has drawn the caret it hangs from.
     comp.draw(words, buffers[current].ed, cells["editor"], focus == "editor")
+
+    # Which panel the next keystroke goes to, said once and in one place. The
+    # frame lands in the gap the layout leaves between the cells, so it takes
+    # no room from the widget and cannot move its text by a pixel.
+    if focus in cells:
+      # Clamped to the window: a cell against an edge has no gap on that side,
+      # and a frame drawn past it would simply not be there.
+      let f = cells[focus]
+      let x0 = max(0, f.x - 1)
+      let y0 = max(0, f.y - 1)
+      let x1 = min(width - 1, f.x + f.w)
+      let y1 = min(height - 1, f.y + f.h)
+      drawFrame(rect(x0, y0, x1 - x0 + 1, y1 - y0 + 1), theme.focusColor)
 
     # Persist the session once everything that could have changed it has run.
     let tt = tabsText(buffers)

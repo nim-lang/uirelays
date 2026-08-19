@@ -145,8 +145,12 @@ proc draw*(c: var Completion; words: var WordIndex; ed: SynEdit; area: Rect;
   var longest = 0
   for w in c.items: longest = max(longest, w.len)
   let charW = max(1, measureText(c.ed.getFont, "n").w)
-  let pw = clamp((longest + 3) * charW, 16 * charW, max(16 * charW, area.w - 8))
-  let ph = clamp(c.items.len, 1, MaxRows) * lineH + 4
+  # The listing draws inside its box the way every SynEdit does, so the box is
+  # the text plus that padding; without it the last row would fall outside.
+  let pad = c.ed.padding
+  let pw = clamp((longest + 3) * charW + 2 * pad.x, 16 * charW,
+                 max(16 * charW, area.w - 8))
+  let ph = clamp(c.items.len, 1, MaxRows) * lineH + 2 * pad.y + 4
   let px = clamp(caret.x, area.x, max(area.x, area.x + area.w - pw - 2))
   var py = caret.y + caret.h + 2
   if py + ph > area.y + area.h:

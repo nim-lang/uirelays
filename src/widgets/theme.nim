@@ -26,6 +26,10 @@ type
       ## can make text disappear, and none of it changes the layout: the faces
       ## of a monospaced family share its advance width.
     bg*: Color                      ## editor background
+    panelBg*: Color                 ## background of the panels around it --
+      ## tab list, explorer, terminal, status bar. A step away from `bg` is
+      ## enough: it is what makes the window read as a text surface with tools
+      ## around it rather than as one undivided field of color.
     selBg*: Color                   ## selection background
     bracketBg*: Color               ## bracket match background
     cursorColor*: Color             ## cursor bar color
@@ -37,6 +41,8 @@ type
     activeLineBg*: Color            ## background of the current/active line
     actionColor*: Color             ## frame around a line that acts on click
     closeColor*: Color              ## the (x) button of such a line
+    focusColor*: Color              ## frame around the panel that has the
+                                    ## keyboard focus
 
 # ---------------------------------------------------------------------------
 # Readability. A theme is only worth having if its text can be seen, so the
@@ -94,6 +100,12 @@ proc contrastProblem*(t: Theme): string =
     let c = contrast(named[i][1], t.bg)
     if c < MinContrast:
       return named[i][0] & " is " & ratioText(c) & " against the background"
+  # The panels carry the same text on a background of their own, so `panelBg`
+  # is checked the same way -- against the base color, which is what a panel
+  # draws most of.
+  let c = contrast(t.fg[TokenClass.None], t.panelBg)
+  if c < MinContrast:
+    return "panel text is " & ratioText(c) & " against the panel background"
   result = ""
 
 proc catppuccinMocha*(): Theme =
@@ -124,6 +136,7 @@ proc catppuccinMocha*(): Theme =
   result.fg[TokenClass.MarkdownFence] = color(128, 128, 128)
   result.fg[TokenClass.Link] = color(137, 180, 250)       # blue
   result.bg = color(30, 30, 46)
+  result.panelBg = color(24, 24, 37)             # crust, a step below the base
   result.selBg = color(88, 91, 112)
   result.bracketBg = color(69, 71, 90)
   result.cursorColor = color(205, 214, 244)
@@ -135,6 +148,7 @@ proc catppuccinMocha*(): Theme =
   result.activeLineBg = color(69, 71, 90)        # surface1
   result.actionColor = color(88, 91, 112)        # surface2
   result.closeColor = color(147, 153, 178)       # subtext0
+  result.focusColor = color(203, 166, 247)       # mauve, as the keywords
 
 proc goldenDusk*(): Theme =
   ## Dark, in gold, orange and turquoise. Written in hex, the way a config file
@@ -196,6 +210,7 @@ proc goldenDusk*(): Theme =
   result.fg[TokenClass.Red] = color(0xE4, 0x63, 0x4A)
 
   result.bg = color(0x15, 0x17, 0x1B)
+  result.panelBg = color(0x11, 0x13, 0x16)       # a step below the editor
   result.selBg = color(0x35, 0x47, 0x4B)         # turquoise-tinted slate
   result.bracketBg = color(0x3E, 0x3A, 0x2C)     # gold-tinted, to match
   result.cursorColor = gold
@@ -207,6 +222,7 @@ proc goldenDusk*(): Theme =
   result.activeLineBg = color(0x24, 0x27, 0x2C)  # a step below the selection
   result.actionColor = color(0x3A, 0x41, 0x45)
   result.closeColor = color(0xC0, 0x8A, 0x4A)    # gold, dimmed
+  result.focusColor = color(0xC0, 0x8A, 0x4A)    # the same gold as the caret
 
 proc defaultTheme*(): Theme =
   ## The theme a widget gets when nobody says otherwise, and the one a config

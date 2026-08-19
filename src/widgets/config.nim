@@ -203,6 +203,7 @@ proc parseTheme(p: var Parser; t: var Theme) =
     if p.error.len > 0: return
     case field
     of "bg": p.parseColor(t.bg)
+    of "panelBg": p.parseColor(t.panelBg)
     of "selBg": p.parseColor(t.selBg)
     of "bracketBg": p.parseColor(t.bracketBg)
     of "cursorColor": p.parseColor(t.cursorColor)
@@ -214,6 +215,7 @@ proc parseTheme(p: var Parser; t: var Theme) =
     of "activeLineBg": p.parseColor(t.activeLineBg)
     of "actionColor": p.parseColor(t.actionColor)
     of "closeColor": p.parseColor(t.closeColor)
+    of "focusColor": p.parseColor(t.focusColor)
     else:
       p.failAt fieldAt, "'" & field & "' is not a theme field"
       return

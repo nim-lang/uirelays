@@ -104,6 +104,7 @@ has.
 |-----|----------------|
 | `(fg base? (Class "#RRGGBB" style*)*)` | text, per token class; the leading color is all of them at once |
 | `(bg ...)` | the editor background |
+| `(panelBg ...)` | the background of the panels around it: tabs, explorer, terminal, status bar |
 | `(selBg ...)` | selection background |
 | `(bracketBg ...)` | the matching bracket |
 | `(cursorColor ...)` | the caret |
@@ -115,6 +116,7 @@ has.
 | `(activeLineBg ...)` | the line the cursor is on |
 | `(actionColor ...)` | the frame around a line that acts on click |
 | `(closeColor ...)` | the `(x)` on such a line |
+| `(focusColor ...)` | the frame around the panel the keystrokes go to |
 
 Anything left out keeps the value it has in the fallback theme, so a config
 can change one color without restating the palette.
