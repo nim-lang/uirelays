@@ -506,7 +506,7 @@ proc reparseConfig(src: string; width, height, lineHeight: int;
     note = "config: " & parsed.error
     return
   let cells = parsed.layout.resolve(width, height, lineHeight,
-                                    padding = scaledPx(6), gap = scaledPx(2),
+                                    padding = scaledPx(6), gap = scaledPx(4),
                                     uiScale = gUiScale)
   for name in RequiredCells:
     if name notin cells:
@@ -1425,7 +1425,7 @@ proc main =
         job = IndexJob()
 
     let cells = layout.resolve(width, height, fm.lineHeight,
-                               padding = scaledPx(6), gap = scaledPx(2),
+                               padding = scaledPx(6), gap = scaledPx(4),
                                uiScale = gUiScale)
 
     # Only ever one question is outstanding, and anything the user starts
@@ -1812,17 +1812,19 @@ proc main =
     comp.draw(words, buffers[current].ed, cells["editor"], focus == "editor")
 
     # Which panel the next keystroke goes to, said once and in one place. The
-    # frame lands in the gap the layout leaves between the cells, so it takes
-    # no room from the widget and cannot move its text by a pixel.
+    # frame lands in the gap the layout leaves between the cells -- half of it
+    # per side, so two neighbours cannot both claim the same pixel -- and
+    # therefore takes no room from the widget and cannot move its text.
     if focus in cells:
       # Clamped to the window: a cell against an edge has no gap on that side,
       # and a frame drawn past it would simply not be there.
       let f = cells[focus]
-      let x0 = max(0, f.x - 1)
-      let y0 = max(0, f.y - 1)
-      let x1 = min(width - 1, f.x + f.w)
-      let y1 = min(height - 1, f.y + f.h)
-      drawFrame(rect(x0, y0, x1 - x0 + 1, y1 - y0 + 1), theme.focusColor)
+      let fw = scaledPx(2)
+      let x0 = max(0, f.x - fw)
+      let y0 = max(0, f.y - fw)
+      let x1 = min(width - 1, f.x + f.w - 1 + fw)
+      let y1 = min(height - 1, f.y + f.h - 1 + fw)
+      drawFrame(rect(x0, y0, x1 - x0 + 1, y1 - y0 + 1), theme.focusColor, fw)
 
     # Persist the session once everything that could have changed it has run.
     let tt = tabsText(buffers)

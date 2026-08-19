@@ -2246,6 +2246,11 @@ proc padY(s: SynEdit): int {.inline.} = max(1, fontLineSkip(s.font) div 6)
 proc onActiveRow(s: SynEdit): bool {.inline.} = s.activeRow.b == high(int)
   ## Whether the line being drawn is the one carrying the `activeLineBg` band.
 
+proc caretWidth(s: SynEdit): int {.inline.} = max(2, fontLineSkip(s.font) div 6)
+  ## How wide the caret bar is drawn. Out of the line height like the padding,
+  ## so it keeps its weight against the text at every font size and on every
+  ## display scale instead of thinning out to a hairline on a dense one.
+
 proc padding*(s: SynEdit): tuple[x, y: int] {.inline.} = (s.padX, s.padY)
   ## What `render` keeps free between the text and the edges of the rect it is
   ## given. A caller that sizes a box around a known number of lines -- the
@@ -2574,7 +2579,8 @@ proc drawTextLine(s: var SynEdit; i: int; dim: var Rect; blink: bool): int =
   dim.x = db.oldX
   if db.cursorDim.h > 0:
     if blink:
-      fillRect(rect(db.cursorDim.x, db.cursorDim.y, 2, db.lineH), s.theme.cursorColor)
+      fillRect(rect(db.cursorDim.x, db.cursorDim.y, s.caretWidth, db.lineH),
+               s.theme.cursorColor)
     s.cursorDim = (db.cursorDim.x, db.cursorDim.y, db.lineH)
   result = db.i + 1
 
