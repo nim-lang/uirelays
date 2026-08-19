@@ -31,6 +31,9 @@ exec "nim c -r tests/searchtest.nim"
 # A highlighter's output is token classes, which are colorless until a theme
 # gets them -- so the console one is tested without a window as well.
 exec "nim c -r tests/consoletest.nim"
+# Line wrapping is what the drawing path does with a line that is too long,
+# so it is watched through the same stub relays as the font styles.
+exec "nim c -r tests/wraptest.nim"
 
 # The app, once, with the platform's default backend.
 exec "nim c apps/focim.nim"

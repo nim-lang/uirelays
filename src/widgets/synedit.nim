@@ -182,6 +182,8 @@ type
     cursorVisible: bool
     lastBlinkTick: int
     cursorDim: tuple[x, y, h: int]
+    followCaret: bool               ## the caret was moved, so the view has to
+                                    ## end up showing it -- see `render`
     # Text
     tabSize*: int
     lang*: SourceLanguage
@@ -1178,6 +1180,7 @@ proc setCurrentLine(s: var SynEdit) =
 
 proc cursorMoved(s: var SynEdit) =
   const brackets = {'(', '{', '[', ']', '}', ')'}
+  s.followCaret = true
   s.bracketA = -1
   s.bracketB = -1
   if s[s.cursor] notin brackets: return
@@ -2435,6 +2438,9 @@ proc closeButtonWidth(s: SynEdit): int {.inline.} =
 
 const
   CharBufSize = 80
+  Ellipsis = "\xE2\x80\xA6"
+    ## Written at both ends of a break, so a line that had to be wrapped is
+    ## not read as two lines that were always there.
 
 type
   DrawBuf = object
@@ -2445,6 +2451,7 @@ type
     i, charsLen: int
     font: Font
     oldX, maxY, lineH, spaceWidth: int
+    startedWith: int              ## where the line being drawn begins
     chars: array[CharBufSize, char]
     toCursor: array[CharBufSize, int]
 
@@ -2514,6 +2521,54 @@ proc drawSubtoken(db: var DrawBuf; ra, rb: int; fg, bg: Color) =
     let ulY = d.y + db.lineH - 1
     drawLine(d.x, ulY, d.x + textWidth(db.font, db.tempStr), ulY, fgColor)
 
+proc runWidth(db: var DrawBuf; first, last: int): int =
+  ## How wide `db.chars[first..last]` comes out, nothing for an empty range.
+  if first > last: return 0
+  db.tempStr.setLen 0
+  for k in first..last: db.tempStr.add db.chars[k]
+  result = textWidth(db.font, db.tempStr)
+
+proc indentWidth(db: DrawBuf): int =
+  ## How far the continuation of a wrapped line is pushed in: past the line's
+  ## own indentation, and past the bracket or the comma that opens what is
+  ## being continued. A console has neither -- what a shell prints is not
+  ## indented code -- so there the continuation starts at the left edge.
+  var i = db.startedWith
+  var r = 0
+  while db.s[][i] in {'\t', ' '}:
+    if db.s[][i] == '\t': inc r, db.s[].tabSize
+    else: inc r
+    inc i
+  if r > 0:
+    inc r, db.s[].tabSize
+  elif db.s[].lang notin {langNone, langConsole}:
+    while true:
+      case db.s[][i]
+      of '(', '{', '[', ',', ';':
+        r = i - db.startedWith
+        break
+      of '\L': break
+      else: inc i
+  result = db.spaceWidth * r
+
+proc smartWrap(db: DrawBuf; ra, last: int; critical: bool): int =
+  ## Where to break a run that does not fit: at the edge of a word, so a name
+  ## does not come apart in the middle if it does not have to. `critical` is
+  ## the second attempt at the same run -- by then anywhere will do, or a run
+  ## without an edge in it would never be drawn at all. Answers `ra - 1` when
+  ## there is nothing good to be had, which moves the whole run down a row.
+  var p = last
+  while p > ra:
+    if (db.chars[p] in Letters) != (db.chars[p + 1] in Letters):
+      return p
+    dec p
+  if not critical: return ra - 1
+  # Anywhere, but not inside a rune: a row that ended in half of one would
+  # show a box, and so would the row that got the other half.
+  result = last
+  while result >= ra and (db.chars[result + 1].ord and 0xC0) == 0x80:
+    dec result
+
 proc drawRun(db: var DrawBuf; a, b: int; fg, bg: Color) =
   ## Draw `db.chars[a..b]` at the current position, wrapping if it does not fit.
   if a > b: return
@@ -2522,39 +2577,43 @@ proc drawRun(db: var DrawBuf; a, b: int; fg, bg: Color) =
   let ext = measureText(db.font, db.tempStr)
   let w = ext.w
   if db.dim.x + w + db.spaceWidth <= db.dim.w:
+    # The common case by far: it still fits.
     drawSubtoken(db, a, b, fg, bg)
     db.dim.x += w
-  else:
-    # wrapping: just draw what fits, then continue on next line
-    var ra = a
-    while ra <= b:
-      var probe = ra
-      while probe <= b:
-        db.tempStr.setLen 0
-        for k in ra..probe: db.tempStr.add db.chars[k]
-        let w2 = textWidth(db.font, db.tempStr)
-        if db.dim.x + db.spaceWidth + w2 > db.dim.w:
-          dec probe
-          break
-        inc probe
-      if probe <= ra: break
-      let rb = probe - 1
-      db.tempStr.setLen 0
-      for k in ra..rb: db.tempStr.add db.chars[k]
-      let ext2 = textWidth(db.font, db.tempStr)
-      drawSubtoken(db, ra, rb, fg, bg)
-      db.dim.x += ext2
-      ra = probe
-      if ra <= b:
-        db.dim.x = db.oldX
-        db.dim.y += db.lineH
-        if db.dim.y + db.lineH > db.maxY: break
-        # A wrapped line is one line, so its band goes on across the rows it
-        # is wrapped onto. `render` cannot paint them: it does not know how
-        # many there will be until the text has been laid out here.
-        if db.s[].onActiveRow:
-          fillRect(rect(db.s[].activeBand.x, db.dim.y, db.s[].activeBand.w,
-                        db.lineH), db.s[].activeRowColor)
+    return
+  var ra = a
+  var critical = false
+  while ra <= b:
+    # The last character that still fits in what is left of the row, or
+    # `ra - 1` when not even the first one does.
+    var last = ra - 1
+    while last < b and
+        db.dim.x + db.spaceWidth + db.runWidth(ra, last + 1) <= db.dim.w:
+      inc last
+    let wrapping = last < b
+    if wrapping: last = db.smartWrap(ra, last, critical)
+    if last >= ra:
+      drawSubtoken(db, ra, last, fg, bg)
+      db.dim.x += db.runWidth(ra, last)
+      ra = last + 1
+      critical = false
+    else:
+      # This row got nothing: whatever the next one has room for goes on it,
+      # word or no word, or the two of them would trade the run forever.
+      critical = true
+    if not wrapping: break
+    db.dim.x += drawText(db.font, db.dim.x, db.dim.y, Ellipsis, fg, bg).w
+    db.dim.x = db.oldX
+    db.dim.y += db.lineH
+    if db.dim.y + db.lineH > db.maxY: break
+    # A wrapped line is one line, so its band goes on across the rows it
+    # is wrapped onto. `render` cannot paint them: it does not know how
+    # many there will be until the text has been laid out here.
+    if db.s[].onActiveRow:
+      fillRect(rect(db.s[].activeBand.x, db.dim.y, db.s[].activeBand.w,
+                    db.lineH), db.s[].activeRowColor)
+    db.dim.x += min(db.indentWidth, (db.dim.w - db.oldX) div 2)
+    db.dim.x += drawText(db.font, db.dim.x, db.dim.y, Ellipsis, fg, bg).w
 
 proc drawColorChip(db: var DrawBuf; c: Color): int =
   ## Draw the chip at the current position, return the width it occupies.
@@ -2614,6 +2673,7 @@ proc drawTextLine(s: var SynEdit; i: int; dim: var Rect; blink: bool): int =
   db.font = s.font
   db.s = addr s
   db.i = i
+  db.startedWith = i
   db.lineH = fontLineSkip(db.font)
   db.spaceWidth = textWidth(db.font, " ")
   db.tempStr = ""
@@ -2641,6 +2701,13 @@ proc drawTextLine(s: var SynEdit; i: int; dim: var Rect; blink: bool): int =
         if cell.s != tokenClass or s.getBg(db.i) != styleBg:
           break
         elif db.charsLen == high(db.chars):
+          # The buffer is full. Give back the bytes of a rune that did not
+          # fit in it whole, or this token would end in half of one and the
+          # next would start with the other half -- two boxes where one
+          # character belongs.
+          while db.charsLen > 0 and (s[db.i].ord and 0xC0) == 0x80:
+            dec db.charsLen
+            dec db.i
           break
         if cell.c == '\t':
           # expand tab
@@ -2751,8 +2818,10 @@ proc scrollGrip(s: SynEdit; area: Rect; lineH: int): Rect =
   result = rect(area.x + area.w - ScrollBarWidth, gripY,
                 ScrollBarWidth - 2, gripH)
 
-proc render*(s: var SynEdit; area: Rect; showCursor: bool) =
-  ## Core rendering. Paints the buffer, optionally with a blinking cursor.
+proc renderPass(s: var SynEdit; area: Rect; showCursor: bool) =
+  ## One pass over the visible lines. `render` is what callers want: this
+  ## draws with `firstLine` as it stands and reports, through `cursorDim`,
+  ## whether the caret was among what it drew.
   let lineH = fontLineSkip(s.font)
   let hasScrollBar = s.scrollEnabled
 
@@ -2909,6 +2978,52 @@ proc render*(s: var SynEdit; area: Rect; showCursor: bool) =
     let gripColor = if s.scrollGrabbed: s.theme.scrollBarActiveColor
                     else: s.theme.scrollBarColor
     fillRect(finalGrip, gripColor)
+
+proc render*(s: var SynEdit; area: Rect; showCursor: bool) =
+  ## Core rendering. Paints the buffer, optionally with a blinking cursor.
+  ##
+  ## A line too long for the widget is wrapped onto as many rows as it needs,
+  ## and how many that is is only known once it has been drawn -- so the caret
+  ## can turn out to sit on a row past the bottom edge, which counting lines
+  ## beforehand would never have caught. When it does, and something moved it
+  ## there, the view follows it down and the frame is painted again. The wheel
+  ## asks for the opposite, so scrolling the caret out of sight still works.
+  if not showCursor:
+    # A widget nobody is typing in shows no caret and chases none. Whatever
+    # moved it is still owed a look, once the widget has the focus back.
+    s.renderPass(area, showCursor)
+    return
+  let moved = s.followCaret
+  s.followCaret = false
+  s.renderPass(area, showCursor)
+  if s.cursorDim.h > 0:
+    s.followCaret = false
+    return
+  if s.followCaret:
+    # The pass moved the caret itself -- a click in the text does that -- so
+    # what it measured is where the caret used to be. Ask again before going
+    # anywhere.
+    s.followCaret = false
+    s.renderPass(area, showCursor)
+    if s.cursorDim.h > 0: return
+  elif not moved:
+    return
+  if s.firstLine >= s.currentLine: return
+  let oldFirst = s.firstLine
+  let oldOffset = s.firstLineOffset
+  # The caret's own line at the top of the view is as far as scrolling down
+  # can help. If it is still not on screen there, the widget is shorter than
+  # the line the caret is on, and the view goes back to where it was rather
+  # than ending up somewhere nobody asked for.
+  var guard = max(1, s.span)
+  while s.cursorDim.h == 0 and s.firstLine < s.currentLine and guard > 0:
+    dec guard
+    s.scrollLines(1)
+    s.renderPass(area, showCursor)
+  if s.cursorDim.h == 0:
+    s.firstLine = oldFirst
+    s.firstLineOffset = oldOffset
+    s.renderPass(area, showCursor)
 
 proc draw*(s: var SynEdit; e: Event; area: Rect; focused: bool): EditAction =
   ## Per-frame entry point. When focused, processes input and shows cursor.
