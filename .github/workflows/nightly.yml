@@ -178,7 +178,7 @@ jobs:
           mkdir -p "$stage"
           cp "apps/$exe" "$stage/$exe"
           cp README.md LICENSE.md "$stage/"
-          cp doc/config.md "$stage/config.md"
+          cp doc/focim/config.md "$stage/config.md"
 
           cat > "$stage/NIGHTLY.txt" <<EOF
           focim -- the Focussed Nim Editor, nightly build
