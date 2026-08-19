@@ -404,16 +404,18 @@ proc renderTabs(tabs: var TabList; buffers: seq[BufferEntry]) =
   tabs.ed.gotoLine(min(line, max(0, tabs.names.len - 1)) + 1, 0)
 
 proc decorateTabs(tabs: var TabList; buffers: seq[BufferEntry]; current: int) =
-  ## Active and modified state as markers, not as text. Offsets are derived
+  ## Active and modified state as colors, not as text. Offsets are derived
   ## from the names because the text is exactly `names` joined by newlines.
   let theme = tabs.ed.theme
   tabs.ed.clearMarkers()
+  # The active tab takes the whole row, the same band the editor draws behind
+  # the line the caret is on -- a tab is the row, not the word in it, and a
+  # highlight that stops after the name makes the list look ragged instead of
+  # making one line of it stand out.
+  tabs.ed.setRowHighlight(current, theme.activeLineBg)
+  # The modified mark stays a marker: it belongs to the name, and on the
+  # active tab it has to be visible *on* the band rather than instead of it.
   var pos = 0
-  for i, n in tabs.names:
-    if i == current:
-      tabs.ed.addMarker(pos, pos + n.len - 1, theme.activeLineBg)
-    pos += n.len + 1
-  pos = 0
   for i, n in tabs.names:
     # The layout buffer never shows up here: the main loop consumes its changed
     # flag on the very next frame, which is also when it gets stored.

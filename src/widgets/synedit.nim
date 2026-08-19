@@ -136,6 +136,10 @@ type
     line: int             ## line number (0-based)
     color: Color          ## color indicator shown in the line number gutter
 
+  RowHighlight = object
+    line: int             ## line number (0-based), -1 for none
+    color: Color          ## background for the whole row, text or no text
+
   EditActionKind* = enum
     noAction,
     ctrlHover,          ## ctrl+mouse move over text
@@ -206,10 +210,14 @@ type
     markers: seq[Marker]
     # Line decorations (breakpoints, active execution line, etc.)
     lineDecorations: seq[LineDecoration]
-    # The buffer range of the row `render` is painting `activeLineBg` behind,
-    # so that the per-token backgrounds agree with the band drawn under them.
+    # Row highlight -- see setRowHighlight(). One row: a list has one line
+    # that is the current thing, the way it has one cursor.
+    rowHighlight: RowHighlight
+    # The buffer range of the row `render` is painting a band behind, and the
+    # color of that band, so that the per-token backgrounds agree with it.
     # Set per row while rendering; `(0, -1)` is "no row".
     activeRow: tuple[a, b: int]
+    activeRowColor: Color
     activeBand: tuple[x, w: int]  ## how wide that band is, for the rows a
                                   ## wrapped line continues on
     # Action lines -- see setActionLines()
@@ -2074,6 +2082,7 @@ proc createSynEdit*(font: Font; theme = defaultTheme()): SynEdit =
     selected: (-1, -1), bracketA: -1, bracketB: -1, hotLink: (-1, -1),
     readOnly: -1, tabSize: TabWidth, lang: langNim,
     actionLines: -1, closeLines: -1, closeHover: -1, activeRow: (0, -1),
+    rowHighlight: RowHighlight(line: -1),
     font: font, theme: theme, flags: {},
     showLineNumbers: false, cursorVisible: true, lastBlinkTick: 0)
 
@@ -2247,7 +2256,7 @@ proc getBg(s: SynEdit; i: int): Color =
   if i == s.bracketA or i == s.bracketB: return s.theme.bracketBg
   for m in s.markers:
     if m.a <= i and i <= m.b: return m.color
-  if s.activeRow.a <= i and i <= s.activeRow.b: return s.theme.activeLineBg
+  if s.activeRow.a <= i and i <= s.activeRow.b: return s.activeRowColor
   return s.theme.bg
 
 proc underline*(s: var SynEdit; a, b: int) =
@@ -2266,6 +2275,19 @@ proc addMarker*(s: var SynEdit; a, b: int; color: Color) =
 proc clearMarkers*(s: var SynEdit) =
   ## Remove all markers.
   s.markers.setLen 0
+
+proc setRowHighlight*(s: var SynEdit; line: int; color: Color) =
+  ## Paint the whole row of `line` in `color` -- the width of the widget, not
+  ## the width of its text. This is what says "this line is the one" in a list
+  ## whose lines are things rather than sentences: a marker would stop where
+  ## the name does and leave the rest of the row looking like every other.
+  ## The cursor's own band is drawn the same way and wins where they meet.
+  ## There is one such row, as there is one cursor; `line = -1` is none.
+  s.rowHighlight = RowHighlight(line: line, color: color)
+
+proc clearRowHighlight*(s: var SynEdit) =
+  ## Take the row highlight away again.
+  s.rowHighlight.line = -1
 
 # ---------------------------------------------------------------------------
 # Line decorations -- gutter indicators (breakpoints, active line, etc.)
@@ -2434,7 +2456,7 @@ proc drawRun(db: var DrawBuf; a, b: int; fg, bg: Color) =
         # many there will be until the text has been laid out here.
         if db.s[].onActiveRow:
           fillRect(rect(db.s[].activeBand.x, db.dim.y, db.s[].activeBand.w,
-                        db.lineH), db.s[].theme.activeLineBg)
+                        db.lineH), db.s[].activeRowColor)
 
 proc drawColorChip(db: var DrawBuf; c: Color): int =
   ## Draw the chip at the current position, return the width it occupies.
@@ -2682,15 +2704,23 @@ proc render*(s: var SynEdit; area: Rect; showCursor: bool) =
 
   while dim.y + fontSize < endY and i <= s.len:
     let thisLine = renderLine.int
-    # The row the caret is on, banded across the whole widget, gutter included
-    # -- but only while this widget has the focus: a panel nobody is typing in
-    # has no current line worth pointing at, and six panels each pointing at
-    # one would say nothing about where the next keystroke goes.
-    let onActiveRow = showCursor and thisLine == s.currentLine.int
-    if onActiveRow:
+    # Two things want a band across the whole row: a row highlight the app has
+    # set, and -- while this widget has the focus -- the line the caret is on.
+    # A panel nobody is typing in has no current line worth pointing at, and
+    # six panels each pointing at one would say nothing about where the next
+    # keystroke goes; a row highlight is about the list, so it stays either way.
+    var rowBg = s.theme.bg
+    var banded = false
+    if s.rowHighlight.line == thisLine:
+      rowBg = s.rowHighlight.color
+      banded = true
+    if showCursor and thisLine == s.currentLine.int:
+      rowBg = s.theme.activeLineBg
+      banded = true
+    if banded:
       s.activeBand = (area.x, edgeX - area.x + 1)
-      fillRect(rect(s.activeBand.x, dim.y, s.activeBand.w, lineH),
-               s.theme.activeLineBg)
+      s.activeRowColor = rowBg
+      fillRect(rect(s.activeBand.x, dim.y, s.activeBand.w, lineH), rowBg)
       # The text is drawn with a background of its own behind every glyph, so
       # `getBg` has to answer with the band as well -- otherwise the row comes
       # out as words in rectangles of `bg` sitting on top of it.
@@ -2701,7 +2731,7 @@ proc render*(s: var SynEdit; area: Rect; showCursor: bool) =
       let num = $(renderLine + 1)
       var numColor = if renderLine == s.currentLine: s.theme.fg[TokenClass.None]
                      else: s.theme.lineNumColor
-      var numBg = if onActiveRow: s.theme.activeLineBg else: s.theme.bg
+      var numBg = if banded: rowBg else: s.theme.bg
       for ld in s.lineDecorations:
         if ld.line == renderLine.int:
           # Draw a thin vertical bar on the left edge instead of a square.
