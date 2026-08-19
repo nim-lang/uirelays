@@ -642,7 +642,6 @@ proc activateEntry(ex: var Explorer; idx: int;
     let p = ex.dir / name
     if fileExists(p):
       current = buffers.openFile(font, p, -1, -1)
-      setWindowTitle("focim - " & name)
       focus = "editor"
 
 # ---------------------------------------------------------------------------
@@ -719,16 +718,17 @@ proc handleTermCtrlClick(buf: SynEdit; pos: int;
   term.ed.underline(a, b)
   if dirExists(path):
     # The terminal's own idea of where it is -- the same thing `cd` moves, and
-    # what the next command is run in.
+    # what the next command is run in. It does not go in the window title: the
+    # title says which buffer is being edited, and a directory there would be
+    # a second meaning that stays until the buffer happens to change. The
+    # prompt already says where the terminal is.
     term.cwd = path
-    setWindowTitle("focim - " & path)
     term.ed.appendOutput("\L")
     term.insertPrompt()
     var lsCmd = "ls"
     discard term.runCommand(lsCmd)
   elif fileExists(path):
     current = buffers.openFile(font, path, ln, fc)
-    setWindowTitle("focim - " & path.extractFilename)
     focus = "editor"
 
 proc splitMarkdownTarget(url: string): tuple[path, frag: string] =
@@ -771,7 +771,6 @@ proc handleMarkdownCtrlClick(ed: var SynEdit; pos: int;
   let full = if isAbsolute(path): path else: base / path
   if fileExists(full):
     current = buffers.openFile(font, full, -1, -1)
-    setWindowTitle("focim - " & full.extractFilename)
     focus = "editor"
     note = ""
     if frag.len > 0 and not buffers[current].ed.gotoMarkdownHeading(frag):
@@ -903,7 +902,6 @@ proc runOpenCommand(act: TermAction; base: string;
     note = ""
   else:
     current = buffers.openFile(font, path, -1, -1)
-    setWindowTitle("focim - " & path.extractFilename)
     focus = "editor"
     note = ""
 
@@ -941,7 +939,6 @@ proc saveBufferAs(buffers: var seq[BufferEntry]; current: int; path: string;
   except OSError: discard
   buffers[current].path = full
   buffers[current].ed.applyFileKind(full)
-  setWindowTitle("focim - " & full.extractFilename)
   note = ""
 
 type
@@ -1320,6 +1317,7 @@ proc main =
     if buffers[current].path.len > 0: buffers[current].path.parentDir
     else: os.getCurrentDir())
   var lastCurrent = current
+  var lastTitle = ""
 
   var focus = "editor"
   # Where the pointer was last seen. A wheel event carries its delta in `x`
@@ -1598,7 +1596,6 @@ proc main =
           elif full.len > 0 and fileExists(full):
             current = buffers.openFile(fonts.fontForSize(editorFontSize),
                                        full, -1, -1)
-            setWindowTitle("focim - " & full.extractFilename)
             focus = "editor"
           elif explorer.entries.len > 0:
             # A partial name accepts the first match.
@@ -1654,6 +1651,18 @@ proc main =
           elif explorer.ed.getLineCount() != explorer.entries.len + 1:
             # The listing itself is not editable; put it back.
             explorer.renderExplorer(explorer.header, explorer.ed.cursor)
+
+    # The window title says which buffer is in the editor, out of the same
+    # names the tab list shows -- so the two cannot disagree, and a name that
+    # had to be made unique ("doc/config.md") is unique in the title too.
+    #
+    # Driven by what *is* current rather than set wherever something gets
+    # opened: the current buffer also changes by switching tabs, by closing
+    # one, and by undoing that, and none of those go through an open.
+    let title = if current < tabs.names.len: tabs.names[current] else: ""
+    if title != lastTitle:
+      lastTitle = title
+      setWindowTitle(if title.len > 0: "focim - " & title else: "focim")
 
     # The explorer follows the directory of the active file.
     if current != lastCurrent:
