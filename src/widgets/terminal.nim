@@ -17,26 +17,14 @@ import std/[os, osproc, streams, strutils, tables, browsers]
 when defined(windows): import std/winlean
 else: import std/posix
 import synedit
+import filesearch
 import ../uirelays/[coords, screen, input]
 
 export synedit
-
-# ---------------------------------------------------------------------------
-# File filtering (for tab completion)
-# ---------------------------------------------------------------------------
-
-const
-  ExtensionsToIgnore* = [
-    ".ppu", ".o", ".obj", ".dcu",
-    ".map", ".tds", ".err", ".bak", ".pyc", ".exe", ".rod", ".pdb", ".idb",
-    ".idx", ".ilk", ".dll", ".so", ".a"
-  ]
-
-proc ignoreFile*(f: string): bool =
-  ## Build output and backups: what nobody means when they name a file.
-  let (_, name, ext) = f.splitFile
-  result = name.len > 0 and name[0] == '.' or ext in ExtensionsToIgnore or
-           f == "nimcache"
+# What tab completion leaves out of a listing is what a file search leaves out
+# of a tree -- build output and backups either way, so the rule lives in one
+# place and both ask it.
+export filesearch.ignoreFile, filesearch.ExtensionsToIgnore
 
 # ---------------------------------------------------------------------------
 # Command history

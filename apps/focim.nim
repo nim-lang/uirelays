@@ -50,9 +50,12 @@ buffer rather than on the machine: `o <file>` / `open <file>` opens one, `s` /
 relative path means what it would mean where it was typed: in the terminal,
 relative to the directory the terminal is in; on the prompt, relative to the
 file being edited. A name that is not found as written is looked for in the
-directory of every open tab, and then as an abbreviation of a file in one of
-them, so `o synedit` finds `src/widgets/synedit.nim`. Ctrl+P is `open ` already
-typed into the prompt, for the muscle memory other editors have trained.
+directory of every open tab, then as an abbreviation of a file in one of them,
+and then in the *project* those directories are in -- so `o synedit` finds
+`src/widgets/synedit.nim`, and `o xelim.nim` finds `src/hexer/xelim.nim` with
+nothing but `nimony/README.md` open. See `doc/focim/open.md`. Ctrl+P is
+`open ` already typed into the prompt, for the muscle memory other editors
+have trained.
 
 `defaults`, in the prompt, puts the config the app ships with back into the
 `[config]` tab -- for a config that has been edited into a corner: a flattened
@@ -144,7 +147,7 @@ from std/cmdline import paramCount, paramStr
 import uirelays
 import uirelays/layout
 import widgets/[synedit, terminal, config, wordindex, cliphistory, search,
-                track]
+                track, filesearch]
 import completion
 
 # Derived from focim-icon.png by `iconbundler --prepare focim`.
@@ -969,35 +972,29 @@ proc searchDirs(buffers: seq[BufferEntry]; base: string): seq[string] =
       let d = normDir(b.path.parentDir)
       if d notin result and dirExists(d): result.add d
 
-proc abbrevMatch(dir, name: string): string =
-  ## The file in `dir` that `name` is an abbreviation of, or "". A name that
-  ## the listing *starts* with wins over one that merely contains it, and among
-  ## equals the alphabetically first -- the answer must not depend on the order
-  ## the file system happens to hand out.
-  var starts: seq[string] = @[]
-  var inside: seq[string] = @[]
-  let n = name.toLowerAscii
-  for kind, p in walkDir(dir):
-    if kind notin {pcFile, pcLinkToFile}: continue
-    let f = p.extractFilename
-    # `'.' in f`: a source file has an extension, and a name without one is
-    # far more often a binary that got built here than the file that was meant.
-    if f.ignoreFile or '.' notin f: continue
-    let l = f.toLowerAscii
-    if l.startsWith(n): starts.add f
-    elif n in l: inside.add f
-  sort starts
-  sort inside
-  if starts.len > 0: result = dir / starts[0]
-  elif inside.len > 0: result = dir / inside[0]
-  else: result = ""
-
-proc findFileSmart(buffers: seq[BufferEntry]; base, arg: string): string =
-  ## nimedit's `findFile` followed by its `findFileAbbrev`: the path as given,
-  ## then the same name in a directory this session has a file open in, and
-  ## only then a file whose name merely *contains* what was typed -- so that
-  ## `o synedit` finds `src/widgets/synedit.nim` from anywhere in the tree.
-  ## Directories are found too; the caller decides what to do with one.
+proc findFileSmart(buffers: seq[BufferEntry]; base, arg: string;
+                   truncated: var bool): string =
+  ## Three questions, cheapest first, each asked only because the one before it
+  ## said no:
+  ##
+  ## 1. the path as given, against the directory the command was typed in and
+  ##    the directory of every open tab -- nimedit's `findFile`;
+  ## 2. the *listings* of those same directories, for a name with pieces
+  ##    missing -- nimedit's `findFileAbbrev`, one `walkDir` each;
+  ## 3. the projects those directories are in, walked.
+  ##
+  ## The first two look at a handful of directories and answer instantly. What
+  ## they cannot answer is a project that has any shape to it: with only
+  ## `nimony/README.md` open, `xelim.nim` is three directories away in
+  ## `src/hexer/` and no list of open directories will ever hold it. That is
+  ## what the walk is for, and why it is last -- it is the only step that costs
+  ## anything, and by the time it runs the cheap answers have all said no.
+  ##
+  ## Steps 2 and 3 are the same ranking over a different scope, so the quick
+  ## search and the thorough one can never disagree about which of two files
+  ## was meant. Directories are found too; the caller decides what to do with
+  ## one.
+  truncated = false
   if arg.len == 0: return ""
   let e = expandTilde(arg)
   if isAbsolute(e):
@@ -1006,13 +1003,13 @@ proc findFileSmart(buffers: seq[BufferEntry]; base, arg: string): string =
   for d in dirs:
     let p = d / e
     if fileExists(p) or dirExists(p): return p
-  # Only a bare name is guessed at: `sub/dir/thing` was meant to be a path, and
-  # answering it with a file from somewhere else would be a surprise.
-  if e.parentDir.len == 0:
-    for d in dirs:
-      let p = abbrevMatch(d, e)
-      if p.len > 0: return p
-  result = ""
+  result = findInTrees(dirs, dirs, e, truncated, recurse = false)
+  if result.len > 0: return
+  var roots: seq[string] = @[]
+  for d in dirs:
+    let r = searchRoot(d)
+    if r.len > 0 and r notin roots: roots.add r
+  result = findInTrees(roots, dirs, e, truncated)
 
 proc runOpenCommand(act: TermAction; base: string;
                     buffers: var seq[BufferEntry]; current: var int;
@@ -1024,10 +1021,12 @@ proc runOpenCommand(act: TermAction; base: string;
   # `act.file` is what the widget resolved; anything smarter than that is this
   # application's business, because only it knows which files are open.
   var path = act.file
+  var truncated = false
   if not fileExists(path) and not dirExists(path):
-    path = findFileSmart(buffers, base, act.arg)
+    path = findFileSmart(buffers, base, act.arg, truncated)
   if path.len == 0:
-    note = "cannot open: " & act.arg
+    note = "cannot open: " & act.arg &
+      (if truncated: " -- and the tree was too big to search all of it" else: "")
   elif dirExists(path):
     # A directory is not a buffer; it is what the explorer is for.
     explorer.showDir(path)

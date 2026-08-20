@@ -180,7 +180,9 @@ nim c --define:"feature.uirelays.figDrawSiwin" examples/hello.nim
 
 - [focim.nim](apps/focim.nim) -- the Focussed Nim Editor: code editor with
   integrated terminal, laid out and colored by an editable
-  [config file](doc/focim/config.md), completing words it has actually
+  [config file](doc/focim/config.md),
+  [opening a file by a fragment of its name](doc/focim/open.md), completing
+  words it has actually
   [seen somewhere](doc/focim/completion.md), asking a compiler
   [where a name is](doc/focim/track.md), keeping
   [what the clipboard held](doc/focim/clipboard.md) and

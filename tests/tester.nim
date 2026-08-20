@@ -41,6 +41,8 @@ exec "nim c -r tests/activelinetest.nim"
 # Everything around asking a compiler where a name is -- but not the compiler,
 # which is not something a test may assume is installed.
 exec "nim c -r tests/tracktest.nim"
+# And what `open <name>` does with a name that is missing most of its path.
+exec "nim c -r tests/filesearchtest.nim"
 
 # The app, once, with the platform's default backend.
 exec "nim c apps/focim.nim"
