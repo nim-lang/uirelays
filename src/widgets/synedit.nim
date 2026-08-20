@@ -1890,6 +1890,44 @@ proc gotoLine*(s: var SynEdit; line, col: int) =
       s.rawRight()
       inc c
 
+proc gotoLineBytes*(s: var SynEdit; line, byteCol: int) =
+  ## Like `gotoLine`, except that `byteCol` counts *bytes* into the line rather
+  ## than characters -- which is what a compiler reports, a line info being an
+  ## offset into the bytes it read. The two agree on ASCII and part company on
+  ## a line with a multi-byte rune in front of the column; there the byte count
+  ## is the one that lands where the compiler meant.
+  s.gotoLine(line, 0)
+  var n = byteCol
+  while n > 0 and s.cursor.int < s.len and s[s.cursor] != '\L':
+    let g = s.graphemeLen(s.cursor)
+    if g > n: break
+    dec n, g
+    s.rawRight()
+
+proc lineAndByteCol*(s: SynEdit; pos: int): tuple[line, col: int] =
+  ## Where `pos` is, as a compiler states a position: the line 1-based and the
+  ## column a 0-based count of bytes into it. The inverse of `gotoLineBytes`.
+  let line = s.getLineFromOffset(pos)
+  result = (line.int + 1, pos - s.getLineOffset(line))
+
+proc wordAt*(s: SynEdit; pos: int): tuple[word: string; a, b: int] =
+  ## The identifier `pos` sits in, with the offsets of its first and last
+  ## character. `word` is "" and `a` is -1 when `pos` is not on one -- which is
+  ## what a lookup keyed on a name has to know before it asks anybody.
+  result = ("", -1, -1)
+  if pos < 0 or pos >= s.len or s[pos] notin Letters: return
+  var a = pos
+  while a > 0 and s[a - 1] in Letters: dec a
+  var b = pos
+  while b + 1 < s.len and s[b + 1] in Letters: inc b
+  # A number is not a name: `0xff` must not be looked up, and neither must the
+  # `1` of `x1` be found on its own -- the walk left already covered that.
+  if s[a] in {'0'..'9'}: return
+  result.a = a
+  result.b = b
+  result.word = newStringOfCap(b - a + 1)
+  for j in a .. b: result.word.add s[j]
+
 proc getLineCount*(s: SynEdit): int =
   s.numberOfLines.int + 1
 

@@ -1,6 +1,7 @@
 # The config file
 
-One NIF file says where a window's widgets go and what they look like:
+One NIF file says where a window's widgets go, what they look like, and which
+compiler answers a Ctrl+click:
 
 ```
 (config
@@ -15,7 +16,9 @@ One NIF file says where a window's widgets go and what they look like:
     (bg "#15171B")
     (fg "#E6DFD1"
       (Keyword "#E5B94E")
-      (Comment "#7A7365"))))
+      (Comment "#7A7365")))
+  (track
+    (compiler "nim")))
 ```
 
 # The layout
@@ -158,3 +161,28 @@ style tags belong behind a color, inside the class -- `(bold)` on its own
 directly under `(fg ...)` is refused, since "all classes bold" is not a thing
 anyone means to say.
 
+# Tracking
+
+`(track ...)` says who answers "where is this name?" when a `.nim` file is
+Ctrl+clicked, and what to run them by. See `doc/focim/track.md` for what the
+answer looks like.
+
+```
+(track
+  (compiler "nim")
+  (exe "/home/me/nim/bin/nim"))
+```
+
+| Tag | Meaning |
+|-----|---------|
+| `(compiler "nim")` | `nim track PROJECT --defusages:FILE,LINE,COL` |
+| `(compiler "nimony")` | `nimony check PROJECT --def:...`, then `--usages:...` |
+| `(compiler "none")` | nobody; Ctrl+click says so instead of starting anything |
+| `(exe "...")` | the binary to run |
+
+Leaving `(exe ...)` out runs the compiler under its own name, found on the
+`PATH` like any other command -- so `(track (compiler "nim"))` is enough for a
+normal installation, and the setting is there for a checkout that wants to be
+read by the compiler it is being built with. A config that says nothing about
+tracking gets `nim`, which is what the shipped one writes out so that the line
+is there to be edited rather than to be discovered.

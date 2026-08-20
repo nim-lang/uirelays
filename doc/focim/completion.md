@@ -7,7 +7,10 @@ not one character of it.
 
 Nothing here is semantic. There is no compiler in the loop and nothing knows
 that `add` is a proc or what its arguments are. What it knows is which names
-exist, which is enough to never have to type one twice.
+exist, which is enough to never have to type one twice. The one place a
+compiler *is* asked is `Ctrl+click`, which puts its answer in this same
+listing -- see `doc/focim/track.md`. One listing under the caret, one set of
+keys to work it, whichever question was asked.
 
 ## Where the words come from
 

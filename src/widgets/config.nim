@@ -10,7 +10,9 @@
 ##       (fg "#E6DFD1"                        # every token class ...
 ##         (Keyword "#E5B94E" (bold))         # ... except the ones named here
 ##         (Comment "#7A7365" (italics)))
-##       (selBg "#35474B")))
+##       (selBg "#35474B"))
+##     (track
+##       (compiler "nim")))
 ##
 ## The tags inside `(theme ...)` are the field names of `Theme`, the tags
 ## inside `(fg ...)` are the values of `TokenClass` and the ones behind a color
@@ -36,9 +38,23 @@ import theme
 export layout, theme
 
 type
+  Compiler* = enum
+    ## Who answers a "where is this name?" -- and, by saying nobody, that the
+    ## question is not to be asked at all.
+    compilerNone = "none"
+    compilerNim = "nim"
+    compilerNimony = "nimony"
+
+  Track* = object
+    ## `(track ...)`: which compiler a Ctrl+click asks, and what to run it by.
+    compiler*: Compiler
+    exe*: string     ## the binary; "" means the compiler's own name, found on
+                     ## PATH like any other command
+
   Config* = object
     layout*: Layout  ## empty when the file has no `(layout ...)`
     theme*: Theme    ## the fallback with whatever `(theme ...)` said applied
+    track*: Track    ## what `(track ...)` said, or the default: `nim`
     error*: string   ## "line:col: why"; nothing in here can be used
     note*: string    ## the theme was refused and `theme` is the fallback
 
@@ -46,6 +62,16 @@ type
     lex: Lexer
     tok: Token
     error: string
+
+proc defaultTrack*(): Track =
+  ## Nim, run as `nim`. A checkout that has none on the PATH says so the first
+  ## time somebody Ctrl+clicks, which is a better introduction to the setting
+  ## than a config that has to name it before anything works.
+  Track(compiler: compilerNim, exe: "")
+
+proc exeName*(t: Track): string =
+  ## What to run: what the config named, or the compiler's own name.
+  if t.exe.len > 0: t.exe else: $t.compiler
 
 proc fail(p: var Parser; msg: string) =
   ## The first complaint is the one that gets reported: everything behind it is
@@ -225,9 +251,61 @@ proc parseTheme(p: var Parser; t: var Theme) =
     return
   p.advance
 
+proc parseString(p: var Parser; dest: var string) =
+  ## A tag whose whole content is one string: `(exe "nim")`.
+  if p.tok.kind != tkStringLit:
+    p.fail "expected a string but found " & $p.tok
+    return
+  dest = p.tok.text
+  p.advance
+  if p.error.len > 0: return
+  if p.tok.kind != tkParRi:
+    p.fail "expected ')' after the string but found " & $p.tok
+    return
+  p.advance
+
+proc parseTrack(p: var Parser; t: var Track) =
+  ## Already positioned on `(track`.
+  p.advance
+  if p.error.len > 0: return
+  while p.tok.kind == tkParLe:
+    let field = p.tok.text
+    let fieldAt = p.tok
+    p.advance
+    if p.error.len > 0: return
+    case field
+    of "compiler":
+      var name = ""
+      let nameAt = p.tok
+      p.parseString(name)
+      if p.error.len > 0: return
+      var found = false
+      for c in low(Compiler)..high(Compiler):
+        if $c == name:
+          t.compiler = c
+          found = true
+      if not found:
+        var known = ""
+        for c in low(Compiler)..high(Compiler):
+          if known.len > 0: known.add ", "
+          known.add '"' & $c & '"'
+        p.failAt nameAt, "'" & name & "' is not a compiler; expected " & known
+        return
+    of "exe": p.parseString(t.exe)
+    else:
+      p.failAt fieldAt, "'" & field & "' does not belong in a track; " &
+               "expected (compiler ...) or (exe ...)"
+      return
+    if p.error.len > 0: return
+  if p.tok.kind != tkParRi:
+    p.fail "expected ')' or a track field but found " & $p.tok
+    return
+  p.advance
+
 proc parseConfig*(s: string; fallback = defaultTheme()): Config =
   ## Parse a `(config ...)`. Never raises: check `error`, then `note`.
-  result = Config(layout: default(Layout), theme: fallback, error: "", note: "")
+  result = Config(layout: default(Layout), theme: fallback,
+                  track: defaultTrack(), error: "", note: "")
   var p = Parser(lex: initLexer(s), tok: Token(), error: "")
   p.advance
   if p.tok.kind == tkEof:
@@ -244,7 +322,9 @@ proc parseConfig*(s: string; fallback = defaultTheme()): Config =
 
   var laidOut = false
   var themed = false
+  var tracked = false
   var t = fallback
+  var tr = defaultTrack()
   while p.error.len == 0 and p.tok.kind == tkParLe:
     case p.tok.text
     of "layout":
@@ -262,9 +342,15 @@ proc parseConfig*(s: string; fallback = defaultTheme()): Config =
         break
       themed = true
       p.parseTheme(t)
+    of "track":
+      if tracked:
+        p.fail "only one (track ...) per config"
+        break
+      tracked = true
+      p.parseTrack(tr)
     else:
-      p.fail "'" & p.tok.text &
-             "' does not belong in a config; expected (layout ...) or (theme ...)"
+      p.fail "'" & p.tok.text & "' does not belong in a config; expected " &
+             "(layout ...), (theme ...) or (track ...)"
       break
 
   if p.error.len == 0 and p.tok.kind != tkParRi:
@@ -277,7 +363,9 @@ proc parseConfig*(s: string; fallback = defaultTheme()): Config =
     result.error = p.error
     result.layout = default(Layout)
     result.theme = fallback
+    result.track = defaultTrack()
     return
+  result.track = tr
 
   # A theme nobody can read is worse than no theme at all, and the file that
   # would have to be corrected is shown in these very colors.
