@@ -147,7 +147,8 @@ from std/cmdline import paramCount, paramStr
 import uirelays
 import uirelays/layout
 import widgets/[synedit, terminal, config, wordindex, cliphistory, search,
-                track, filesearch]
+                filesearch]
+import focim/track
 import completion
 
 # Derived from focim-icon.png by `iconbundler --prepare focim`.

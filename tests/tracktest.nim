@@ -4,7 +4,8 @@
 
 import std/[os, strutils]
 import uirelays/screen  # Font, which SynEdit only draws with
-import widgets/[track, config, synedit]
+import focim/track
+import widgets/[config, synedit]
 
 var failures = 0
 
