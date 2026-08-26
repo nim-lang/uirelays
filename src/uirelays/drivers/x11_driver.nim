@@ -33,6 +33,15 @@ proc clock_gettime(clk: ClockId; tp: var Timespec): cint
 proc nanosleep(req: var Timespec; rem: var Timespec): cint
   {.importc, header: "<time.h>".}
 
+# ---- POSIX environment (libc) ----
+# Read and unread directly rather than through `std/os`, which the second
+# compiler this file is built with does not have all of.
+
+proc c_getenv(name: cstring): cstring
+  {.importc: "getenv", header: "<stdlib.h>".}
+proc c_unsetenv(name: cstring): cint
+  {.importc: "unsetenv", header: "<stdlib.h>".}
+
 proc sleepMs(ms: int) =
   var req = Timespec(tv_sec: clong(ms div 1000),
                      tv_nsec: clong((ms mod 1000) * 1_000_000))
@@ -257,6 +266,7 @@ const
   SubstructureNotifyMask = 1 shl 19
   SubstructureRedirectMask = 1 shl 20
   FocusChangeMask = 1 shl 21
+  PropertyChangeMask = 1 shl 22
 
   # Modifier masks
   ShiftMask = 1'u32
@@ -524,6 +534,49 @@ proc pushEvent(e: input.Event) =
   else:
     eventQueue.add e
 
+# ---- Frame de-duplication ----
+#
+# What puts a frame on screen is a copy of the whole back pixmap over the
+# window, and that copy is the expensive half of drawing one: a maximized
+# window on a large display is ten megapixels for the X server to read and
+# write, and every one of them is damage the compositor then has to work
+# through. An app written as a redraw-and-present loop asks for that copy
+# once per turn of the loop whether or not the turn had anything new to show,
+# and most turns do not -- a caret that did not blink, a progress line that
+# still says what it said thirty milliseconds ago, a timeout that expired
+# with nothing behind it.
+#
+# So the driver checksums the drawing. Everything that can change a pixel of
+# the back pixmap folds its arguments into a running hash, and `x11Refresh`
+# skips the copy when the hash matches the picture the window is already
+# showing: the same calls with the same arguments in the same order cannot
+# have produced a different picture, so the copy that is skipped is provably
+# the window onto itself. Nothing else depends on it -- `Expose` repaints
+# from the pixmap on its own, so a window that was covered still comes back,
+# and a resize throws the pixmap away and forces the next copy.
+
+const FrameHashSeed = 0xcbf29ce484222325'u64
+
+var
+  gFrameHash = FrameHashSeed  ## the frame being drawn now
+  gShownHash = FrameHashSeed  ## the frame the window is showing
+  gFrameForced = true         ## the window is showing nothing yet
+
+proc mixFrame(x: uint64) {.inline.} =
+  var h = (gFrameHash xor x) * 0x9E3779B97F4A7C15'u64
+  gFrameHash = h xor (h shr 29)
+
+proc mixFrame(x: int) {.inline.} =
+  mixFrame(cast[uint64](x))
+
+proc mixFrame(c: screen.Color) {.inline.} =
+  mixFrame(c.r.uint64 or (c.g.uint64 shl 8) or
+           (c.b.uint64 shl 16) or (c.a.uint64 shl 24))
+
+proc mixFrameText(t: cstring; len: cint) =
+  let bytes = cast[ptr UncheckedArray[char]](t)
+  for i in 0 ..< len.int: mixFrame(bytes[i].uint64)
+
 # ---- Back-buffer management ----
 
 proc recreateBackBuffer() =
@@ -537,6 +590,9 @@ proc recreateBackBuffer() =
   discard XSetForeground(gDisplay, gGC, 0)
   discard XFillRectangle(gDisplay, gBackPixmap, gGC, 0, 0,
     gWidth.cuint, gHeight.cuint)
+  # A new pixmap is a new window: whatever the next frame hashes to, it has
+  # never been on screen.
+  gFrameForced = true
 
 # ---- Key translation ----
 
@@ -624,6 +680,12 @@ proc processXEvent(xev: XEvent) =
     if xev.xexpose.count == 0 and gBackPixmap != None:
       discard XCopyArea(gDisplay, gBackPixmap, gWindow, gGC,
         0, 0, gWidth.cuint, gHeight.cuint, 0, 0)
+      # This copy was of a pixmap the frame in progress is halfway through
+      # drawing -- an app asks for events in the middle of a frame, and the
+      # background it cleared to is all that is on the pixmap by then. So the
+      # window is not showing any frame now, and the next `x11Refresh` has to
+      # copy however little the frame it finishes turns out to have changed.
+      gFrameForced = true
 
   of ConfigureNotify:
     let newW = xev.xconfigure.width
@@ -762,6 +824,62 @@ proc computeUiScale(): int =
 
 # ---- Screen hook implementations ----
 
+# ---- Startup notification ----
+#
+# A desktop that launches an application from a `.desktop` entry shows launch
+# feedback while it comes up: the busy pointer, a bouncing icon, a greyed
+# placeholder in the taskbar. It stops when the application says it is up --
+# and an application that never says so is fed back until the window manager
+# gives up on waiting for it, which is fifteen seconds under mutter and more
+# elsewhere. The window is on screen for all but the first of those seconds,
+# which is what makes it look like the desktop is stuck rather than the app.
+#
+# Saying so is `_NET_STARTUP_INFO`: the launcher puts an id in the
+# environment, the window carries it as `_NET_STARTUP_ID` so the window
+# manager can tell which launch this window is the answer to, and a `remove:`
+# message on the root window ends the sequence for the desktops that watch
+# for it instead. The id is taken back out of the environment on the way
+# past, because it names this one launch: a program started from inside this
+# one -- everything a built-in terminal ever runs -- would otherwise inherit
+# it and end somebody else's launch feedback with a window of its own.
+
+proc snQuote(s: string): string =
+  ## `_NET_STARTUP_INFO` fields are separated by spaces, so a value holding
+  ## one -- or a quote, or a backslash -- is quoted and escaped.
+  var special = false
+  for c in s:
+    if c == ' ' or c == '"' or c == '\\': special = true
+  if not special: return s
+  result = "\""
+  for c in s:
+    if c == '"' or c == '\\': result.add '\\'
+    result.add c
+  result.add '"'
+
+proc sendStartupInfo(msg: string) =
+  let beginAtom = XInternAtom(gDisplay, "_NET_STARTUP_INFO_BEGIN", 0)
+  let moreAtom = XInternAtom(gDisplay, "_NET_STARTUP_INFO", 0)
+  if beginAtom == 0 or moreAtom == 0: return
+  let root = XRootWindow(gDisplay, gScreen)
+  var ev = XEvent()
+  ev.xclient.theType = ClientMessage
+  ev.xclient.window = gWindow
+  ev.xclient.format = 8
+  ev.xclient.message_type = beginAtom
+  # Twenty bytes to a message, the terminating NUL among them -- so a message
+  # whose length is a multiple of twenty still gets the chunk that ends it.
+  var i = 0
+  while true:
+    let bytes = cast[ptr UncheckedArray[char]](addr ev.xclient.data[0])
+    for k in 0 ..< 20:
+      let j = i + k
+      bytes[k] = if j < msg.len: msg[j] else: '\0'
+    discard XSendEvent(gDisplay, root, 0, PropertyChangeMask.clong, addr ev)
+    ev.xclient.message_type = moreAtom
+    i += 20
+    if i > msg.len: break
+  discard XFlush(gDisplay)
+
 proc x11CreateWindow(layout: var ScreenLayout; icon: pointer; iconLen: int) =
   gDisplay = XOpenDisplay(nil)
   if gDisplay == nil:
@@ -808,6 +926,15 @@ proc x11CreateWindow(layout: var ScreenLayout; icon: pointer; iconLen: int) =
   gTargets = XInternAtom(gDisplay, "TARGETS", 0)
   gClipProperty = XInternAtom(gDisplay, "NIMEDIT_CLIP", 0)
 
+  # See "Startup notification" above. Both names are cleared: X11 launches
+  # set the first, Wayland ones the second, and this window is the answer to
+  # whichever it was.
+  var startupId = ""
+  let rawId = c_getenv("DESKTOP_STARTUP_ID")
+  if rawId != nil: startupId = $rawId
+  discard c_unsetenv("DESKTOP_STARTUP_ID")
+  discard c_unsetenv("XDG_ACTIVATION_TOKEN")
+
   # WM_CLASS: who this window belongs to, which is what groups the windows of
   # one application in a taskbar and what a `.desktop` file's StartupWMClass
   # has to match. It is the name of the executable -- the convention every X11
@@ -839,6 +966,16 @@ proc x11CreateWindow(layout: var ScreenLayout; icon: pointer; iconLen: int) =
       discard XChangeProperty(gDisplay, gWindow, iconAtom, XA_CARDINAL, 32,
                               PropModeReplace, addr longs[0], iconLen.cint)
 
+  # Before the map, like `WM_CLASS` and for the same reason: this is what the
+  # window manager reads the window's identity out of when it takes it over.
+  if startupId.len > 0:
+    let startupAtom = XInternAtom(gDisplay, "_NET_STARTUP_ID", 0)
+    if startupAtom != 0:
+      discard XChangeProperty(gDisplay, gWindow, startupAtom, gUtf8String, 8,
+                              PropModeReplace,
+                              cast[pointer](cstr(startupId)),
+                              startupId.len.cint)
+
   discard XStoreName(gDisplay, gWindow, instName.cstr)
   discard XMapWindow(gDisplay, gWindow)
 
@@ -868,6 +1005,12 @@ proc x11CreateWindow(layout: var ScreenLayout; icon: pointer; iconLen: int) =
                          addr ev)
       discard XFlush(gDisplay)
 
+  # The window is up, so the launch is over. After the map: a desktop that
+  # acts on this message drops the feedback the moment it arrives, and it
+  # should not drop it before there is a window to drop it for.
+  if startupId.len > 0:
+    sendStartupInfo("remove: ID=" & snQuote(startupId))
+
   gGC = XCreateGC(gDisplay, gWindow, 0, nil)
 
   # Wait for the first Expose/ConfigureNotify to get actual size
@@ -889,18 +1032,23 @@ proc x11GetWindowLayout(): ScreenLayout =
                scaleX: 1, scaleY: 1, uiScale: gUiScale)
 
 proc x11Refresh() =
-  if gBackPixmap != None:
+  if gBackPixmap != None and (gFrameForced or gFrameHash != gShownHash):
     discard XCopyArea(gDisplay, gBackPixmap, gWindow, gGC,
       0, 0, gWidth.cuint, gHeight.cuint, 0, 0)
+    gShownHash = gFrameHash
+    gFrameForced = false
+  gFrameHash = FrameHashSeed
   discard XFlush(gDisplay)
 
 proc x11SaveState() = discard
 proc x11RestoreState() =
   # Reset clip on both GC and XftDraw
+  mixFrame(1)
   discard XSetClipMask(gDisplay, gGC, None)
   discard XftDrawSetClip(gXftDraw, nil)
 
 proc x11SetClipRect(r: coords.Rect) =
+  mixFrame(2); mixFrame(r.x); mixFrame(r.y); mixFrame(r.w); mixFrame(r.h)
   var xr = XRectangle(
     x: r.x.cshort, y: r.y.cshort,
     width: r.w.cushort, height: r.h.cushort)
@@ -979,6 +1127,8 @@ proc paintText(fp: ptr XftFont; x, y: int; t: cstring; len: cint;
                w: cuint; fg, bg: screen.Color) =
   ## The drawing both entry points below share, once the width of the
   ## background is known -- by measuring, or because the caller said so.
+  mixFrame(3); mixFrame(cast[int](fp)); mixFrame(x); mixFrame(y)
+  mixFrame(w.int); mixFrame(fg); mixFrame(bg); mixFrameText(t, len)
   var bgColor = toXftColor(bg)
   XftDrawRect(gXftDraw, addr bgColor, x.cint, y.cint, w, fp.height.cuint)
   # `y` is the top of the line, Xft draws from the baseline.
@@ -1014,15 +1164,20 @@ proc x11GetFontMetrics(f: screen.Font): FontMetrics =
   else: screen.FontMetrics()
 
 proc x11FillRect(r: coords.Rect; color: screen.Color) =
+  mixFrame(4); mixFrame(r.x); mixFrame(r.y); mixFrame(r.w); mixFrame(r.h)
+  mixFrame(color)
   var c = toXftColor(color)
   XftDrawRect(gXftDraw, addr c, r.x.cint, r.y.cint, r.w.cuint, r.h.cuint)
 
 proc x11DrawLine(x1, y1, x2, y2: int; color: screen.Color) =
+  mixFrame(5); mixFrame(x1); mixFrame(y1); mixFrame(x2); mixFrame(y2)
+  mixFrame(color)
   discard XSetForeground(gDisplay, gGC, toPixel(color))
   discard XDrawLine(gDisplay, gBackPixmap, gGC,
     x1.cint, y1.cint, x2.cint, y2.cint)
 
 proc x11DrawPoint(x, y: int; color: screen.Color) =
+  mixFrame(6); mixFrame(x); mixFrame(y); mixFrame(color)
   discard XSetForeground(gDisplay, gGC, toPixel(color))
   discard XDrawPoint(gDisplay, gBackPixmap, gGC, x.cint, y.cint)
 
