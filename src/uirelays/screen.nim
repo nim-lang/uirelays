@@ -76,6 +76,13 @@ type
     measureText*: proc (f: Font; text: string): TextExtent {.nimcall.}
     drawText*: proc (f: Font; x, y: int; text: string;
                      fg, bg: Color): TextExtent {.nimcall.}
+    drawMeasuredText*: proc (f: Font; x, y: int; text: string;
+                             fg, bg: Color; size: TextExtent) {.nimcall.}
+      ## `drawText` for a caller that has measured the text already: the
+      ## driver is handed the extent instead of walking the glyphs a second
+      ## time to find how wide a background to fill. Optional, and a shortcut
+      ## rather than a second way to draw -- a driver that leaves it nil is
+      ## called through `drawText` and draws exactly what it drew before.
 
   DrawRelays* = object
     fillRect*: proc (r: Rect; color: Color) {.nimcall.}
@@ -239,8 +246,20 @@ proc getFontMetrics*(f: Font): FontMetrics = fontRelays.getFontMetrics(f)
 proc fontLineSkip*(f: Font): int = fontRelays.getFontMetrics(f).lineHeight
 proc measureText*(f: Font; text: string): TextExtent =
   fontRelays.measureText(f, text)
-proc drawText*(f: Font; x, y: int; text: string; fg, bg: Color): TextExtent =
-  fontRelays.drawText(f, x, y, text, fg, bg)
+proc drawText*(f: Font; x, y: int; text: string; fg, bg: Color;
+               known = TextExtent()): TextExtent =
+  ## `known` is what `measureText` answered for this very text in this very
+  ## font. A caller that has asked already -- an editor has, to know where the
+  ## run it is drawing ends -- passes it on, and the driver draws without
+  ## measuring. It is a shortcut and not an instruction: a driver that does
+  ## not offer one measures as it always did, so a wrong `known` is a wrong
+  ## background on some platforms and nothing at all on others. Pass what
+  ## `measureText` said or pass nothing.
+  if known.w > 0 and fontRelays.drawMeasuredText != nil:
+    fontRelays.drawMeasuredText(f, x, y, text, fg, bg, known)
+    result = known
+  else:
+    result = fontRelays.drawText(f, x, y, text, fg, bg)
 
 proc fillRect*(r: Rect; color: Color) = drawRelays.fillRect(r, color)
 proc drawFrame*(r: Rect; color: Color; width = 1) =

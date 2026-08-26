@@ -975,6 +975,17 @@ proc x11MeasureText(f: screen.Font; text: string): TextExtent =
     XftTextExtentsUtf8(gDisplay, fp, cstr(t), text.len.cint, addr extents)
     result = TextExtent(w: extents.xOff.int, h: fp.height.int)
 
+proc paintText(fp: ptr XftFont; x, y: int; t: cstring; len: cint;
+               w: cuint; fg, bg: screen.Color) =
+  ## The drawing both entry points below share, once the width of the
+  ## background is known -- by measuring, or because the caller said so.
+  var bgColor = toXftColor(bg)
+  XftDrawRect(gXftDraw, addr bgColor, x.cint, y.cint, w, fp.height.cuint)
+  # `y` is the top of the line, Xft draws from the baseline.
+  var fgColor = toXftColor(fg)
+  XftDrawStringUtf8(gXftDraw, addr fgColor, fp,
+    x.cint, (y + fp.ascent).cint, t, len)
+
 proc x11DrawText(f: screen.Font; x, y: int; text: string;
                  fg, bg: screen.Color): TextExtent =
   result = TextExtent(w: 0, h: 0)
@@ -985,14 +996,17 @@ proc x11DrawText(f: screen.Font; x, y: int; text: string;
   var extents {.noinit.}: XGlyphInfo
   XftTextExtentsUtf8(gDisplay, fp, cstr(t), text.len.cint, addr extents)
   result = TextExtent(w: extents.xOff.int, h: fp.height.int)
-  # Fill background
-  var bgColor = toXftColor(bg)
-  XftDrawRect(gXftDraw, addr bgColor, x.cint, y.cint,
-    extents.xOff.cuint, fp.height.cuint)
-  # Draw text (y is baseline, not top)
-  var fgColor = toXftColor(fg)
-  XftDrawStringUtf8(gXftDraw, addr fgColor, fp,
-    x.cint, (y + fp.ascent).cint, cstr(t), text.len.cint)
+  paintText(fp, x, y, cstr(t), text.len.cint, extents.xOff.cuint, fg, bg)
+
+proc x11DrawMeasuredText(f: screen.Font; x, y: int; text: string;
+                         fg, bg: screen.Color; size: TextExtent) =
+  ## `x11DrawText` without the measuring: an editor measures every run it
+  ## draws anyway, to know where it ends, and walking the same glyphs again
+  ## here was a second pass over every character on the screen per frame.
+  let fp = getFontPtr(f)
+  if fp == nil or text.len == 0: return
+  var t = text
+  paintText(fp, x, y, cstr(t), text.len.cint, size.w.cuint, fg, bg)
 
 proc x11GetFontMetrics(f: screen.Font): FontMetrics =
   let idx = f.int - 1
@@ -1135,7 +1149,7 @@ proc initX11Driver*() =
   fontRelays = FontRelays(
     openFont: x11OpenFont, closeFont: x11CloseFont,
     getFontMetrics: x11GetFontMetrics, measureText: x11MeasureText,
-    drawText: x11DrawText)
+    drawText: x11DrawText, drawMeasuredText: x11DrawMeasuredText)
   drawRelays = DrawRelays(
     fillRect: x11FillRect, drawLine: x11DrawLine, drawPoint: x11DrawPoint)
   inputRelays = InputRelays(

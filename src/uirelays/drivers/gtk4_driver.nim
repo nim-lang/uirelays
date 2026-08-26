@@ -701,17 +701,17 @@ proc gtkMeasureText(f: Font; text: string): TextExtent =
   g_object_unref_layout(layout)
   result = TextExtent(w: w.int, h: h.int)
 
-proc gtkDrawText(f: Font; x, y: int; text: string; fg, bg: screen.Color): TextExtent =
-  ensureBackingCr()
-  let desc = getDesc(f)
-  if desc == nil or text.len == 0 or backingCr == nil:
-    return
-  let ext = gtkMeasureText(f, text)
+proc paintText(desc: pointer; x, y: int; text: string;
+               fg, bg: screen.Color; size: TextExtent) =
+  ## The drawing both entry points below share, once the extent is known --
+  ## by measuring, or because the caller said so. A measurement here is a
+  ## Pango layout of its own, so the one that is spared is worth sparing.
   cairo_save(backingCr)
   cairo_set_source_rgba(backingCr,
     gdouble(bg.r) / 255.0, gdouble(bg.g) / 255.0, gdouble(bg.b) / 255.0,
     gdouble(bg.a) / 255.0)
-  cairo_rectangle(backingCr, gdouble(x), gdouble(y), gdouble(ext.w), gdouble(ext.h))
+  cairo_rectangle(backingCr, gdouble(x), gdouble(y),
+                  gdouble(size.w), gdouble(size.h))
   cairo_fill(backingCr)
   let layout = pango_cairo_create_layout(backingCr)
   pango_layout_set_font_description(layout, desc)
@@ -724,7 +724,24 @@ proc gtkDrawText(f: Font; x, y: int; text: string; fg, bg: screen.Color): TextEx
   pango_cairo_show_layout(backingCr, layout)
   g_object_unref_layout(layout)
   cairo_restore(backingCr)
-  result = ext
+
+proc gtkDrawText(f: Font; x, y: int; text: string; fg, bg: screen.Color): TextExtent =
+  ensureBackingCr()
+  let desc = getDesc(f)
+  if desc == nil or text.len == 0 or backingCr == nil:
+    return
+  result = gtkMeasureText(f, text)
+  paintText(desc, x, y, text, fg, bg, result)
+
+proc gtkDrawMeasuredText(f: Font; x, y: int; text: string;
+                         fg, bg: screen.Color; size: TextExtent) =
+  ## What the caller measured is what gets drawn: no layout is built here to
+  ## ask Pango what it already knows.
+  ensureBackingCr()
+  let desc = getDesc(f)
+  if desc == nil or text.len == 0 or backingCr == nil:
+    return
+  paintText(desc, x, y, text, fg, bg, size)
 
 proc gtkGetFontMetrics(f: Font): FontMetrics =
   let idx = f.int - 1
@@ -852,7 +869,7 @@ proc initGtk4Driver*() =
   fontRelays = FontRelays(
     openFont: gtkOpenFont, closeFont: gtkCloseFont,
     getFontMetrics: gtkGetFontMetrics, measureText: gtkMeasureText,
-    drawText: gtkDrawText)
+    drawText: gtkDrawText, drawMeasuredText: gtkDrawMeasuredText)
   drawRelays = DrawRelays(
     fillRect: gtkFillRect, drawLine: gtkDrawLine, drawPoint: gtkDrawPoint)
   inputRelays = InputRelays(

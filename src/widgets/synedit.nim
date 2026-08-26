@@ -2553,10 +2553,16 @@ type
     chars: array[CharBufSize, char]
     toCursor: array[CharBufSize, int]
 
-proc drawSubtoken(db: var DrawBuf; ra, rb: int; fg, bg: Color) =
+proc drawSubtoken(db: var DrawBuf; ra, rb: int; fg, bg: Color;
+                  ext: TextExtent) =
+  ## `ext` is what `measureText` said about `db.chars[ra..rb]`. The caller has
+  ## measured it already -- it had to, to know whether the run fits on the row
+  ## -- and the same run used to be measured here as well and a third time in
+  ## the driver, to size the background it fills. That is three walks over the
+  ## glyphs of every token on the screen, per frame; this way there is one,
+  ## and `drawText` passes the answer on to the driver.
   db.tempStr.setLen 0
   for k in ra..rb: db.tempStr.add db.chars[k]
-  let ext = measureText(db.font, db.tempStr)
   var d = db.dim
   d.w = ext.w
   d.h = ext.h
@@ -2614,17 +2620,22 @@ proc drawSubtoken(db: var DrawBuf; ra, rb: int; fg, bg: Color) =
   let hl = db.s[].hotLink
   let isLink = hl.a >= 0 and db.toCursor[ra] <= hl.b and db.toCursor[rb] >= hl.a
   let fgColor = if isLink: db.s[].theme.cursorColor else: fg
-  discard drawText(db.font, d.x, d.y, db.tempStr, fgColor, bg)
+  discard drawText(db.font, d.x, d.y, db.tempStr, fgColor, bg, ext)
   if isLink:
     let ulY = d.y + db.lineH - 1
-    drawLine(d.x, ulY, d.x + textWidth(db.font, db.tempStr), ulY, fgColor)
+    drawLine(d.x, ulY, d.x + ext.w, ulY, fgColor)
 
-proc runWidth(db: var DrawBuf; first, last: int): int =
-  ## How wide `db.chars[first..last]` comes out, nothing for an empty range.
-  if first > last: return 0
+proc runExtent(db: var DrawBuf; first, last: int): TextExtent =
+  ## How much room `db.chars[first..last]` takes, nothing for an empty range.
+  if first > last: return TextExtent()
   db.tempStr.setLen 0
   for k in first..last: db.tempStr.add db.chars[k]
-  result = textWidth(db.font, db.tempStr)
+  result = measureText(db.font, db.tempStr)
+
+proc runWidth(db: var DrawBuf; first, last: int): int =
+  ## How wide `db.chars[first..last]` comes out. For the search for a place to
+  ## wrap, which asks about width alone and about ranges it will not draw.
+  db.runExtent(first, last).w
 
 proc indentWidth(db: DrawBuf): int =
   ## How far the continuation of a wrapped line is pushed in: past the line's
@@ -2670,14 +2681,11 @@ proc smartWrap(db: DrawBuf; ra, last: int; critical: bool): int =
 proc drawRun(db: var DrawBuf; a, b: int; fg, bg: Color) =
   ## Draw `db.chars[a..b]` at the current position, wrapping if it does not fit.
   if a > b: return
-  db.tempStr.setLen 0
-  for k in a..b: db.tempStr.add db.chars[k]
-  let ext = measureText(db.font, db.tempStr)
-  let w = ext.w
-  if db.dim.x + w + db.spaceWidth <= db.dim.w:
+  let ext = db.runExtent(a, b)
+  if db.dim.x + ext.w + db.spaceWidth <= db.dim.w:
     # The common case by far: it still fits.
-    drawSubtoken(db, a, b, fg, bg)
-    db.dim.x += w
+    drawSubtoken(db, a, b, fg, bg, ext)
+    db.dim.x += ext.w
     return
   var ra = a
   var critical = false
@@ -2691,8 +2699,9 @@ proc drawRun(db: var DrawBuf; a, b: int; fg, bg: Color) =
     let wrapping = last < b
     if wrapping: last = db.smartWrap(ra, last, critical)
     if last >= ra:
-      drawSubtoken(db, ra, last, fg, bg)
-      db.dim.x += db.runWidth(ra, last)
+      let part = db.runExtent(ra, last)
+      drawSubtoken(db, ra, last, fg, bg, part)
+      db.dim.x += part.w
       ra = last + 1
       critical = false
     else:
