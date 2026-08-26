@@ -66,6 +66,7 @@ proc initClipHistory*(font: Font): ClipHistory =
 
 proc setFont*(c: var ClipHistory; f: Font) {.inline.} = c.ed.setFont f
 proc `theme=`*(c: var ClipHistory; t: Theme) {.inline.} = c.ed.theme = t
+proc `blinks=`*(c: var ClipHistory; v: bool) {.inline.} = c.ed.blinks = v
 proc wheelScroll*(c: var ClipHistory; delta: int) {.inline.} =
   c.ed.wheelScroll delta
 
@@ -99,11 +100,17 @@ proc drop*(c: var ClipHistory; row: int) =
     c.entries.delete row - 1
     c.dirty = true
 
-proc poll*(c: var ClipHistory) =
+proc poll*(c: var ClipHistory): bool =
   ## Pick up whatever has entered the clipboard since the last look, whichever
   ## application put it there. This is the only way in: a copy made in the
   ## editor goes to the system clipboard first and comes back here, so there is
   ## one path and not two, and nothing has to be threaded through SynEdit.
+  ##
+  ## True when the look found something, which is the only way this panel can
+  ## have changed without anybody touching this application: a host that draws
+  ## when its window has changed rather than on a timer has no other way to
+  ## hear about a copy made in a browser.
+  result = false
   let now = getMonoTime()
   if not c.seeded:
     c.seeded = true
@@ -114,6 +121,7 @@ proc poll*(c: var ClipHistory) =
   if text == c.last: return
   c.last = text
   c.add text
+  result = true
 
 proc rowLabel*(text: string): string =
   ## One line for an entry: its first line with something on it, tabs and runs

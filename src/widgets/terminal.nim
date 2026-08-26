@@ -722,7 +722,17 @@ proc enterPressed(t: var Terminal): TermAction =
 # Update (poll background thread)
 # ---------------------------------------------------------------------------
 
-proc update*(t: var Terminal) =
+proc update*(t: var Terminal): bool =
+  ## Takes whatever the thread running a program has said since the last look.
+  ## True when it said anything -- output to show, or the end of the program
+  ## that was printing it.
+  ##
+  ## The result is for a host that draws when its window has changed rather
+  ## than once per timer tick: a program prints on a thread of its own, so
+  ## nothing else about a frame reveals that the terminal is no longer showing
+  ## what it showed. Such a host also has to call this itself, and not leave
+  ## it to `draw`: a frame that is never drawn is a frame that never asked.
+  result = false
   if t.processRunning:
     if responses.peek > 0:
       let resp = responses.recv()
@@ -733,6 +743,7 @@ proc update*(t: var Terminal) =
         t.process.setLen 0
         t.ed.appendOutput "\L"
         t.insertPrompt()
+      result = true
 
 proc sendBreak*(t: var Terminal) =
   if t.processRunning:
@@ -763,7 +774,7 @@ proc draw*(t: var Terminal; e: Event; area: Rect; focused: bool): TermAction =
   ## Per-frame entry point. When focused, processes input and shows cursor.
   ## When not focused, just paints. Always polls for process output.
   result = TermAction(kind: noAction)
-  t.update()
+  discard t.update()
 
   if focused:
     # The keys the terminal answers itself. Everything it does not name here

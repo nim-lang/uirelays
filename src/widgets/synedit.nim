@@ -49,6 +49,12 @@ export theme
 export markdown
 
 const
+  BlinkMs* = 500
+    ## How long the caret stays shown, and then hidden. Blinking it is part of
+    ## drawing it and there is no other moment to do it in, so a host that
+    ## decides for itself when to draw has to come back at least this often --
+    ## a caret that has stopped blinking is what a window that has hung looks
+    ## like.
   LinkMod* = when defined(macosx): GuiPressed else: CtrlPressed
 
 # ---------------------------------------------------------------------------
@@ -180,6 +186,15 @@ type
     # Rendering
     font: Font
     theme*: Theme
+    blinks*: bool        ## Whether the caret blinks. This is about the
+                         ## window and not about this widget: a caret in a
+                         ## window that has not got the keyboard is not
+                         ## waiting for anything, and a host that draws only
+                         ## when its window has changed has to repaint twice
+                         ## a second forever to keep one blinking. True
+                         ## unless a host says otherwise, which is the
+                         ## blinking caret a host that never heard of window
+                         ## focus already expects.
     flags*: set[RenderFlag]
     showLineNumbers*: bool
     cursorVisible: bool
@@ -2278,7 +2293,8 @@ proc createSynEdit*(font: Font; theme = defaultTheme()): SynEdit =
     actionLines: -1, closeLines: -1, closeHover: -1, activeRow: (0, -1),
     rowHighlight: RowHighlight(line: -1),
     font: font, theme: theme, flags: {},
-    showLineNumbers: false, cursorVisible: true, lastBlinkTick: 0)
+    showLineNumbers: false, cursorVisible: true, lastBlinkTick: 0,
+    blinks: true)
 
 # ---------------------------------------------------------------------------
 # Drawing
@@ -2976,7 +2992,16 @@ proc renderPass(s: var SynEdit; area: Rect; showCursor: bool) =
     # that is not drawn cannot be moved with the arrow keys, and read-only
     # text is still walked through and selected like any other.
     let ticks = getTicks()
-    if ticks - s.lastBlinkTick > 500:
+    if not s.blinks:
+      # A window nobody is typing in. The caret stays -- it is still where the
+      # next keystroke will go once somebody comes back to it -- but it stops
+      # moving, because a blink is a thing that asks to be looked at and there
+      # is nothing here to look at yet. The clock is kept wound as it waits,
+      # so what comes back with the focus is a whole lit phase and not the
+      # tail end of one.
+      s.cursorVisible = true
+      s.lastBlinkTick = ticks
+    elif ticks - s.lastBlinkTick > BlinkMs:
       s.cursorVisible = not s.cursorVisible
       s.lastBlinkTick = ticks
     blink = s.cursorVisible

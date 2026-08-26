@@ -269,6 +269,26 @@ const
     ## the job keeps reading for this long and the window is drawn once after.
     ## Thirty milliseconds is what the pointer and the keyboard wait for at
     ## worst while a job runs, and still leaves the count visibly moving.
+  IdleFrameMs = BlinkMs
+    ## The longest a frame may be put off when nothing has asked for one, and
+    ## the caret is the whole of the reason there is a limit: it is the only
+    ## thing on this window that moves by itself, and `SynEdit` moves it as it
+    ## draws it. Hence the same number, and not a number of its own. It is
+    ## also the rate a background job's progress count is seen to move at,
+    ## which is as fast as a count is worth reading.
+  WorkPollMs = 50
+    ## How long work that is being done elsewhere may go unlooked-at: a
+    ## compiler answering a Ctrl+click, a program printing in the terminal.
+    ## Looking is a channel peek and costs nothing; it is *drawing* that is
+    ## expensive, and a look that finds nothing does not lead to one.
+  OutputFrameMs = 100
+    ## How long what a program has printed may sit collected but unshown.
+    ## Collecting it is the peek above, so nothing waits longer than
+    ## `WorkPollMs` to be *had*; this is the other question, of how often the
+    ## window is repainted to show it, and a repaint of a window this size
+    ## costs whole milliseconds where a peek costs none. Ten times a second
+    ## already reads as a program printing, and a repaint per peek would read
+    ## exactly the same at twenty times the price.
 
 proc configPath(name: string): string =
   getConfigDir() / ConfigDirName / name
@@ -1517,7 +1537,44 @@ proc main =
   var jumps: seq[TrackHit] = @[]
 
   var running = true
+  # The loop polls far more often than it draws. Waiting is free, looking at a
+  # channel is nearly free, and drawing this window is neither -- it is a
+  # repaint of every panel and a copy of a screenful of pixels, and on a
+  # maximized window that is the whole cost of the frame. So a turn that woke
+  # up with nothing new to show goes straight back to sleep, and the two
+  # things that ask for a frame say so: an event, and anything a poll turned
+  # up. `IdleFrameMs` is the backstop under both, for the caret.
+  var mustDraw = true
+  var nextFrame = getTicks()
+  # Whether this window is the one being typed in -- as opposed to which panel
+  # of it would get the keystroke if it were. Nothing is drawn differently for
+  # it except the caret, which stops blinking: see `blinks`.
+  #
+  # True to begin with, and not read from anywhere: a window is normally
+  # focused the moment it is mapped, and every backend says so -- but one that
+  # said so only on a *change* would leave this false under a caret that then
+  # never blinked. The other way round costs a window launched into the
+  # background a repaint every half second until somebody clicks it, which is
+  # the cheaper thing to be wrong about.
+  var windowFocused = true
   while running:
+    # The wait comes first, because it is what paces everything below it. How
+    # long it may last is how long the work already in flight can be left
+    # alone -- an index job wants every moment it can have, a compiler
+    # answering a Ctrl+click and a program printing want noticing promptly --
+    # and never longer than the next frame is due in.
+    var e = default Event
+    let waitMs = min(
+      if job.active: 0
+      elif tracker.busy or term.processRunning: WorkPollMs
+      else: IdleFrameMs,
+      max(0, nextFrame - getTicks()))
+    if waitEvent(e, waitMs, {WantTextInput}): mustDraw = true
+    # Read before anything is drawn, and not down in the dispatch below with
+    # the rest of the events: what it decides is whether the caret blinks,
+    # and the panels are told that further down but still above the drawing.
+    if e.kind == WindowFocusGainedEvent: windowFocused = true
+    elif e.kind == WindowFocusLostEvent: windowFocused = false
     # Pick up edits to the config buffer before resolving, so that the rects
     # and the hit tests within one frame always come from the same layout.
     # The buffer's own changed flag is the signal; consuming it here re-parses
@@ -1529,6 +1586,7 @@ proc main =
                       trackSpec, configNote)
         if configNote.len == 0: saveConfig("config.nif", src)
         b.ed.markSaved()
+        mustDraw = true
 
     # The theme goes out to every widget every frame. Buffers come and go and
     # the colors can change with any keystroke in the config, so there is no
@@ -1548,6 +1606,17 @@ proc main =
     comp.theme = panelTheme
     comp.setFont buffers[current].ed.getFont
     clips.theme = panelTheme
+    # Whether a caret blinks is not about which panel has it but about the
+    # window. Beside the theme because it goes the same way and for the same
+    # reason: it is per-frame state that every widget needs and no widget can
+    # work out for itself, and one that was left out of the list would sit
+    # there blinking alone.
+    history.blinks = windowFocused
+    tabs.ed.blinks = windowFocused
+    explorer.ed.blinks = windowFocused
+    term.ed.blinks = windowFocused
+    status.ed.blinks = windowFocused
+    clips.blinks = windowFocused
     # The prompt has no directory of its own, so a relative path typed there is
     # taken to be relative to the file being edited -- the same thing that path
     # would mean written inside that file. The terminal has a `cwd` and a `cd`
@@ -1557,8 +1626,19 @@ proc main =
       else: os.getCurrentDir()
     # Whether or not the layout shows the panel: what was copied while it was
     # hidden is exactly what somebody goes looking for after showing it.
-    clips.poll()
-    for b in buffers.mitems: b.ed.theme = theme
+    if clips.poll(): mustDraw = true
+    # What a program has printed since the last look. This is the terminal's
+    # own `draw` calling, and it is made here instead because a frame that is
+    # never drawn would otherwise be a frame the program was never heard in --
+    # and it is exactly what it printed that has to bring the frame about.
+    # Bring about, and not demand: output is the one thing here that arrives
+    # in a stream rather than one at a time, and a keystroke is worth a frame
+    # of its own in a way that another line of a build log is not.
+    if term.update():
+      nextFrame = min(nextFrame, getTicks() + OutputFrameMs)
+    for b in buffers.mitems:
+      b.ed.theme = theme
+      b.ed.blinks = windowFocused
 
     # A question is the prompt's business, wherever the command that raised it
     # was typed: it is shown in the status bar, so that is the line it is
@@ -1608,8 +1688,10 @@ proc main =
     if tracker.note.len > 0:
       tabs.note = tracker.note
       tracker.note = ""
+      mustDraw = true
     if tracker.ready:
       tracker.ready = false
+      mustDraw = true
       jumps = tracker.hits
       if jumps.len == 1:
         # One place is not a choice. A listing of it would be a keystroke
@@ -1621,6 +1703,13 @@ proc main =
         comp.choose(trackRows(jumps, tracker.project.parentDir, buffers),
                     buffers[current].ed)
         focus = "editor"
+
+    # Everything above was a look; below is the frame. An index job's count
+    # is deliberately not among the things that ask for one -- a job wants the
+    # time the drawing would take, and twice a second is as often as a number
+    # going up is worth being redrawn for.
+    if not mustDraw and getTicks() < nextFrame: continue
+    mustDraw = false
 
     let cells = layout.resolve(width, height, fm.lineHeight,
                                padding = scaledPx(6), gap = scaledPx(4),
@@ -1644,15 +1733,6 @@ proc main =
     # frame things.
     fillRect(rect(0, 0, width, height), theme.actionColor)
 
-    var e = default Event
-    # An index job is the one thing here that has work of its own to do: while
-    # one runs the loop only polls, so the job gets every frame instead of one
-    # every half second. A compiler answering a Ctrl+click has work of its own
-    # too, but it is doing it in another thread and all this one has to do is
-    # notice -- often enough that the answer feels like it belongs to the
-    # click, rarely enough to cost nothing while the compiler thinks.
-    discard waitEvent(e, if job.active: 0 elif tracker.busy: 50 else: 500,
-                      {WantTextInput})
     case e.kind
     of QuitEvent, WindowCloseEvent:
       running = false
@@ -2056,6 +2136,23 @@ proc main =
       savedTabs = tt
       saveConfig("tabs.txt", tt)
 
+    # When the next frame is due even if nothing happens between now and
+    # then. The caret is what the deadline is for, so a window whose caret has
+    # stopped moving has no deadline at all -- it goes on waking to look at
+    # the clipboard, and goes back to sleep without drawing until somebody
+    # comes back to it. A job counting up is a reason of its own and keeps its
+    # deadline either way; so does a program printing, which brings its own
+    # deadline forward as it prints.
+    #
+    # Stamped now that the frame is done rather than when it was decided on:
+    # what has to be `IdleFrameMs` apart is one caret blink and the next, and
+    # `SynEdit` blinks the caret in the middle of the drawing above -- so a
+    # deadline measured from before the drawing is a deadline the blink is
+    # always a frame's width short of, and a caret that blinks every other
+    # frame or every frame depending on how long the frame took.
+    nextFrame =
+      if windowFocused or job.active: getTicks() + IdleFrameMs
+      else: high(int)
     refresh()
 
   for _, f in fonts:

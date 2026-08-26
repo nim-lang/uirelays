@@ -26,7 +26,7 @@ proc copied(c: var ClipHistory; text: string) =
   ## What another application does, seen from here: the clipboard changes, and
   ## the next look picks it up.
   systemClipboard = text
-  c.poll()
+  discard c.poll()
 
 # ---------------------------------------------------------------------------
 echo "cliphistory:"
@@ -70,16 +70,16 @@ block:
   var c = initClipHistory(Font(0))
   c.pollMs = 0                # a test has its own idea of when to look
   systemClipboard = "already there"
-  c.poll()
+  discard c.poll()
   equals("what the clipboard held before we started is entry one",
          c.entry(1), "already there")
-  c.poll()
+  discard c.poll()
   check("looking again at the same thing adds nothing", c.len == 1)
   c.copied "from another window"
   equals("a copy anywhere is a copy here", c.entry(1), "from another window")
   check("and the older one is still behind it", c.len == 2)
   systemClipboard = ""
-  c.poll()
+  discard c.poll()
   check("a clipboard that says nothing takes nothing back", c.len == 2)
 
 block:
