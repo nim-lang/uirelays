@@ -262,6 +262,13 @@ const
   MaxPreviewBytes = 4_000_000
     ## Above this a file is not read for a one-line quote. Nothing anyone wrote
     ## by hand is that big, and the row is worth less than the pause would be.
+  JobSliceMs = 30
+    ## How long an index job is given per frame. The loop repaints the whole
+    ## window once per pass, and the job has nothing to show for a pass but a
+    ## file count -- so it is the frames that are rationed here, not the work:
+    ## the job keeps reading for this long and the window is drawn once after.
+    ## Thirty milliseconds is what the pointer and the keyboard wait for at
+    ## worst while a job runs, and still leaves the count visibly moving.
 
 proc configPath(name: string): string =
   getConfigDir() / ConfigDirName / name
@@ -1577,7 +1584,12 @@ proc main =
         discard words.indexSlice(buffers[i].ed, buffers[i].idx)
         break
     if job.active:
-      stepIndexJob(job, files = 32)
+      # `JobSliceMs` worth of files, and then one frame -- rather than a frame
+      # per batch, which on a fast disk is a repaint of the whole window for
+      # every couple of milliseconds of reading.
+      let deadline = getTicks() + JobSliceMs
+      while stepIndexJob(job, files = 32) and getTicks() < deadline:
+        discard
       if job.active:
         tabs.note = job.progress
       else:

@@ -234,7 +234,7 @@ const
 
   # Event types
   KeyPress = 2.cint
-  KeyRelease = 3.cint
+  KeyRelease {.used.} = 3.cint   # not selected for; see XSelectInput below
   ButtonPress = 4.cint
   ButtonRelease = 5.cint
   MotionNotify = 6.cint
@@ -249,7 +249,7 @@ const
   # Event masks
   ExposureMask = 1 shl 15
   KeyPressMask = 1 shl 0
-  KeyReleaseMask = 1 shl 1
+  KeyReleaseMask {.used.} = 1 shl 1
   ButtonPressMask = 1 shl 2
   ButtonReleaseMask = 1 shl 3
   PointerMotionMask = 1 shl 6
@@ -512,7 +512,17 @@ var
 var eventQueue: seq[input.Event]
 
 proc pushEvent(e: input.Event) =
-  eventQueue.add e
+  # Pointer motion is coalesced: X11 sends one event per hardware sample --
+  # a thousand a second with the mice that report that fast -- and a host that
+  # repaints per event would repaint a thousand times to follow one sweep of
+  # the pointer. Only the newest position is of any use, so a motion that
+  # arrives behind another that nobody has read yet replaces it. Anything
+  # else in between (a click, a key) ends the run and is kept in order.
+  if e.kind == MouseMoveEvent and eventQueue.len > 0 and
+     eventQueue[^1].kind == MouseMoveEvent:
+    eventQueue[^1] = e
+  else:
+    eventQueue.add e
 
 # ---- Back-buffer management ----
 
@@ -657,14 +667,6 @@ proc processXEvent(xev: XEvent) =
         te.text[i] = buf[i]
       pushEvent(te)
 
-  of KeyRelease:
-    var ks {.noinit.}: XKeySym
-    discard XLookupString(unsafeAddr xev.xkey, nil, 0, addr ks, nil)
-    var e = input.Event(kind: KeyUpEvent)
-    e.key = translateKeySym(ks)
-    e.mods = translateMods(xev.xkey.state)
-    pushEvent(e)
-
   of ButtonPress:
     let btn = xev.xbutton.button
     if btn == Button4 or btn == Button5:
@@ -786,8 +788,13 @@ proc x11CreateWindow(layout: var ScreenLayout; icon: pointer; iconLen: int) =
     0, 0, layout.width.cuint, layout.height.cuint, 0,
     XBlackPixel(gDisplay, gScreen), XBlackPixel(gDisplay, gScreen))
 
+  # Key releases are not asked for: nothing in this library reads a
+  # `KeyUpEvent`, and a host that repaints per event would pay a frame for
+  # every key let go of -- one per repeat while a key is held down, which is
+  # the one place where the keyboard produces events faster than a person
+  # types. A key press carries its own modifier state, so nothing is lost.
   discard XSelectInput(gDisplay, gWindow,
-    (ExposureMask or KeyPressMask or KeyReleaseMask or
+    (ExposureMask or KeyPressMask or
      ButtonPressMask or ButtonReleaseMask or PointerMotionMask or
      StructureNotifyMask or FocusChangeMask).clong)
 
