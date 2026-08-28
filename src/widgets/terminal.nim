@@ -13,7 +13,7 @@
 ## The terminal runs commands in a background thread and streams
 ## their output into the editor buffer.
 
-import std/[os, osproc, streams, strutils, tables, browsers]
+import std/[os, osproc, streams, strutils, tables, times, browsers]
 when defined(windows): import std/winlean
 else: import std/posix
 import synedit
@@ -328,6 +328,10 @@ type
     of ctrlHover, ctrlClick:
       pos*: int         ## buffer offset
 
+  HeadStamp = tuple[written: times.Time; size: BiggestInt]
+    ## What a `HEAD` file looks like from the outside -- enough to tell one
+    ## that was rewritten from one that was not, without reading it.
+
   Terminal* = object
     ed*: SynEdit
     hist*: Table[string, CmdHistory]
@@ -373,6 +377,12 @@ type
                         ## "" included, means the cache says nothing about the
                         ## current `cwd` -- which is also the starting state,
                         ## and what a `cd` restores.
+    headFile: string    ## the `HEAD` `branch` was read from, "" when
+                        ## `branchDir` is no part of a checkout. Cached along
+                        ## with it: finding it means a walk up the tree.
+    headStamp: HeadStamp ## what that file looked like when it was read. A
+                        ## `git checkout` rewrites it, which is how the prompt
+                        ## notices a branch it did not switch itself.
 
 proc base*(t: Terminal): string =
   ## The directory a relative path typed here is taken to be relative to.
@@ -440,17 +450,30 @@ proc gitDirOf(startDir: string): string =
     if parent.len == 0 or parent == dir: return ""
     dir = parent
 
-proc gitBranch*(dir: string): string =
-  ## The branch checked out in the repository `dir` belongs to, or "" when it is
-  ## not a checkout. A detached HEAD reads as its short commit hash.
-  ##
-  ## Reads `.git/HEAD` rather than running `git`: this sits on the path of every
-  ## prompt, and spawning a process there would be felt on every command.
+proc headFileOf(dir: string): string =
+  ## The `HEAD` that names the branch `dir` has checked out, or "" when `dir`
+  ## is no part of a checkout.
   let gitDir = gitDirOf(dir)
-  if gitDir.len == 0: return ""
+  result = if gitDir.len == 0: "" else: gitDir / "HEAD"
+
+proc stampOf(headFile: string): HeadStamp =
+  ## `headFile` as `getFileInfo` sees it. "" and a file that is not there share
+  ## the default stamp: neither of them names a branch, and neither changes
+  ## into the other without a `cd` or a `git`, both of which drop the cache.
+  if headFile.len == 0: return
+  try:
+    let info = getFileInfo(headFile)
+    result = (written: info.lastWriteTime, size: info.size)
+  except CatchableError:
+    discard
+
+proc branchOf(headFile: string): string =
+  ## The branch `headFile` names, or "" when there is no such file. A detached
+  ## HEAD reads as its short commit hash.
+  if headFile.len == 0: return ""
   var head = ""
   try:
-    head = readFile(gitDir / "HEAD").strip
+    head = readFile(headFile).strip
   except CatchableError:
     return ""
   const refMarker = "ref: "
@@ -465,32 +488,61 @@ proc gitBranch*(dir: string): string =
   elif head.len >= 7 and head.allCharsInSet(HexDigits):
     result = head[0 ..< 7]
 
-proc mentionsCd*(cmd: string): bool =
-  ## Whether `cd` occurs in `cmd` as a word: `cd ..` and `mkdir x && cd x` do,
-  ## `cdrom` and `abcd` do not. A word character is what could be part of a
-  ## command name, so `/bin/cd` still counts.
+proc gitBranch*(dir: string): string =
+  ## The branch checked out in the repository `dir` belongs to, or "" when it is
+  ## not a checkout. A detached HEAD reads as its short commit hash.
+  ##
+  ## Reads `.git/HEAD` rather than running `git`: this sits on the path of every
+  ## prompt, and spawning a process there would be felt on every command.
+  branchOf(headFileOf(dir))
+
+proc mentionsWord*(cmd, word: string): bool =
+  ## Whether `word` occurs in `cmd` as a word: for `cd`, `cd ..` and
+  ## `mkdir x && cd x` do, `cdrom` and `abcd` do not. A word character is what
+  ## could be part of a command name, so `/bin/cd` still counts.
   const WordChars = {'a'..'z', 'A'..'Z', '0'..'9', '_'}
+  if word.len == 0: return false
   var i = 0
   while true:
-    let at = cmd.find("cd", i)
+    let at = cmd.find(word, i)
     if at < 0: return false
-    let after = at + 2
+    let after = at + word.len
     if (at == 0 or cmd[at - 1] notin WordChars) and
        (after >= cmd.len or cmd[after] notin WordChars):
       return true
     i = at + 1
 
+proc mentionsCd*(cmd: string): bool =
+  mentionsWord(cmd, "cd")
+
 proc insertPrompt*(t: var Terminal) =
   ## The branch is cached: without that, `.git/HEAD` would be read again after
-  ## every single command, and only a `cd` can move this terminal into another
-  ## checkout. `runCommand` drops the cache when it sees one.
+  ## every single command. The cache is kept honest by the file itself -- a
+  ## `git checkout` rewrites `HEAD`, and so does a switch made in another
+  ## window entirely, neither of which this terminal is told about. Per prompt
+  ## that costs one look at the file's date and size; finding `HEAD` in the
+  ## first place is the walk up the tree, and reading it is only worth doing
+  ## when the stamp says it changed.
   ##
-  ## The cache remembers *which* directory it read, because `cwd` is a public
-  ## field: a host that sets it directly never goes through `runCommand`, and
-  ## would otherwise get the previous checkout's branch next to the new path.
+  ## The stamp is taken before the read, so a `HEAD` rewritten between the two
+  ## is caught by the next prompt rather than remembered as up to date.
+  ##
+  ## The cache also remembers *which* directory it read, because `cwd` is a
+  ## public field: a host that sets it directly never goes through
+  ## `runCommand`, and would otherwise get the previous checkout's branch next
+  ## to the new path. `runCommand` drops the cache outright for the one case a
+  ## stamp cannot catch: a command that moves this terminal into a different
+  ## checkout, or makes a repository where there was none.
   if t.branchDir != t.cwd:
-    t.branch = gitBranch(t.cwd)
     t.branchDir = t.cwd
+    t.headFile = headFileOf(t.cwd)
+    t.headStamp = stampOf(t.headFile)
+    t.branch = branchOf(t.headFile)
+  else:
+    let stamp = stampOf(t.headFile)
+    if stamp != t.headStamp:
+      t.headStamp = stamp
+      t.branch = branchOf(t.headFile)
   if t.branch.len > 0:
     t.ed.appendOutput(t.cwd & " [" & t.branch & "]>")
   else:
@@ -619,9 +671,11 @@ proc runCommand*(t: var Terminal; cmd: var string): TermAction =
       break
   # After the aliases, so one that expands to a `cd` counts too. Only marks the
   # cache stale: the `cd` below has not moved `t.cwd` yet, and it is the prompt
-  # that needs the answer. `cd .` therefore doubles as a way to pick up a branch
-  # that changed behind this terminal's back.
-  if mentionsCd(cmd): t.branchDir.setLen 0
+  # that needs the answer. A `git` is here for what watching `HEAD` cannot
+  # catch -- `git init` and `git clone .` make a repository where the prompt
+  # had no `HEAD` to watch. A `git checkout` in one that already exists needs
+  # no help, and neither does a checkout made behind this terminal's back.
+  if mentionsCd(cmd) or mentionsWord(cmd, "git"): t.branchDir.setLen 0
   # The prompt's own command, and only its own: `defaults` puts the host's
   # config back, which is a thing to ask an application and not a thing to ask
   # a machine. In a terminal the word stays a program's name -- macOS has one

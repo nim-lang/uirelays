@@ -5,7 +5,7 @@
 ## and it runs through the same stub relays as `styletest`, so it needs no
 ## window and starts no program.
 import uirelays/[screen, coords, input]
-import std/strutils
+import std/[os, strutils]
 import widgets/[synedit, terminal]
 
 var clipboard = ""
@@ -166,6 +166,37 @@ block: # Ctrl+C is a copy when there is something to copy
   t.ed.deselect()
   t.frame(key(KeyC, {CtrlPressed}))
   check("and with nothing selected it is still the break", t.processRunning)
+
+block: # the prompt follows the branch, not only the directory
+  # A checkout is a rewritten `.git/HEAD`, and that file is all the prompt
+  # watches -- so this needs no repository and runs no `git`, only the file.
+  # The two names differ in length as well as in content, because a file
+  # system that dates a file by the second is still allowed to date both
+  # writes the same.
+  let repo = getTempDir() / "uirelays-branch-test"
+  removeDir repo
+  createDir repo / ".git"
+  writeFile(repo / ".git" / "HEAD", "ref: refs/heads/master\L")
+  var t = createTerminal(font)
+  t.cwd = repo
+  t.insertPrompt()
+  check("the prompt shows the branch that is checked out",
+        t.allText.contains("[master]"), t.allText)
+  writeFile(repo / ".git" / "HEAD", "ref: refs/heads/topic\L")
+  t.insertPrompt()
+  check("and follows a checkout nobody told it about",
+        t.allText.contains("[topic]"), t.allText)
+  writeFile(repo / ".git" / "HEAD", "0123456789abcdef0123456789abcdef01234567\L")
+  t.insertPrompt()
+  check("a detached HEAD reads as its short hash",
+        t.allText.contains("[0123456]"), t.allText)
+  removeDir repo
+
+block: # what marks the cached branch stale
+  check("`cd` is seen as a word", mentionsCd("mkdir x && cd x"))
+  check("and not inside one", not mentionsCd("abcd") and not mentionsCd("cdrom"))
+  check("a `git` is seen the same way", mentionsWord("git init", "git"))
+  check("and `digit` is not one", not mentionsWord("echo digital", "git"))
 
 echo(if failures == 0: "ALL PASS" else: $failures & " FAILURE(S)")
 if failures > 0: quit 1
