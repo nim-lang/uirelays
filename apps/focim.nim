@@ -57,6 +57,18 @@ nothing but `nimony/README.md` open. See `doc/focim/open.md`. Ctrl+P is
 `open ` already typed into the prompt, for the muscle memory other editors
 have trained.
 
+Files change under an editor -- a build formats one, a `git checkout` swaps the
+branch, another window saves. Nothing on a desktop reports that, so the files
+behind the open tabs and the directory the explorer lists are asked every
+couple of seconds whether they still say what they said. A tab with no unsaved
+edits *is* its file and quietly becomes it again, the caret left on the line it
+was on; a tab with unsaved edits is a second version of that file, and which of
+the two survives is a question in the status bar -- the same `[yes|no]`
+exchange an overwrite raises. A modification time that moved over unchanged
+bytes -- a `touch`, a checkout that put the same text back -- is not a change
+and is not mentioned. The explorer relists itself the same way, keeping the
+filter that is typed in it and the place it is scrolled to.
+
 `defaults`, in the prompt, puts the config the app ships with back into the
 `[config]` tab -- for a config that has been edited into a corner: a flattened
 palette, a layout with the panel one is looking for left out of it. It is an
@@ -141,8 +153,9 @@ which is what lands in `WM_CLASS` -- so the binary has to stay called `focim`.
 ]##
 
 import std/[tables, os, algorithm]
+from std/times import Time
 from std/strutils import toLowerAscii, strip, endsWith, contains, splitLines,
-                         startsWith, find
+                         startsWith, find, join
 from std/cmdline import paramCount, paramStr
 import uirelays
 import uirelays/layout
@@ -281,6 +294,15 @@ const
     ## compiler answering a Ctrl+click, a program printing in the terminal.
     ## Looking is a channel peek and costs nothing; it is *drawing* that is
     ## expensive, and a look that finds nothing does not lead to one.
+  DiskCheckMs = 2000
+    ## How often the files behind the open tabs, and the directory the
+    ## explorer lists, are asked whether they still say what they said. This
+    ## is a `stat` per open tab and one for the directory -- cheap enough to
+    ## do often and not free enough to do every frame, and two seconds is
+    ## about as long as one wants to look at a listing that a build has
+    ## already made wrong. Everything that costs anything -- reading the file
+    ## back, rebuilding the listing -- happens only when the cheap question
+    ## was answered with a different number than last time.
   OutputFrameMs = 100
     ## How long what a program has printed may sit collected but unshown.
     ## Collecting it is the peek above, so nothing waits longer than
@@ -377,6 +399,22 @@ type
     isConfig: bool      ## this buffer's text IS the window's config
     idx: BufferIndexer  ## how far the word index has walked this buffer
     search: BufferSearch ## the hits of the last search in this buffer
+    watch: bool         ## does this buffer stand for what is in a file? A
+                        ## generated one does not, and neither does one that
+                        ## holds the reason its file could not be read -- both
+                        ## would report a change against a text that was never
+                        ## the file's to begin with.
+    timestamp: Time     ## the file's modification time as of the last read or
+                        ## write through this buffer. What `harddiskCheck`
+                        ## compares against, and the whole of what it takes to
+                        ## notice that somebody else has written the file.
+
+proc fileStamp(path: string): Time =
+  ## The file's modification time, or the zero time for a file that cannot be
+  ## asked -- which is what a file that is not there yet answers, and is a
+  ## different answer from every real one.
+  try: result = getLastModificationTime(path)
+  except OSError: result = Time()
 
 proc applyFileKind(ed: var SynEdit; path: string) =
   ## What the name of a file says about how to show it. Runs when a buffer is
@@ -392,6 +430,11 @@ proc newBuffer(font: Font; path: string): BufferEntry =
   var ed = createSynEdit(font)
   ed.showLineNumbers = true
   ed.applyFileKind(path)
+  # The stamp is taken *before* the read, not after: a file rewritten in the
+  # moment between the two would otherwise leave the buffer holding the old
+  # text under the new file's time, and nothing would ever notice.
+  let stamp = fileStamp(path)
+  var watch = true
   # The explorer makes it easy to click anything at all, so a file that
   # cannot be read must not take the editor down with it.
   try:
@@ -402,11 +445,61 @@ proc newBuffer(font: Font; path: string): BufferEntry =
       ed.lang = langNone
       ed.setText(path.extractFilename & ": binary file, not shown")
       ed.readOnly = ed.len - 1
+      watch = false
   except CatchableError:
     ed.lang = langNone
     ed.setText("cannot read " & path & ": " & getCurrentExceptionMsg())
     ed.readOnly = ed.len - 1
-  result = BufferEntry(ed: ed, path: path)
+    watch = false
+  result = BufferEntry(ed: ed, path: path, watch: watch, timestamp: stamp)
+
+proc diskContentDiffers(ed: SynEdit; path: string): bool =
+  ## Does the file hold something other than what the buffer shows? Asked
+  ## whenever the modification time moved, because it moves for reasons that
+  ## are not an edit -- a `git checkout` that put the same bytes back, a
+  ## `touch`, a formatter that rewrote a file with what was already in it --
+  ## and a buffer reloaded, or worse a question asked, over a file that says
+  ## exactly what it said before is noise the user cannot act on.
+  ##
+  ## The comparison is against what *loading* the file would put in the
+  ## buffer rather than against its bytes: `setText` drops CR and turns a tab
+  ## into `tabSize` spaces, so a file whose line endings this editor never
+  ## had would otherwise differ from itself forever.
+  var disk = ""
+  try:
+    disk = readFile(path)
+  except CatchableError:
+    # Unreadable is not "unchanged": say so and let the caller decide, which
+    # for a file that went away means leaving the buffer alone.
+    return true
+  var j = 0
+  let n = ed.len
+  template take(expected: char) =
+    if j >= n or ed[Natural(j)] != expected: return true
+    inc j
+  for c in disk:
+    case c
+    of '\C': discard
+    of '\t':
+      for _ in 1 .. ed.tabSize: take ' '
+    else: take c
+  result = j != n
+
+proc reloadBuffer(b: var BufferEntry) =
+  ## Put what is on disk into the buffer, and leave the caret on the line it
+  ## was on. The file moved under somebody who is pointing at something in it;
+  ## the line is the most of that which survives an arbitrary edit, and it
+  ## survives the common one -- a change further down the file -- exactly.
+  let (line, col) = b.ed.lineAndByteCol(b.ed.cursor)
+  b.timestamp = fileStamp(b.path)
+  try:
+    b.ed.loadFromFile(b.path)
+  except CatchableError:
+    # The file was readable a moment ago, when the content was compared. If it
+    # is not now, the buffer is the only copy left of it and is worth more
+    # than the reload was.
+    return
+  b.ed.gotoLineBytes(line, col)
 
 proc tabsText(buffers: seq[BufferEntry]): string =
   ## The open tabs, in tab order. Generated buffers have no path and so are
@@ -604,6 +697,12 @@ type
                          ## navigation moves it, so typing stays predictable
     entries: seq[string] ## the lines below the header, in order
     header: string       ## line 0, as last rendered
+    stamp: Time          ## `dir`'s modification time as of the last listing.
+                         ## A directory's time moves when an entry is created,
+                         ## removed or renamed -- which is exactly the set of
+                         ## things that make a listing of it wrong, and none of
+                         ## the things (a file being written into) that leave
+                         ## it right.
 
 proc normDir(dir: string): string =
   result = dir
@@ -662,13 +761,14 @@ proc showDir(ex: var Explorer; dir: string) =
   if not dirExists(dir): return
   ex.dir = normDir(dir)
   ex.base = ex.dir
+  ex.stamp = fileStamp(ex.dir)
   ex.entries = listDir(ex.dir, "")
   let h = ex.dir & (if ex.dir.endsWith($DirSep): "" else: $DirSep)
   ex.renderExplorer(h, h.len)
 
-proc applyHeader(ex: var Explorer; header: string) =
-  ## The path line doubles as "cd" and as a filter: an existing directory
-  ## switches the listing, anything else narrows it.
+proc resolveHeader(ex: Explorer; header: string): tuple[dir, filter: string] =
+  ## What the path line asks for: the directory to list, and what to narrow it
+  ## by. An existing directory switches the listing, anything else narrows it.
   let full = resolveIn(ex.base, header)
   var dir = ex.base
   var filter = ""
@@ -679,9 +779,56 @@ proc applyHeader(ex: var Explorer; header: string) =
     if parent.len > 0 and dirExists(parent):
       dir = parent
       filter = full.extractFilename
-  ex.dir = normDir(dir)
+  result = (normDir(dir), filter)
+
+proc applyHeader(ex: var Explorer; header: string) =
+  ## The path line doubles as "cd" and as a filter.
+  let (dir, filter) = ex.resolveHeader(header)
+  ex.dir = dir
+  ex.stamp = fileStamp(ex.dir)
   ex.entries = listDir(ex.dir, filter)
   ex.renderExplorer(header, ex.ed.cursor)
+
+proc refreshListing(ex: var Explorer): bool =
+  ## List the directory again if something in it has come or gone. Nothing
+  ## reports that to a program, so this is a `stat` of the directory: its time
+  ## moves when an entry is created, removed or renamed, and stands still
+  ## while a file inside it is merely written.
+  ##
+  ## The header is read from the widget rather than from `ex.header`, because
+  ## while the explorer has the focus that line is what is being typed, and the
+  ## filter it spells is the listing anybody wants back.
+  ##
+  ## Nothing is redrawn unless the lines really did change: a directory whose
+  ## time moved over a temporary file that has already gone again lists exactly
+  ## as it did, and rebuilding the text over that would drop the selection
+  ## somebody is holding in it. When they did change, the scroll position is
+  ## put back -- a listing that rebuilt itself because a build wrote into the
+  ## directory must not also send a reader back to the top of it.
+  if ex.dir.len == 0: return false
+  if not dirExists(ex.dir):
+    # The directory itself went. Walk up to the nearest one that is still
+    # there rather than keep a listing of somewhere that is not.
+    var up = ex.dir.parentDir
+    while up.len > 0 and not dirExists(up): up = up.parentDir
+    if up.len == 0: return false
+    ex.showDir(up)
+    return true
+  let stamp = fileStamp(ex.dir)
+  if stamp == ex.stamp: return false
+  let header = ex.ed.getLineText(0)
+  # The header is resolved again rather than reused: a name that was a filter
+  # a moment ago is a directory now if that is what just appeared under it.
+  let (dir, filter) = ex.resolveHeader(header)
+  let entries = listDir(dir, filter)
+  ex.stamp = if dir == ex.dir: stamp else: fileStamp(dir)
+  if dir == ex.dir and entries == ex.entries: return false
+  ex.dir = dir
+  ex.entries = entries
+  let top = ex.ed.firstLine.int
+  ex.renderExplorer(header, ex.ed.cursor)
+  ex.ed.scrollTo(top)
+  result = true
 
 proc navShown(ex: Explorer): bool =
   ## Are the navigation lines in the listing? ".." gives it away: a filtered
@@ -1076,6 +1223,9 @@ proc saveCurrent(buffers: var seq[BufferEntry]; current: int;
     return
   try:
     buffers[current].ed.saveToFile(buffers[current].path)
+    # The write is a change on disk like any other, and this is what keeps it
+    # from being reported back to the one who made it.
+    buffers[current].timestamp = fileStamp(buffers[current].path)
     note = ""
   except CatchableError:
     note = "cannot save " & buffers[current].path & ": " &
@@ -1099,6 +1249,11 @@ proc saveBufferAs(buffers: var seq[BufferEntry]; current: int; path: string;
   except OSError: discard
   buffers[current].path = full
   buffers[current].ed.applyFileKind(full)
+  # From here on this buffer stands for that file -- including a buffer that
+  # stood for nothing until now, and one whose old file was never watched
+  # because it could not be read.
+  buffers[current].watch = true
+  buffers[current].timestamp = fileStamp(full)
   note = ""
 
 type
@@ -1139,6 +1294,7 @@ type
     askNothing
     askOverwrite   ## "<file> exists. Overwrite? [yes|no]"
     askReplace     ## "Replace? [yes|no|all|abort]"
+    askReload      ## "<file> changed on disk. Reload? [yes|no]"
 
   Ask = object
     ## What the window is waiting to hear, and what the answer will mean. One
@@ -1147,7 +1303,12 @@ type
     ## the command that raised it was typed in.
     kind: AskKind
     question: string
-    path: string   ## askOverwrite: where the buffer would go
+    path: string   ## askOverwrite: where the buffer would go.
+                   ## askReload: which file changed under which buffer. The
+                   ## file and not the tab number, because the tab list is
+                   ## editable and the answer arrives some keystrokes later:
+                   ## by then the tab may have been moved, or closed and
+                   ## reopened somewhere else in the list.
 
 const ReplaceQuestion = "Replace? [yes|no|all|abort]"
 
@@ -1286,6 +1447,26 @@ proc runAnswer(word: string; asked: var Ask; f: var Finder;
     else:
       note = "not saved"
     asked = Ask()
+  of askReload:
+    let path = asked.path
+    let name = path.extractFilename
+    asked = Ask()
+    var idx = -1
+    for i in 0 ..< buffers.len:
+      if cmpPaths(buffers[i].path, path) == 0:
+        idx = i
+        break
+    if idx < 0:
+      # The tab was closed while the question stood. Nothing to reload into,
+      # and nothing lost either -- closing it was the same answer.
+      note = name & " is not open any more"
+    elif word.startsWith("y"):
+      reloadBuffer(buffers[idx])
+      note = "reloaded " & name
+    else:
+      # The timestamp was taken when the question was put, so this file is not
+      # asked about again until it changes once more.
+      note = "kept the edits in " & name
   of askReplace:
     case word
     of "y", "yes":
@@ -1365,6 +1546,80 @@ proc runSearch(act: TermAction; asked: var Ask; f: var Finder;
   if runSearchCommand(act, buffers, current, f, theme, note):
     asked = Ask(kind: askReplace, question: ReplaceQuestion)
     note = note & "  " & ReplaceQuestion
+
+proc harddiskCheck(buffers: var seq[BufferEntry]; current: var int;
+                   asked: var Ask; focus: var string; note: var string): bool =
+  ## Has anybody else written one of the open files? A compiler that formatted
+  ## one, a `git checkout`, an edit made in another window: the editor is not
+  ## told about any of it, so it asks -- a `stat` per open tab, `DiskCheckMs`
+  ## apart. Returns whether anything came of it, which is what the caller
+  ## needs to know to draw a frame.
+  ##
+  ## What is done about a file that did change depends on whether anything
+  ## would be lost by taking it. A buffer with no unsaved edits is the file,
+  ## and just becomes the file again -- asking about that is asking somebody
+  ## to confirm the only answer. A buffer with unsaved edits is a second
+  ## version of the file, and which of the two survives is nobody's decision
+  ## but the user's, so that one is a question. Either way the timestamp is
+  ## taken first, so a file is at most one question -- and, once answered,
+  ## silent until it changes again.
+  result = false
+  var reloaded: seq[string] = @[]
+  var vanished: seq[string] = @[]
+  for i in 0 ..< buffers.len:
+    if not buffers[i].watch or buffers[i].path.len == 0: continue
+    let path = buffers[i].path
+    let stamp = fileStamp(path)
+    if stamp == buffers[i].timestamp: continue
+    if not fileExists(path):
+      # Deleted, or renamed away. The buffer is the last copy there is of it
+      # and is worth more than the news, so it stays exactly as it is -- said
+      # once, because the stamp of a file that is not there does not move
+      # again until it comes back.
+      buffers[i].timestamp = stamp
+      vanished.add path.extractFilename
+      result = true
+      continue
+    if not diskContentDiffers(buffers[i].ed, path):
+      # The time moved and the text did not: a `touch`, or a checkout that put
+      # the same bytes back. Take the new time and say nothing.
+      buffers[i].timestamp = stamp
+      continue
+    if not buffers[i].ed.changed:
+      reloadBuffer(buffers[i])
+      reloaded.add path.extractFilename
+      result = true
+      continue
+    # Two versions, one file. Only one question can be outstanding at a time,
+    # so a second one waits -- and waits with its timestamp untouched, which
+    # is what brings this round to it again once the first is answered.
+    if asked.kind != askNothing: continue
+    buffers[i].timestamp = stamp
+    # Ask about the buffer the user is looking at: a question about a file
+    # that is not on screen is one they cannot weigh.
+    current = i
+    asked = Ask(kind: askReload, path: path,
+                question: path.extractFilename &
+                          " changed on disk. Reload? [yes|no]")
+    focus = "status"
+    result = true
+    break
+  # The question, if there is one, is the note: it is the line that has to be
+  # answered, and the reloads behind it are already on screen. A question that
+  # was already standing keeps its line for the same reason -- it is still
+  # waiting to be answered, and news of a reload is not worth taking it away.
+  if asked.kind == askReload:
+    note = asked.question
+  elif asked.kind != askNothing:
+    discard
+  elif vanished.len > 0:
+    note = vanished.join(", ") &
+           (if vanished.len == 1: " is gone from disk; the buffer still has it"
+            else: " are gone from disk; the buffers still have them")
+  elif reloaded.len == 1:
+    note = reloaded[0] & " changed on disk -- reloaded"
+  elif reloaded.len > 1:
+    note = $reloaded.len & " files changed on disk -- reloaded"
 
 proc adjustFocusedFontSize(
     focus: string; delta: int;
@@ -1546,6 +1801,11 @@ proc main =
   # up. `IdleFrameMs` is the backstop under both, for the caret.
   var mustDraw = true
   var nextFrame = getTicks()
+  # When the files behind the tabs, and the directory the explorer lists, are
+  # next asked whether they still say what they said. Nothing on this desktop
+  # reports a write to us, so this is the whole of how the window finds out
+  # that a build, a checkout or another editor has been through the project.
+  var nextDiskCheck = getTicks() + DiskCheckMs
   # Whether this window is the one being typed in -- as opposed to which panel
   # of it would get the keystroke if it were. Nothing is drawn differently for
   # it except the caret, which stops blinking: see `blinks`.
@@ -1627,6 +1887,17 @@ proc main =
     # Whether or not the layout shows the panel: what was copied while it was
     # hidden is exactly what somebody goes looking for after showing it.
     if clips.poll(): mustDraw = true
+    # What the disk has been doing behind the window's back. Up here with the
+    # other looks and not down in the drawing, so that it is asked at its own
+    # rate rather than at whatever rate the window happens to be repainting --
+    # a window nobody is typing in draws twice a second, and one with a build
+    # printing into it draws ten times a second, and neither is a reason to
+    # stat a directory more or less often.
+    if getTicks() >= nextDiskCheck:
+      nextDiskCheck = getTicks() + DiskCheckMs
+      if harddiskCheck(buffers, current, asked, focus, tabs.note):
+        mustDraw = true
+      if explorer.refreshListing(): mustDraw = true
     # What a program has printed since the last look. This is the terminal's
     # own `draw` calling, and it is made here instead because a frame that is
     # never drawn would otherwise be a frame the program was never heard in --
