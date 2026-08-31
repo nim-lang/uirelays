@@ -48,10 +48,10 @@ exec "nim c -r tests/filesearchtest.nim"
 exec "nim c apps/focim.nim"
 
 execBackend("")
-when defined(feature.uirelays.figDrawWindy):
-  execBackend("--define:\"feature.uirelays.figDrawWindy\"")
-when defined(feature.uirelays.figDrawSiwin):
-  execBackend("--define:\"feature.uirelays.figDrawSiwin\"")
+when defined(features.uirelays.figDrawWindy):
+  execBackend("--define:\"features.uirelays.figDrawWindy\"")
+when defined(features.uirelays.figDrawSiwin):
+  execBackend("--define:\"features.uirelays.figDrawSiwin\"")
 when defined(linux):
   execBackend("-d:gtk4")
 # execBackend("-d:sdl2")

@@ -44,10 +44,10 @@ exclusive and install only the selected windowing dependency:
 
 ```sh
 atlas install --feature:uirelays.figDrawWindy
-nim c --define:"feature.uirelays.figDrawWindy" examples/hello.nim
+nim c --define:"features.uirelays.figDrawWindy" examples/hello.nim
 
 atlas install --feature:uirelays.figDrawSiwin
-nim c --define:"feature.uirelays.figDrawSiwin" examples/hello.nim
+nim c --define:"features.uirelays.figDrawSiwin" examples/hello.nim
 ```
 
 The matching `-d:figDrawWindy` and `-d:figDrawSiwin` convenience aliases are
@@ -172,8 +172,8 @@ Force a specific backend:
 nim c -d:gtk4 examples/hello.nim
 nim c -d:sdl3 examples/hello.nim
 nim c -d:sdl2 examples/hello.nim
-nim c --define:"feature.uirelays.figDrawWindy" examples/hello.nim
-nim c --define:"feature.uirelays.figDrawSiwin" examples/hello.nim
+nim c --define:"features.uirelays.figDrawWindy" examples/hello.nim
+nim c --define:"features.uirelays.figDrawSiwin" examples/hello.nim
 ```
 
 ## Apps
