@@ -1306,6 +1306,17 @@ proc scrollLines(s: var SynEdit; amount: int) =
   elif a > 0:
     while a > 0: s.downFirstLineOffset(); dec a
 
+proc scrollTo*(s: var SynEdit; line: int) =
+  ## Put the top of the view on `line`, clamped to the text. Public for a
+  ## panel whose text is replaced behind the user's back: `setText` puts the
+  ## view back at the top, which is right for a panel that was asked for and
+  ## wrong for one that rebuilt itself because what it lists has changed --
+  ## there the scroll position is what somebody is looking through, and losing
+  ## it is losing their place. Set the caret first: `gotoPos` and `gotoLine`
+  ## move the view to show it, so a scroll set before one of those is undone
+  ## by it.
+  s.setFirstLine(line)
+
 proc wheelScroll*(s: var SynEdit; delta: int) =
   ## Scroll by one turn of the mouse wheel: three lines per notch, and the
   ## sign is the wheel's, so a positive delta scrolls towards the top of the
