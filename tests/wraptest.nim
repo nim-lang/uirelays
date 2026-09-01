@@ -65,6 +65,22 @@ proc newConsole(): SynEdit =
   result = createSynEdit(font, defaultTheme())
   result.lang = langConsole
 
+proc newMarkdown(): SynEdit =
+  result = createSynEdit(font, defaultTheme())
+  result.lang = langMarkdown
+
+proc rowStarts(): seq[int] =
+  ## Where each row begins: the leftmost thing drawn on it, which for a row a
+  ## line was wrapped onto is the mark that sits at the continuation indent.
+  var ys: seq[int] = @[]
+  for d in drawn:
+    let k = ys.find(d.y)
+    if k < 0:
+      ys.add d.y
+      result.add d.x
+    else:
+      result[k] = min(result[k], d.x)
+
 const
   Cmd = "nim c --define:release --out:bin/foo src/foo.nim && echo done"
   Prompt = "/home/araq> "
@@ -147,5 +163,64 @@ block: # a widget too narrow for even one character must still terminate
   discard ed.draw(e, rect(0, 0, 12, 100), focused = true)
   check("a widget narrower than a glyph draws what it can and stops", true)
 
+echo ""
+echo "wrapping prose:"
+
+const Prose = "This is prose that goes on, and on, and on, and on, " &
+              "and on and on and on and on."
+
+block: # a comma in a sentence is not a bracket: it opens nothing to line up on
+  var ed = newMarkdown()
+  ed.setText(Prose)
+  drawn.setLen 0
+  discard ed.draw(e, Area, focused = true)
+  let starts = rowStarts()
+  check("a wrapped sentence needs more than one row", starts.len > 1,
+        $starts.len)
+  check("and its continuation starts where the sentence did",
+        starts.allIt(it == starts[0]), starts.mapIt($it).join(","))
+
+block: # what a line is indented by, its continuation is indented by too
+  var ed = newMarkdown()
+  ed.setText("    " & Prose)
+  drawn.setLen 0
+  discard ed.draw(e, Area, focused = true)
+  let starts = rowStarts()
+  check("an indented paragraph continues at its own indentation",
+        starts.len > 1 and starts[1..^1].allIt(it == starts[0] + 4 * GlyphW),
+        starts.mapIt($it).join(","))
+
+block: # a list item hangs under its own text, not under its bullet
+  var ed = newMarkdown()
+  ed.setText("- " & Prose)
+  drawn.setLen 0
+  discard ed.draw(e, Area, focused = true)
+  let starts = rowStarts()
+  check("a bullet gives its item a hanging indent",
+        starts.len > 1 and starts[1..^1].allIt(it == starts[0] + 2 * GlyphW),
+        starts.mapIt($it).join(","))
+
+block: # a numbered item hangs by however wide its number is
+  var ed = newMarkdown()
+  ed.setText("10. " & Prose)
+  drawn.setLen 0
+  discard ed.draw(e, Area, focused = true)
+  let starts = rowStarts()
+  check("a number gives its item a hanging indent",
+        starts.len > 1 and starts[1..^1].allIt(it == starts[0] + 4 * GlyphW),
+        starts.mapIt($it).join(","))
+
+block: # code is code, wherever it is: a bracket still opens something
+  var ed = createSynEdit(font, defaultTheme())
+  ed.lang = langNim
+  ed.setText("let x = foo(someArgument, anotherArgument, aThirdArgument, 12)")
+  drawn.setLen 0
+  discard ed.draw(e, Area, focused = true)
+  let starts = rowStarts()
+  check("a call still lines its arguments up behind the bracket",
+        starts.len > 1 and starts[1..^1].allIt(it > starts[0]),
+        starts.mapIt($it).join(","))
+
+echo ""
 echo(if failures == 0: "ALL PASS" else: $failures & " FAILURE(S)")
 if failures > 0: quit 1
