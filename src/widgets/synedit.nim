@@ -2664,6 +2664,25 @@ proc runWidth(db: var DrawBuf; first, last: int): int =
   ## wrap, which asks about width alone and about ranges it will not draw.
   db.runExtent(first, last).w
 
+proc markerWidth(db: DrawBuf; start: int): int =
+  ## How wide what introduces a Markdown line is -- quote marks, a bullet, a
+  ## number -- counted in columns from `start`. Prose has none, and gets 0.
+  var i = start
+  while db.s[][i] == '>':
+    inc i
+    if db.s[][i] == ' ': inc i
+  if db.s[][i] in {'-', '*', '+'} and db.s[][i + 1] in {' ', '\t'}:
+    inc i
+  else:
+    var j = i
+    while db.s[][j] in {'0'..'9'}: inc j
+    if j > i and db.s[][j] in {'.', ')'} and db.s[][j + 1] in {' ', '\t'}:
+      i = j + 1
+  result = i - start
+  while db.s[][i] in {' ', '\t'}:
+    inc result, (if db.s[][i] == '\t': db.s[].tabSize else: 1)
+    inc i
+
 proc indentWidth(db: DrawBuf): int =
   ## How far the continuation of a wrapped line is pushed in: past the line's
   ## own indentation, and past the bracket or the comma that opens what is
@@ -2675,7 +2694,14 @@ proc indentWidth(db: DrawBuf): int =
     if db.s[][i] == '\t': inc r, db.s[].tabSize
     else: inc r
     inc i
-  if r > 0:
+  if db.s[].lang == langMarkdown:
+    # Prose is not code: a comma or a bracket in the middle of a sentence
+    # opens nothing, and lining the rest of the sentence up behind it would
+    # push it in by an amount that has no meaning. A wrapped line keeps the
+    # indentation it started with, and an item of a list keeps the hanging
+    # indentation its bullet or its number asks for.
+    inc r, db.markerWidth(i)
+  elif r > 0:
     inc r, db.s[].tabSize
   elif db.s[].lang notin {langNone, langConsole}:
     while true:
