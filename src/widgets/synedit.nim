@@ -328,11 +328,20 @@ proc graphemeLen(s: SynEdit; i: Natural): Positive =
   elif ord(ch) shr 1 == 0b1111110: result = 6
 
 proc lastRuneLen(s: SynEdit; last: int): int =
+  ## Bytes of the rune that *ends* at `last` -- so `last` is the last byte of
+  ## it, not the first. A byte that is not part of a well-formed sequence
+  ## stands for itself: a file that is not UTF-8 (a cp1252 dash is 0x97, which
+  ## has the shape of a continuation byte) then loses one byte per keystroke
+  ## instead of taking the character in front of it along.
   if last < 0: return 1
   if ord(s[last]) <= 127: return 1
   var L = 0
-  while last - L >= 0 and ord(s[last - L]) shr 6 == 0b10: inc L
-  result = L + 1
+  while L < 3 and last - L >= 0 and ord(s[last - L]) shr 6 == 0b10: inc L
+  # `last - L` is where the lead byte would be, and it leads this rune only if
+  # it announces exactly the number of bytes that were counted.
+  let lead = last - L
+  if L > 0 and lead >= 0 and s.graphemeLen(lead) == L + 1: L + 1
+  else: 1
 
 # ---------------------------------------------------------------------------
 # Syntax highlighting
@@ -1821,7 +1830,10 @@ proc backspace*(s: var SynEdit; smartIndent: bool) =
 proc deleteKey(s: var SynEdit) =
   if s.selected.b < 0:
     if s.cursor >= s.len: return
-    let L = s.lastRuneLen(s.cursor.int + 1)
+    # Delete eats the rune the caret stands in front of, which is the one that
+    # *begins* here -- `lastRuneLen` answers for a rune that ends at its
+    # argument, and the two only agree for runes of one or two bytes.
+    let L = min(s.graphemeLen(s.cursor), s.len - s.cursor.int)
     s.cursor = (s.cursor.int + L).Natural
     s.setCurrentLine()
     s.backspace(false)

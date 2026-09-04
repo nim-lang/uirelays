@@ -43,6 +43,9 @@ exec "nim c -r tests/activelinetest.nim"
 exec "nim c -r tests/tracktest.nim"
 # And what `open <name>` does with a name that is missing most of its path.
 exec "nim c -r tests/filesearchtest.nim"
+# That a rune of more than one byte is one character to every key that steps
+# over it, and that a byte belonging to no rune stands for itself.
+exec "nim c -r tests/utf8test.nim"
 
 # The app, once, with the platform's default backend.
 exec "nim c apps/focim.nim"
