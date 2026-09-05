@@ -43,6 +43,19 @@ when defined(posix):
 
   var TIOCSWINSZ {.importc, header: "<sys/ioctl.h>".}: uint
 
+  when defined(macosx):
+    proc nsGetEnviron(): ptr cstringArray {.importc: "_NSGetEnviron",
+                                            header: "<crt_externs.h>".}
+      ## A macOS program does not name `environ` directly -- in a shared
+      ## library the symbol is not there to be named -- and this is the
+      ## accessor Apple provides in its place.
+
+    proc setEnviron(env: cstringArray) = nsGetEnviron()[] = env
+  else:
+    var environ {.importc: "environ".}: cstringArray
+
+    proc setEnviron(env: cstringArray) = environ = env
+
   type
     Pty* = object
       master*: cint    ## our end; -1 when nothing is running
@@ -86,7 +99,20 @@ when defined(posix):
       # The child. `forkpty` has already given it the slave side as its
       # controlling terminal and as all three standard descriptors.
       if workDir.len > 0: discard chdir(workDir.cstring)
-      discard execvpe(argv[0], argv, envp)
+      # `execvpe` takes the environment as an argument, which is tidier and is
+      # a GNU extension -- macOS and the BSDs have no such function. What every
+      # POSIX system does have is `execvp`, which reads the environment out of
+      # `environ`, and a child between the fork and the exec is free to point
+      # `environ` wherever it likes: the assignment is one pointer, allocating
+      # nothing, which is the only thing that may happen here.
+      #
+      # `execvp` searches `PATH` -- and it searches the *new* `PATH`, the one
+      # just installed, which is what `execvpe` did too. The search happens
+      # here rather than before the fork on purpose: it is the only way a
+      # relative command like `./configure` is looked for in `workDir`, which
+      # by now is where this process stands.
+      setEnviron(envp)
+      discard execvp(argv[0], argv)
       exitNow(127)
     deallocCStringArray(argv)
     deallocCStringArray(envp)
