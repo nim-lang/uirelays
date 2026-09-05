@@ -228,13 +228,22 @@ var forcedEnv {.threadvar.}: StringTableRef
   ## the thread that owns it, and a global would make every proc that touches
   ## it un-GC-safe.
 
-proc colorEnv(): StringTableRef =
-  ## The environment a command is run in, with color asked for. Everything
-  ## here comes out of a pipe rather than a terminal, and a program that looks
-  ## before it colors -- which is all of them -- finds a pipe and turns color
-  ## off. These are the ways to say "do it anyway" that between them cover
-  ## what actually gets read in this panel; a variable the user already set is
-  ## left alone, since they have said something more specific than this has.
+proc panelEnv(): StringTableRef =
+  ## The environment a command is run in, told that a person is going to read
+  ## what it prints.
+  ##
+  ## Output here comes out of a pipe, and a program that looks before it
+  ## decides -- which is all of them -- finds a pipe and assumes it is talking
+  ## to another program: no color, and for `git`, no decorations either, since
+  ## both of those default to "only for a terminal". A pipe is the right answer
+  ## for the rest of what that question decides, though. Without a terminal
+  ## `git log` skips the pager, which is what makes it readable here at all,
+  ## and `git fetch` skips the progress meter, which redraws itself with
+  ## carriage returns this panel has nothing to do with yet. So the settings
+  ## are named one at a time rather than by claiming to be a terminal.
+  ##
+  ## A variable the user set themselves is left alone: they have said something
+  ## more specific than this has.
   if forcedEnv == nil:
     # Windows compares environment variable names without regard to case, so
     # a table that does not would answer "no" to `PATH` and add a second one.
@@ -245,12 +254,19 @@ proc colorEnv(): StringTableRef =
       if not forcedEnv.hasKey(key): forcedEnv[key] = value
     unless("CLICOLOR_FORCE", "1")
     unless("FORCE_COLOR", "1")
-    # Git has no environment variable for it, but it does take configuration
-    # from one, and `color.ui=always` is what `--color` sets.
+    # Git has no environment variable for either of these, but it does take
+    # configuration from one. `color.ui=always` is what `--color` sets, and
+    # `log.decorate=short` is what `auto` decides on for a terminal -- the
+    # `(HEAD -> master, origin/master)` that says where a commit sits, and the
+    # most obviously missing thing about a `git log` read through a pipe.
+    # Both lose to an option on the command line, so `--no-decorate` and
+    # `--no-color` still mean what they say.
     if not forcedEnv.hasKey("GIT_CONFIG_COUNT"):
-      forcedEnv["GIT_CONFIG_COUNT"] = "1"
-      forcedEnv["GIT_CONFIG_KEY_0"] = "color.ui"
-      forcedEnv["GIT_CONFIG_VALUE_0"] = "always"
+      const gitConfig = [("color.ui", "always"), ("log.decorate", "short")]
+      forcedEnv["GIT_CONFIG_COUNT"] = $gitConfig.len
+      for i, (key, value) in gitConfig:
+        forcedEnv["GIT_CONFIG_KEY_" & $i] = key
+        forcedEnv["GIT_CONFIG_VALUE_" & $i] = value
   result = forcedEnv
 
 proc execThreadProc() {.thread.} =
@@ -282,7 +298,7 @@ proc execThreadProc() {.thread.} =
           if not started:
             let (bin, args) = cmdToArgs(task.cmd)
             try:
-              p = startProcess(bin, task.cwd, args, env = colorEnv(),
+              p = startProcess(bin, task.cwd, args, env = panelEnv(),
                         options = {poStdErrToStdOut, poUsePath, poInteractive,
                                    poDaemon})
               started = true
