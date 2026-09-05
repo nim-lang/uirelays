@@ -18,6 +18,9 @@ template execBackend(backend: string) =
 
 # The lexer needs no driver, so it is tested directly.
 exec "nim c -r tests/tinyniftest.nim"
+# And so does the layout: dividing a rectangle, finding the borders in it, and
+# moving one, are arithmetic that never touches a window.
+exec "nim c -r tests/layouttest.nim"
 
 # Everything else is a window, and a window is what the examples are: each
 # backend gets to compile all of them.
