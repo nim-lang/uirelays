@@ -4,7 +4,10 @@ Native Nim UI library based on the idea of "relays" -- dependency injection
 via global callbacks. Has Windows API, X11, Cocoa, GTK4, SDL2, SDL3 and FigDraw
 support. Write UI apps as easily as terminal apps!
 
-![focim](screenshots/focim.png)
+[![focim](screenshots/focim.png)](https://github.com/Araq/focim)
+
+*[focim](https://github.com/Araq/focim), the Focussed Nim Editor, is
+written with it.*
 
 ## Getting started
 
@@ -178,25 +181,11 @@ nim c --define:"features.uirelays.figDrawSiwin" examples/hello.nim
 
 ## Apps
 
-- [focim.nim](apps/focim.nim) -- the Focussed Nim Editor: code editor with
-  integrated terminal, laid out and colored by an editable
-  [config file](doc/focim/config.md),
-  [opening a file by a fragment of its name](doc/focim/open.md), completing
-  words it has actually
-  [seen somewhere](doc/focim/completion.md), asking a compiler
-  [where a name is](doc/focim/track.md), keeping
-  [what the clipboard held](doc/focim/clipboard.md) and
-  [searching without a dialog](doc/focim/search.md)
-
-```sh
-nim c apps/focim.nim
-```
-
-Or download a build: nightly binaries for Linux (x86_64 and ARM64), macOS
-(ARM64) and Windows (x86_64) are published to
-[Releases](https://github.com/nim-lang/uirelays/releases) by
-[`nightly.yml`](.github/workflows/nightly.yml), one release per commit. On
-Linux they need `libX11.so.6` and `libXft.so.2` at runtime; nothing else.
+- [focim](https://github.com/Araq/focim) -- the Focussed Nim Editor: a code
+  editor with an integrated terminal, laid out and colored by an editable
+  config file. It lived in this repository until it outgrew it; the widgets it
+  is made of -- SynEdit, the terminal panel, the clipboard history -- went with
+  it, since they were an editor's parts and not a UI library's.
 
 ## Examples
 
@@ -238,28 +227,27 @@ allocation -- just plain proc pointers.
 See [Writing a custom driver](doc/drivers.md) for a guide on
 adding support for a new platform or graphics toolkit.
 
-## Layout and theme
+## Layout
 
-A window is described in [NIF](doc/config.md) -- where its widgets go and what
-they look like -- read by the dependency-free lexer in `uirelays/tinynif`:
+A window's boxes are described in NIF -- a
+parenthesized format read by the dependency-free lexer in `uirelays/tinynif`
+-- and `uirelays/layout` turns that description into a `Rect` per name:
 
 ```
-(config
-  (layout
-    (toolbar (lines 2))
-    (cols
-      (sidebar (px 250))
-      (editor))
-    (status (lines 1)))
-  (theme
-    (bg "#15171B")
-    (fg "#E6DFD1"
-      (Keyword "#E5B94E"))))
+(layout
+  (toolbar (lines 2))
+  (cols
+    (sidebar (px 250))
+    (editor))
+  (status (lines 1)))
 ```
 
-`resolve` turns the layout into a `Rect` per name, and every field of `Theme`
-can be set -- except a color combination nobody could read, which is refused
-with a note rather than applied. See [The config file](doc/config.md).
+`(rows ...)` stacks its children top to bottom, `(cols ...)` places them left
+to right, and either may hold the other. Every other tag is a leaf that names
+a widget and may state its size along the axis its parent divides: `(px 250)`
+in logical pixels, `(lines 5)` in text lines, `(stretch 2)` in shares of what
+is left over. `resolve` computes the rects; `hitTest` says which name a click
+landed in. See [layout_demo.nim](examples/layout_demo.nim).
 
 ## License
 
