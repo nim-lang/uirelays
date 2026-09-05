@@ -190,6 +190,151 @@ block:
         not l.dragTo(m, s, 202, 400))
 
 # ---------------------------------------------------------------------------
+echo "growing and shrinking:"
+# ---------------------------------------------------------------------------
+
+block:
+  var l = parsed(Window)
+  equals("the cells come out in the order they are written",
+         l.cellNames.join(" "), "sidebar editor panel status")
+
+block:
+  # The parent already divides left to right, so the newcomer joins the row.
+  var l = parsed(Window)
+  check("a cell splits to the right", l.splitCell("editor", "editor2", true))
+  equals("beside the one it came out of, in the same container", $l, """
+(layout
+  (cols
+    (sidebar (px 200))
+    (editor)
+    (editor2)
+    (panel (px 100)))
+  (status (lines 1)))
+""")
+
+block:
+  # Two boxes of 348 with a gap of 4 fill what the one box of 700 had.
+  var l = parsed(Window)
+  let whole = l.spanOf("editor")
+  discard l.splitCell("editor", "editor2", true)
+  equals("the room comes out of that box alone", l.spanOf("sidebar"),
+         parsed(Window).spanOf("sidebar"))
+  equals("and the two halves fill it", l.spanOf("editor"), "204+344")
+  equals("the second one behind the first", l.spanOf("editor2"), "552+344")
+  check("which is the room the one box had", whole == "204+692", whole)
+
+block:
+  # The parent divides top to bottom, so this one needs a container.
+  var l = parsed(Window)
+  check("a cell splits downwards", l.splitCell("editor", "editor2", false))
+  equals("into a rows of its own, holding the size it had", $l, """
+(layout
+  (cols
+    (sidebar (px 200))
+    (rows
+      (editor)
+      (editor2))
+    (panel (px 100)))
+  (status (lines 1)))
+""")
+
+block:
+  var l = parsed(Window)
+  discard l.splitCell("sidebar", "sidebar2", true)
+  equals("a px box is halved in pixels, the odd one to the newcomer", $l, """
+(layout
+  (cols
+    (sidebar (px 100))
+    (sidebar2 (px 100))
+    (editor)
+    (panel (px 100)))
+  (status (lines 1)))
+""")
+
+block:
+  var l = parsed("(layout (a (lines 5)) (b))")
+  discard l.splitCell("a", "a2", false)
+  equals("and a lines box in whole lines", $l, """
+(layout
+  (a (lines 2))
+  (a2 (lines 3))
+  (b))
+""")
+
+block:
+  var l = parsed("(layout (cols (a) (b (stretch 3))))")
+  discard l.splitCell("b", "c", true)
+  equals("a stretching box is halved by doubling the others", $l, """
+(layout
+  (cols
+    (a (stretch 2))
+    (b (stretch 3))
+    (c (stretch 3))))
+""")
+
+block:
+  var l = parsed("(layout (cols (a (stretch 2)) (b (stretch 2))))")
+  discard l.splitCell("a", "c", true)
+  equals("and the weights are reduced by what they have in common", $l, """
+(layout
+  (cols
+    (a)
+    (c)
+    (b (stretch 2))))
+""")
+
+block:
+  var l = parsed(Window)
+  check("a cell that is not there does not split",
+        not l.splitCell("nothing", "x", true))
+  check("nor does one split into a name already taken",
+        not l.splitCell("editor", "panel", true))
+  equals("and the layout is left alone", $l, Window)
+
+block:
+  var l = parsed(Window)
+  check("a cell can be taken away", l.removeCell("panel"))
+  equals("leaving the others where they were", $l, """
+(layout
+  (cols
+    (sidebar (px 200))
+    (editor))
+  (status (lines 1)))
+""")
+
+block:
+  var l = parsed(Window)
+  discard l.splitCell("editor", "editor2", false)
+  check("and taking one away again", l.removeCell("editor2"))
+  equals("collapses the container it leaves behind", $l, Window)
+
+block:
+  var l = parsed("(layout (rows (px 40) (a) (b)))")
+  discard l.removeCell("b")
+  equals("the survivor takes the size the container had", $l, """
+(layout
+  (a (px 40)))
+""")
+
+block:
+  var l = parsed("(layout (only))")
+  check("the last box stays", not l.removeCell("only"))
+  check("as does one that was never there", not l.removeCell("nothing"))
+  equals("and the layout is left alone", $l, "(layout\n  (only))\n")
+
+block:
+  var l = parsed(Window)
+  discard l.splitCell("editor", "editor2", true)
+  let again = parsed($l)
+  equals("what a split writes reads back as itself", $again, $l)
+
+block:
+  let twice = parseLayout("(layout (cols (a) (b)) (a))")
+  check("two cells of one name is an error", twice.error.len > 0)
+  equals("said where the second one is", twice.error,
+         "1:24: two cells are called 'a'")
+
+# ---------------------------------------------------------------------------
 echo "writing one back:"
 # ---------------------------------------------------------------------------
 

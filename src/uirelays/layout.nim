@@ -119,6 +119,8 @@ type
     lex: Lexer
     tok: Token
     error: string
+    names: seq[string]  ## the cells named so far, to catch a second one of
+                        ## the same name; see `parseNode`
 
 proc toTag(s: string): LayoutTag =
   ## tinynif hands out tags as strings; this is the one place they turn into
@@ -194,6 +196,15 @@ proc parseNode(p: var Parser; isRoot: bool): Node =
     # Every other tag names a widget: `(history (lines 5))`.
     result.kind = nkCell
     result.name = p.tok.text
+    # A name is the whole of how a cell is asked for afterwards -- `resolve`
+    # hands out one rect per name -- so a second box of the same name is not
+    # two boxes but one rect quietly standing in for both, the later one
+    # winning. Said here, where the line number is still known.
+    for other in p.names:
+      if other == result.name:
+        p.fail "two cells are called '" & result.name & "'"
+        return
+    p.names.add result.name
     p.advance
   if p.error.len > 0: return
 
@@ -554,6 +565,130 @@ proc dragTo*(layout: var Layout; m: LayoutMetrics; s: Splitter;
   if not s.found or layout.error.len > 0: return false
   dragChild(layout.root, Rect(x: 0, y: 0, w: m.screenW, h: m.screenH),
             s.parent, 0, s.before, (if s.vertical: y else: x) - s.grab, m)
+
+# ---------------------------------------------------------------------------
+# Growing and shrinking. A window whose panels can be split and closed is a
+# window whose *layout* gains and loses boxes, and since the layout is text in
+# a file, that is all a split is: the tree grows a leaf and gets written out
+# again. Nothing else has to remember that the panel is there.
+# ---------------------------------------------------------------------------
+
+proc collectNames(n: Node; res: var seq[string]) =
+  if n.kind == nkCell: res.add n.name
+  else:
+    for i in 0 ..< n.children.len: collectNames(n.children[i], res)
+
+proc cellNames*(layout: Layout): seq[string] =
+  ## Every cell in the layout, in the order it is written. An application that
+  ## makes a widget per cell builds its list from this.
+  result = @[]
+  if layout.error.len == 0: collectNames(layout.root, result)
+
+proc findCell(n: Node; name: string; path: var BoxPath): bool =
+  ## The path to the cell called `name`, or false. Names are unique -- the
+  ## parser sees to that -- so the first one found is the only one.
+  if n.kind == nkCell: return n.name == name
+  for i in 0 ..< n.children.len:
+    path.add i
+    if findCell(n.children[i], name, path): return true
+    path.setLen path.len - 1
+  result = false
+
+proc reduceWeights(n: var Node) =
+  ## Stretch weights count only against each other, so they may be divided by
+  ## what they have in common -- which is what keeps them from doubling their
+  ## way up to unreadable numbers over a session of splitting.
+  var common = 0
+  for i in 0 ..< n.children.len:
+    if n.children[i].size.kind == skStretch:
+      common = gcd(common, n.children[i].size.value)
+  if common > 1:
+    for i in 0 ..< n.children.len:
+      if n.children[i].size.kind == skStretch:
+        n.children[i].size.value = max(1, n.children[i].size.value div common)
+
+proc splitChild(n: var Node; i: int; newName: string; wanted: NodeKind) =
+  var fresh = Node(kind: nkCell, name: newName,
+                   size: CellSize(kind: skStretch, value: 1), children: @[])
+  if n.kind == wanted:
+    # The parent already divides the way the split wants, so the new box goes
+    # in beside the old one instead of into a container of its own: a tree
+    # that nests only where it has to is a file somebody can still read.
+    case n.children[i].size.kind
+    of skPixels, skLines:
+      # Whole units both, and an odd one goes to the newcomer.
+      let whole = n.children[i].size.value
+      fresh.size = CellSize(kind: n.children[i].size.kind,
+                            value: whole - whole div 2)
+      n.children[i].size.value = whole div 2
+    of skStretch:
+      # Doubling everybody else halves this box and moves no other border:
+      # a weight says nothing on its own, only what it is against the rest.
+      let w = n.children[i].size.value
+      for j in 0 ..< n.children.len:
+        if j != i and n.children[j].size.kind == skStretch:
+          n.children[j].size.value = n.children[j].size.value * 2
+      fresh.size = CellSize(kind: skStretch, value: w)
+    n.children.insert(fresh, i + 1)
+    reduceWeights(n)
+  else:
+    # The parent divides the other way, so the two of them need a container,
+    # and it takes the size the cell had: what the split divides is the room
+    # the one box was already given.
+    var inner = n.children[i]
+    let outer = inner.size
+    inner.size = CellSize(kind: skStretch, value: 1)
+    n.children[i] = Node(kind: wanted, name: "", size: outer,
+                         children: @[inner, fresh])
+
+proc splitAt(n: var Node; path: BoxPath; step: int; newName: string;
+             wanted: NodeKind) =
+  if step < path.len - 1:
+    splitAt(n.children[path[step]], path, step + 1, newName, wanted)
+  else:
+    splitChild(n, path[step], newName, wanted)
+
+proc splitCell*(layout: var Layout; name, newName: string;
+                asColumn: bool): bool =
+  ## Put a second box called `newName` beside the one called `name`: to its
+  ## right when `asColumn`, below it otherwise. The room comes out of `name`
+  ## alone -- halved in whatever unit it was written in -- so nothing else in
+  ## the window moves.
+  ##
+  ## False, and nothing changed, if `name` is not there, if `newName` already
+  ## is, or if the layout did not parse.
+  if layout.error.len > 0 or newName.len == 0: return false
+  if hasCell(layout.root, newName) or not hasCell(layout.root, name):
+    return false
+  var path: BoxPath = @[]
+  discard findCell(layout.root, name, path)
+  splitAt(layout.root, path, 0, newName, if asColumn: nkCols else: nkRows)
+  result = true
+
+proc removeAt(n: var Node; path: BoxPath; step: int) =
+  if step < path.len - 1:
+    removeAt(n.children[path[step]], path, step + 1)
+    # On the way back out: a container left holding one child has nothing to
+    # divide any more, so it stands aside and the survivor takes its place --
+    # and its size, which is the room the pair had between them.
+    let i = path[step]
+    if n.children[i].kind != nkCell and n.children[i].children.len == 1:
+      var survivor = n.children[i].children[0]
+      survivor.size = n.children[i].size
+      n.children[i] = survivor
+  else:
+    n.children.delete path[step]
+
+proc removeCell*(layout: var Layout; name: string): bool =
+  ## Take the box called `name` out of the layout. False, and nothing changed,
+  ## if it is not there or if it is the only box left: a window with nothing
+  ## in it has nowhere to type the layout back.
+  if layout.error.len > 0: return false
+  var path: BoxPath = @[]
+  if not findCell(layout.root, name, path): return false
+  if path.len == 1 and layout.root.children.len == 1: return false
+  removeAt(layout.root, path, 0)
+  result = true
 
 # ---------------------------------------------------------------------------
 # Writing one back. A layout that can be dragged has to be storable, and the
