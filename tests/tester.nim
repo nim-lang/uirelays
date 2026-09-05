@@ -49,6 +49,9 @@ exec "nim c -r tests/utf8test.nim"
 # The colors a program asks for with escape sequences, and the disappearance
 # of everything else it asks for.
 exec "nim c -r tests/ansitest.nim"
+# And that the tab list goes and shows the tab the editor made current, which
+# is a scroll nothing in the list itself ever asked for.
+exec "nim c -r tests/tablisttest.nim"
 
 # The app, once, with the platform's default backend.
 exec "nim c apps/focim.nim"

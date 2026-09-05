@@ -1345,6 +1345,25 @@ proc scrollTo*(s: var SynEdit; line: int) =
   ## by it.
   s.setFirstLine(line)
 
+proc centerLine*(s: var SynEdit; line: int) =
+  ## Put `line` halfway down the view and leave the caret alone.
+  ##
+  ## For a list whose lines are things rather than sentences, and where which
+  ## line is *the* one is decided somewhere other than here: the tab list
+  ## follows the editor, so its active row moves without anything in the list
+  ## having been touched. The middle is where a row can be read together with
+  ## the ones on either side of it, which is the point of showing the list at
+  ## all -- the top or the bottom edge shows the row and hides its
+  ## neighbourhood.
+  ##
+  ## Never past the end. A list shorter than the view stays where it is, and
+  ## the last line comes to rest on the bottom row instead of halfway up a
+  ## panel of blanks.
+  if s.span <= 0: return
+  let rows = max(1, s.span - 1)  # the last of `span` rows may be a sliver
+  let count = s.numberOfLines.int + 1  # `getLineCount` is not declared yet
+  s.setFirstLine(clamp(line - rows div 2, 0, max(0, count - rows)))
+
 proc wheelScroll*(s: var SynEdit; delta: int) =
   ## Scroll by one turn of the mouse wheel: three lines per notch, and the
   ## sign is the wheel's, so a positive delta scrolls towards the top of the
