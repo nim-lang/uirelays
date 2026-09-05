@@ -249,6 +249,25 @@ in logical pixels, `(lines 5)` in text lines, `(stretch 2)` in shares of what
 is left over. `resolve` computes the rects; `hitTest` says which name a click
 landed in. See [layout_demo.nim](examples/layout_demo.nim).
 
+The borders are draggable, and nothing has to be drawn for them to be: the
+`gap` `resolve` leaves between adjacent boxes is already there, so it is the
+grip. `splitterAt` says which border a pointer is on, `dragTo` moves it, and
+`$` writes the layout back out as the text it came from -- with the new sizes
+in the unit each box was already written in, a `(px N)` staying pixels and a
+`(lines N)` snapping to whole lines. An application that keeps its layout in a
+file therefore gets mouse-resizable panels without keeping a second copy of
+the sizes anywhere: what the pointer moves is what the file says.
+
+The tree grows and shrinks the same way. `splitCell` puts a second box beside
+one that is there -- to its right or below it -- taking the room out of that
+box alone, halved in whatever unit it was written in, so no other border
+moves; `removeCell` takes a box out again and folds away the container it
+empties. `cellNames` says what is in the layout, which is how an application
+works out which widgets it needs. Since a split is an edit of the tree and the
+tree is the file, an application that spawns and closes panels stores nothing
+about them: what the window holds is what the layout says, and one more cell
+typed into the file by hand is one more panel.
+
 ## License
 
 MIT
