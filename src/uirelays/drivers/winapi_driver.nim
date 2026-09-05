@@ -643,7 +643,8 @@ proc winCreateWindow(layout: var ScreenLayout; icon: pointer; iconLen: int) =
   wc.lpfnWndProc = wndProc
   wc.hInstance = gHinstance
   # Resource ID 1 is the app icon when the binary was linked with a `.res`
-  # (see apps/focim.rc). Nil is fine when no such resource was linked.
+  # -- `1 ICON "app.ico"` in the `.rc` the application compiled. Nil is fine
+  # when no such resource was linked.
   wc.hIcon = LoadIconW(gHinstance, cast[ptr uint16](1))
   wc.hIconSm = LoadIconW(gHinstance, cast[ptr uint16](1))
   wc.hCursor = LoadCursorW(nil, IDC_ARROW)
