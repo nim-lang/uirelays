@@ -1,21 +1,23 @@
 ## ANSI escape sequences -- what a program asks for, as a token class.
 ##
-## A terminal panel is not a terminal: it has no grid, no addressable cursor
-## and no program that believes it is talking to one. What it does have is
-## output from tools that colour it, and those tools ask for colour and
-## nothing else. Measured on the two that get read most here::
+## The panel runs its programs on a pty (see `pty`), so they believe they are
+## talking to a terminal and say everything they would say to one. Most of
+## that is colour. Measured on what actually gets read here::
 ##
-##   git log -p (color.ui=always)  ^[[m ^[[1m ^[[31m ^[[32m ^[[33m ^[[36m
-##   nim c --colors:on             ^[[0m ^[[1m ^[[31m ^[[36m
-##   ls --color=always             ^[[0m ^[[01;34m
+##   git log -p         ^[[m ^[[1m ^[[31m ^[[32m ^[[33m ^[[36m ^[[1;36m
+##   nim c --colors:on  ^[[0m ^[[1m ^[[31m ^[[36m
+##   a progress meter   \r ^[[K, and ^[[A when it counts several things
 ##
-## Not one cursor movement between them. So this reads SGR -- `ESC [ ... m`,
-## the colour -- and *swallows* everything else, which is the other half of
-## the job: an escape nobody understands must disappear rather than come out
-## as `^[[?25h` in the middle of a line.
+## So this reads two things and *swallows* the rest, which is as much of the
+## job as either: an escape nobody has an answer for must disappear rather
+## than come out as `^[[?25h` in the middle of a line.
 ##
-## What comes out is clean text plus the runs of it that carry a colour, ready
-## for `SynEdit.appendOutput` to insert and `setStyleRange` to paint.
+## The first is SGR -- `ESC [ ... m` -- as a token class, which is how the
+## rest of this program already says what colour something is.
+##
+## The second is where the cursor went, and only as far as a meter takes it.
+## What that needs is not a screen but the last few rows of one, still open to
+## being drawn on again; that is `TermScreen`, at the bottom of this file.
 
 import theme
 
@@ -172,45 +174,131 @@ proc escapeEnd(s: string; start: int): int =
     # Two bytes: `ESC 7`, `ESC M`, `ESC =`.
     return i + 1
 
-proc parseAnsi*(st: var AnsiState; input: string; tabSize: int;
-                text: var string; runs: var seq[AnsiRun]): bool =
-  ## Append the printable part of `input` to `text` and the colors of it to
-  ## `runs`. True when `input` carried any SGR at all -- which is what tells
-  ## the caller whether the colors here are the program's, or whether the
-  ## highlighter should go on guessing them from the shape of the lines.
-  ##
-  ## `text` comes out normalised the way `rawInsert` would normalise it --
-  ## tabs expanded, carriage returns dropped -- so that a run counts the same
-  ## bytes the buffer ends up holding and the two cannot drift apart.
-  result = false
-  let s = if st.partial.len == 0: input else: st.partial & input
-  st.partial.setLen 0
-  var cur = st.tokenClass
-  var runLen = 0
+# ---------------------------------------------------------------------------
+# The screen a progress bar draws on
+# ---------------------------------------------------------------------------
 
-  template flush() =
-    if runLen > 0:
-      runs.add AnsiRun(len: runLen, tc: cur)
-      runLen = 0
+## Everything above turns bytes into color. What follows turns the *movements*
+## into rows, and only as far as a progress bar needs:
+##
+##   \r      back to the first column, and print the line again
+##   \b      one column back
+##   ESC[K   rub out the rest of the line
+##   ESC[nA  up n rows, for a meter that draws on several
+##   ESC[nG  to column n
+##
+## That is what `curl`, `git clone`, `cargo`, `pip` and `docker` do, and it is
+## all they do. What it is *not* is a terminal: there is no addressable screen
+## here, only the last few rows of output, still open to being rewritten. A
+## row that falls off the end of that tail is final, and goes into the buffer
+## as text like any other. A program that tries to draw further up than the
+## tail reaches -- a full-screen one, which is the other kind -- finds the top
+## of it and draws there instead, which will look wrong. That is the trade:
+## the tools that get read in a panel are the ones that print and stop.
 
-  template emit(c: char) =
-    text.add c
-    inc runLen
+const LiveRows* = 16
+  ## How many rows stay open to rewriting. A meter uses one, or one per thing
+  ## it is counting; sixteen is past anything that is still a meter, and the
+  ## cost of the tail is that it is redrawn whenever it changes.
 
+type
+  TermCell* = object
+    ## One column. `n` of 0 is a column never written to, which reads as a
+    ## space -- a program may jump past the end of a row and print there.
+    b: array[4, char]
+    n: uint8
+    tc*: TokenClass
+
+  TermRow* = object
+    cells*: seq[TermCell]
+    colored*: bool     ## whether the program asked for any color in this row.
+                       ## A row that did not is still the highlighter's, which
+                       ## is what keeps a plain `git diff` green and red.
+
+  TermScreen* = object
+    ## The live tail, and the parser state that feeds it.
+    rows*: seq[TermRow]
+    cy*, cx*: int
+    st: AnsiState
+
+proc initTermScreen*(): TermScreen =
+  TermScreen(rows: @[TermRow()], cy: 0, cx: 0, st: initAnsiState())
+
+proc text*(r: TermRow): string =
+  ## The row as bytes, with the columns nobody wrote to as spaces and the run
+  ## of them at the end left off -- a meter that shortens its line should not
+  ## leave the buffer holding the width of the longest it ever was.
+  var last = -1
+  for i, c in r.cells:
+    if c.n > 0'u8: last = i
+  for i in 0 .. last:
+    let c = r.cells[i]
+    if c.n == 0'u8: result.add ' '
+    else:
+      for k in 0 ..< c.n.int: result.add c.b[k]
+
+proc runs*(r: TermRow): seq[AnsiRun] =
+  ## The row's colors, as runs over the bytes `text` produced.
+  var last = -1
+  for i, c in r.cells:
+    if c.n > 0'u8: last = i
+  var cur = TokenClass.None
+  var n = 0
+  for i in 0 .. last:
+    let c = r.cells[i]
+    let tc = if c.n == 0'u8: TokenClass.None else: c.tc
+    let w = if c.n == 0'u8: 1 else: c.n.int
+    if tc != cur and n > 0:
+      result.add AnsiRun(len: n, tc: cur)
+      n = 0
+    cur = tc
+    n += w
+  if n > 0: result.add AnsiRun(len: n, tc: cur)
+
+proc put(sc: var TermScreen; bytes: string; tc: TokenClass) =
+  ## One grapheme into the column the cursor is on, and the cursor moves past
+  ## it. A row grows to reach a column that was jumped to.
+  if bytes.len == 0 or bytes.len > 4: return
+  while sc.rows.len <= sc.cy: sc.rows.add TermRow()
+  if sc.cx < 0: sc.cx = 0
+  while sc.rows[sc.cy].cells.len <= sc.cx: sc.rows[sc.cy].cells.add TermCell()
+  var cell = TermCell(n: uint8(bytes.len), tc: tc)
+  for i, ch in bytes: cell.b[i] = ch
+  sc.rows[sc.cy].cells[sc.cx] = cell
+  if tc != TokenClass.None: sc.rows[sc.cy].colored = true
+  inc sc.cx
+
+proc feed*(sc: var TermScreen; input: string; tabSize: int): seq[TermRow] =
+  ## Take a chunk of what a program printed. What comes back is the rows that
+  ## have been pushed out of the live tail by it and can no longer be drawn
+  ## on -- they are final, in the order they were printed.
+  result = @[]
+  let s = if sc.st.partial.len == 0: input else: sc.st.partial & input
+  sc.st.partial.setLen 0
   var i = 0
+
+  template row(): untyped = sc.rows[sc.cy]
+
+  template ensureRow() =
+    while sc.rows.len <= sc.cy: sc.rows.add TermRow()
+
   while i < s.len:
     let c = s[i]
-    if c == '\e':
+    case c
+    of '\e':
       let e = escapeEnd(s, i)
       if e < 0:
-        # Cut in half. Keep it for the next chunk -- unless it has grown past
-        # anything a real sequence could be, in which case it was never one.
-        if s.len - i <= MaxPartial: st.partial = s[i .. ^1]
+        # Cut in half by the end of the chunk. Keep it for the next one --
+        # unless it has grown past anything a real sequence could be, in which
+        # case it was never one and waiting for its end would swallow the file.
+        if s.len - i <= MaxPartial: sc.st.partial = s[i .. ^1]
         break
-      if s[i+1] == '[' and s[e-1] == 'm':
-        result = true
+      if s[i+1] == '[':
+        # Read the parameters once; which of them matter depends on the final
+        # byte, and everything whose final byte is not named here is swallowed.
         var params: seq[int] = @[]
         var n = -1
+        var private = false
         for k in i+2 ..< e-1:
           case s[k]
           of '0'..'9': n = (if n < 0: 0 else: n) * 10 + (ord(s[k]) - ord('0'))
@@ -218,26 +306,71 @@ proc parseAnsi*(st: var AnsiState; input: string; tabSize: int;
             params.add (if n < 0: 0 else: n)
             n = -1
           else:
-            # A private sequence: `ESC[>4m` sets something about keys, not
-            # about color, and must not be read as one.
-            params.setLen 0
-            n = -1
+            # `ESC[?25l`, `ESC[>4m`: a private sequence, about something other
+            # than what is on the screen.
+            private = true
             break
         if n >= 0: params.add n
-        let before = st.tokenClass
-        st.applySgr(params)
-        if st.tokenClass != before:
-          flush()
-          cur = st.tokenClass
+        let p0 = if params.len > 0: params[0] else: 0
+        let count = max(p0, 1)
+        if not private:
+          case s[e-1]
+          of 'm': sc.st.applySgr(params)
+          of 'A': sc.cy = max(0, sc.cy - count)
+          of 'B': sc.cy += count; ensureRow()
+          of 'C': sc.cx += count
+          of 'D': sc.cx = max(0, sc.cx - count)
+          of 'G': sc.cx = max(0, count - 1)
+          of 'd': sc.cy = max(0, count - 1); ensureRow()
+          of 'K':
+            ensureRow()
+            case p0
+            of 1:
+              for k in 0 .. min(sc.cx, row.cells.high): row.cells[k] = TermCell()
+            of 2: row.cells.setLen 0
+            else:
+              if sc.cx < row.cells.len: row.cells.setLen sc.cx
+          else: discard
       i = e
-    else:
-      # The same filtering `rawInsert` does, done here so that a run's length
-      # is the number of bytes the buffer will hold.
-      case c
-      of '\C': discard
-      of '\t':
-        for j in 1..tabSize: emit ' '
-      of '\0': emit '_'
-      else: emit c
+    of '\c':
+      sc.cx = 0
       inc i
-  flush()
+    of '\L':
+      # A terminal's line feed goes *down* and stays in its column; the
+      # carriage return that puts it back at the left is a separate character,
+      # and on a pty the driver supplies it. This is not a terminal, and the
+      # panel it writes into means "next line" by a newline -- so this does
+      # both. The `\r\n` a pty actually delivers then simply says it twice.
+      inc sc.cy
+      sc.cx = 0
+      ensureRow()
+      inc i
+    of '\b':
+      sc.cx = max(0, sc.cx - 1)
+      inc i
+    of '\t':
+      for j in 1..tabSize: sc.put(" ", sc.st.tokenClass)
+      inc i
+    of '\0':
+      sc.put("_", sc.st.tokenClass)
+      inc i
+    else:
+      # One grapheme, however many bytes it took to write it. A rune that the
+      # end of the chunk cut in half waits for the rest, the same as an escape
+      # sequence does -- half of one in the buffer would draw as a box.
+      var w = 1
+      if ord(c) >= 0xF0: w = 4
+      elif ord(c) >= 0xE0: w = 3
+      elif ord(c) >= 0xC0: w = 2
+      if i + w > s.len:
+        if s.len - i <= MaxPartial: sc.st.partial = s[i .. ^1]
+        break
+      sc.put(s[i ..< i+w], sc.st.tokenClass)
+      i += w
+
+  # Whatever the cursor can no longer reach is final.
+  if sc.rows.len > LiveRows:
+    let done = sc.rows.len - LiveRows
+    result = sc.rows[0 ..< done]
+    sc.rows = sc.rows[done .. ^1]
+    sc.cy = max(0, sc.cy - done)

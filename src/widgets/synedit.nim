@@ -2317,6 +2317,40 @@ proc appendOutput*(s: var SynEdit; text: string; highlight = true) =
     s.firstLine = oldFirstLine
     s.firstLineOffset = oldFirstLineOffset
 
+proc charSize*(s: SynEdit): tuple[w, h: int] =
+  ## How wide and tall one character is, for a caller that has to think in
+  ## characters rather than pixels -- a terminal telling a program how much
+  ## room it has. Measured on `M`, which in a monospaced family is every
+  ## character, and in one that is not is at least an honest upper bound.
+  (max(1, measureText(s.font, "M").w), max(1, fontLineSkip(s.font)))
+
+proc truncateOutput*(s: var SynEdit; at: int) =
+  ## Drop everything from `at` to the end. What a progress meter needs: it
+  ## draws its line again every time it moves, and the honest way to show that
+  ## is to take the previous drawing back off rather than to leave a hundred
+  ## of them stacked up.
+  ##
+  ## Not an edit anybody can undo -- output is not something the reader typed,
+  ## and a meter would otherwise fill the undo stack at its refresh rate.
+  let at = clamp(at, 0, s.len)
+  if at >= s.len: return
+  inc s.cacheId
+  s.noteEdit(at)
+  s.gotoPos(s.len)
+  s.prepareForEdit()          # which leaves all of it in `front`
+  var removed = 0
+  for i in at ..< s.front.len:
+    if s.front[i].c == '\L': inc removed
+  s.front.setLen at
+  s.cursor = at.Natural
+  s.numberOfLines = Natural(max(0, s.numberOfLines.int - removed))
+  if removed > 0: s.scroll(-removed)
+  if s.ansiEnd > at: s.ansiEnd = at
+  if s.readOnly >= at: s.readOnly = at - 1
+  if s.selected.b >= at or s.selected.a >= at: s.selected = (-1, -1)
+  s.currentLine = s.getLineFromOffset(s.cursor)
+  s.changed = true
+
 proc setStyleRange*(s: var SynEdit; a, b: int; tc: TokenClass) =
   ## Paint `[a..b]` in one class. For a caller that *knows* the color instead
   ## of working it out from the text -- which is what reading it out of a
