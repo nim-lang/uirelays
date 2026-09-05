@@ -882,17 +882,36 @@ proc enterPressed(t: var Terminal): TermAction =
 # Update (poll background thread)
 # ---------------------------------------------------------------------------
 
-proc renderRow(t: var Terminal; r: TermRow; newline: bool) =
-  let start = t.ed.len
-  let txt = if newline: r.text & "\L" else: r.text
-  t.ed.appendOutput(txt, highlight = not r.colored)
-  if r.colored:
-    var pos = start
-    for run in r.runs:
-      if run.tc != TokenClass.None:
-        t.ed.setStyleRange(pos, pos + run.len - 1, run.tc)
-      pos += run.len
-    t.ed.markProgramColored(pos)
+proc renderRows(t: var Terminal; rows: openArray[TermRow];
+                trailingNewline: bool) =
+  ## The rows into the buffer, in as few insertions as it takes.
+  ##
+  ## One per row is what this obviously wants to be, and it is what makes a
+  ## megabyte of output quadratic: `appendOutput` works out which line the
+  ## caret ended up on, and that is a walk of the buffer, so a `git log -p`
+  ## of forty thousand rows walks it forty thousand times. Rows that agree
+  ## about whether the program colored them go in together, and since a
+  ## program either colors its output or does not, that is usually all of them.
+  var i = 0
+  while i < rows.len:
+    var j = i
+    while j + 1 < rows.len and rows[j+1].colored == rows[i].colored: inc j
+    var text = ""
+    for k in i .. j:
+      text.add rows[k].text
+      if trailingNewline or k < rows.high: text.add "\L"
+    let start = t.ed.len
+    t.ed.appendOutput(text, highlight = not rows[i].colored)
+    if rows[i].colored:
+      var pos = start
+      for k in i .. j:
+        for run in rows[k].runs:
+          if run.tc != TokenClass.None:
+            t.ed.setStyleRange(pos, pos + run.len - 1, run.tc)
+          pos += run.len
+        if trailingNewline or k < rows.high: inc pos    # past the line break
+      t.ed.markProgramColored(pos)
+    i = j + 1
 
 proc showOutput(t: var Terminal; raw: string) =
   ## What a program printed, as rows.
@@ -909,10 +928,9 @@ proc showOutput(t: var Terminal; raw: string) =
   ## in the output of something that never heard of color.
   let final = t.screen.feed(raw, t.ed.tabSize)
   t.ed.truncateOutput(t.liveStart)
-  for r in final: t.renderRow(r, newline = true)
+  t.renderRows(final, trailingNewline = true)
   t.liveStart = t.ed.len
-  for i, r in t.screen.rows:
-    t.renderRow(r, newline = i < t.screen.rows.high)
+  t.renderRows(t.screen.rows, trailingNewline = false)
 
 proc update*(t: var Terminal): bool =
   ## Takes whatever the thread running a program has said since the last look.
@@ -927,7 +945,20 @@ proc update*(t: var Terminal): bool =
   result = false
   if t.processRunning:
     if responses.peek > 0:
-      let resp = responses.recv()
+      # Everything that has piled up since the last look, not one piece of it.
+      # A program printing a megabyte hands it over in four-kilobyte pieces,
+      # and one piece per frame is hundreds of frames before the last of it is
+      # on screen -- the output would still be scrolling past long after the
+      # program had finished. Bounded, so that no single frame can be spent on
+      # an unbounded amount of it.
+      const MaxPerFrame = 256 * 1024
+      var text = ""
+      var over = false
+      while responses.peek > 0 and text.len < MaxPerFrame and not over:
+        let piece = responses.recv()
+        text.add piece.text
+        if piece.finished: over = true
+      let resp = ThreadReply(text: text, finished: over)
       if resp.text.len > 0:
         t.showOutput(resp.text)
       if resp.finished:

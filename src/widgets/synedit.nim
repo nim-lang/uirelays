@@ -1216,7 +1216,15 @@ proc setFirstLine(s: var SynEdit; line: int) =
 
 proc noteEdit(s: var SynEdit; at: int) {.inline.} =
   ## Text was inserted or removed at `at`, so everything behind it has moved.
-  if at < s.editLow: s.editLow = at
+  ##
+  ## Unless there is nothing behind it. An edit at the very end of the buffer
+  ## -- which is every character a program prints -- moves nothing that was
+  ## already there, and claiming otherwise is expensive: `syncFirstLine`
+  ## answers the claim by working out where the top line of the view begins
+  ## all over again, and that is a walk from the start of the buffer. A
+  ## `git log -p` of forty thousand lines did nine and a half *billion* bytes
+  ## of walking that way, which is most of the seven seconds it took.
+  if at < s.len and at < s.editLow: s.editLow = at
 
 proc syncFirstLine(s: var SynEdit) =
   ## `firstLine` is a line number and `firstLineOffset` is the position that
