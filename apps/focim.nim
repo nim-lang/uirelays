@@ -1759,6 +1759,10 @@ proc main =
     else: os.getCurrentDir())
   var lastCurrent = current
   var lastTitle = ""
+  # What the tab list was last scrolled to show, and whether it was the one
+  # being typed in at the time -- see the tab list block in the loop.
+  var shownTab = -1
+  var tabsHadFocus = false
 
   var focus = "editor"
   # Where the pointer was last seen. A wheel event carries its delta in `x`
@@ -2176,6 +2180,29 @@ proc main =
     # the list is hidden, because Ctrl+W still edits its buffer.
     if tabs.names != displayNames(buffers): renderTabs(tabs, buffers)
     decorateTabs(tabs, buffers, current)
+    # The list follows the active tab, which is chosen anywhere but here:
+    # Ctrl+W, a file opened from the explorer, a jump to a definition. While
+    # the list has the focus its own caret leads and the view goes with it --
+    # the arrows are for reading down the list, and a list that snapped back
+    # after every one of them could not be read. The moment it has not, the
+    # row that matters is the active tab again, so it goes to the middle,
+    # where it can be seen along with what is around it.
+    #
+    # The caret goes with it, rather than the view alone: it is where the
+    # arrow keys will start from when the list is next stepped into, and
+    # leaving it behind would make the first keystroke there jump the view
+    # back to wherever the list had been left.
+    let tabsFocused = focus == "tabs"
+    if "tabs" in cells and
+       (current != shownTab or tabsFocused != tabsHadFocus):
+      if not tabsFocused and current < tabs.names.len:
+        tabs.ed.gotoLine(current + 1, 0)
+        tabs.ed.centerLine(current)
+      # Not counted as done until the list has been drawn once: before that it
+      # has no height, so there is no middle to put anything in yet.
+      if tabs.ed.span > 0:
+        shownTab = current
+        tabsHadFocus = tabsFocused
     var tabAct = EditAction(kind: noAction)
     if "tabs" in cells:
       tabAct = tabs.ed.draw(e, cells["tabs"], focus == "tabs")

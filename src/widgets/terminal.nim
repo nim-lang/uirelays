@@ -13,10 +13,12 @@
 ## The terminal runs commands in a background thread and streams
 ## their output into the editor buffer.
 
-import std/[os, osproc, streams, strutils, tables, times, browsers]
+import std/[os, osproc, streams, strtabs, strutils, tables, times, browsers]
 when defined(windows): import std/winlean
 else: import std/posix
 import synedit
+import ansi
+when defined(posix): import pty
 import filesearch
 import ../uirelays/[coords, screen, input]
 
@@ -166,6 +168,11 @@ type
   ThreadTask = object
     cwd: string
     cmd: string
+    cols, rows: int   ## how wide and tall the panel is, in characters. A
+                      ## program asks its terminal this before it decides
+                      ## where to wrap, and answering 80x24 out of habit is
+                      ## how output ends up folded somewhere other than the
+                      ## edge it is being drawn against.
 
   ThreadReply = object
     text: string     ## output to append, may end mid-line
@@ -222,16 +229,67 @@ else:
     result = posix.read(p.outputHandle, addr buf[0], buf.len)
     if result < 0: result = 0
 
+var forcedEnv {.threadvar.}: StringTableRef
+  ## Built once, on the thread that spawns -- a `threadvar` because that is
+  ## the thread that owns it, and a global would make every proc that touches
+  ## it un-GC-safe.
+
+proc panelEnv(): StringTableRef =
+  ## The environment a command is run in.
+  ##
+  ## On a pty there is almost nothing to say: the program asks whether it is
+  ## talking to a terminal, is told yes, and decides for itself to color and
+  ## to decorate -- and it obeys the user's own configuration while doing it,
+  ## which forcing `color.ui=always` down its throat did not.
+  ##
+  ## Two things still have to be said. `TERM`, because a terminal that does
+  ## not name itself is assumed to be incapable of anything. And that there is
+  ## to be no pager: `git log` on a terminal pipes itself through `less`, which
+  ## would sit in the panel waiting for a keypress on a screen nobody can see.
+  ## That is the one thing a pipe used to get right for free.
+  if forcedEnv == nil:
+    # Windows compares environment variable names without regard to case, so
+    # a table that does not would answer "no" to `PATH` and add a second one.
+    forcedEnv = newStringTable(
+      when defined(windows): modeCaseInsensitive else: modeCaseSensitive)
+    for k, v in envPairs(): forcedEnv[k] = v
+    template unless(key, value: string) =
+      if not forcedEnv.hasKey(key): forcedEnv[key] = value
+    when defined(posix):
+      unless("TERM", "xterm-256color")
+      # Not `unless`: a pager the user chose for their own terminal is exactly
+      # what must not run in here.
+      forcedEnv["PAGER"] = "cat"
+      forcedEnv["GIT_PAGER"] = "cat"
+    else:
+      # No pty here, so the arguing stands: a program that finds a pipe turns
+      # color off, and `git` turns its decorations off with it.
+      unless("CLICOLOR_FORCE", "1")
+      unless("FORCE_COLOR", "1")
+      if not forcedEnv.hasKey("GIT_CONFIG_COUNT"):
+        const gitConfig = [("color.ui", "always"), ("log.decorate", "short")]
+        forcedEnv["GIT_CONFIG_COUNT"] = $gitConfig.len
+        for i, (key, value) in gitConfig:
+          forcedEnv["GIT_CONFIG_KEY_" & $i] = key
+          forcedEnv["GIT_CONFIG_VALUE_" & $i] = value
+  result = forcedEnv
+
 proc execThreadProc() {.thread.} =
-  var p: Process
+  when defined(posix):
+    var p: Pty
+  else:
+    var p: Process
   var started = false
   var chunk = newString(OutputChunk)
 
   template reap() =
-    ## The process is over: report how it went and say this is the last reply.
+    ## The program is over: report how it went and say this is the last reply.
     started = false
-    let exitCode = p.waitForExit()
-    p.close()
+    when defined(posix):
+      let exitCode = p.close()
+    else:
+      let exitCode = p.waitForExit()
+      p.close()
     if exitCode != 0:
       responses.send ThreadReply(
         text: "Process terminated with exitcode: " & $exitCode & "\L")
@@ -245,25 +303,50 @@ proc execThreadProc() {.thread.} =
         let task = requests.recv()
         if task.cmd == EndToken:
           if started:
-            p.terminate()
+            when defined(posix):
+              # A signal to the program in front, which is what Ctrl+C is. A
+              # program that means to catch it gets the chance to, and one that
+              # spawned others takes them with it.
+              p.interrupt()
+              # Give it a moment to go on its own before insisting.
+              var waited = 0
+              while p.running() and waited < 300:
+                os.sleep 20
+                inc waited, 20
+              if p.running(): p.terminate()
+            else:
+              p.terminate()
             reap()
         else:
           if not started:
             let (bin, args) = cmdToArgs(task.cmd)
-            try:
-              p = startProcess(bin, task.cwd, args,
-                        options = {poStdErrToStdOut, poUsePath, poInteractive,
-                                   poDaemon})
-              started = true
-            except:
-              started = false
-              responses.send ThreadReply(text: getCurrentExceptionMsg())
-              responses.send ThreadReply(finished: true)
+            when defined(posix):
+              p = startPty(bin, args, task.cwd, panelEnv(),
+                           max(task.cols, 20), max(task.rows, 4))
+              started = p.alive
+              if not started:
+                responses.send ThreadReply(text: "cannot run: " & bin & "\L")
+                responses.send ThreadReply(finished: true)
+            else:
+              try:
+                p = startProcess(bin, task.cwd, args, env = panelEnv(),
+                          options = {poStdErrToStdOut, poUsePath, poInteractive,
+                                     poDaemon})
+                started = true
+              except:
+                started = false
+                responses.send ThreadReply(text: getCurrentExceptionMsg())
+                responses.send ThreadReply(finished: true)
           else:
-            p.inputStream.writeLine task.cmd
-            # Buffered: without this the process waits for input that is
-            # already sitting in this end of the pipe.
-            p.inputStream.flush()
+            when defined(posix):
+              # The line goes to the terminal driver, which is what a program
+              # waiting on one is waiting for.
+              p.writeInput(task.cmd & "\L")
+            else:
+              p.inputStream.writeLine task.cmd
+              # Buffered: without this the process waits for input that is
+              # already sitting in this end of the pipe.
+              p.inputStream.flush()
     if started:
       # Hand over whatever has arrived so far, even a part of a line -- that is
       # what makes a progress indicator move rather than appear at the end.
@@ -276,9 +359,9 @@ proc execThreadProc() {.thread.} =
           chunk.setLen n
           responses.send ThreadReply(text: chunk)
         else:
-          reap()      # end of the pipe
+          reap()      # the far end has gone
       elif not p.running:
-        reap()        # exited without closing the pipe (a child still holds it)
+        reap()        # exited without closing it (a child still holds it)
 
 var backgroundThread: Thread[void]
 createThread[void](backgroundThread, execThreadProc)
@@ -372,6 +455,19 @@ type
                         ## only a command here. In a terminal the same word is
                         ## a program's name, which is where it belongs -- see
                         ## `defaults` below.
+    screen: TermScreen  ## the last few rows of what a program printed, still
+                        ## open to being drawn on again -- the color in force,
+                        ## an escape sequence the end of a chunk cut in half,
+                        ## and where the program left its cursor. See
+                        ## `showOutput`.
+    liveStart: int      ## the buffer offset those rows begin at. Everything
+                        ## before it is final; everything after is redrawn
+                        ## whenever the program moves.
+    outputStart: int    ## where the running program's output began, so that
+                        ## the view can be left at the top of it when the
+                        ## program is done. -1 when nothing is running.
+    cols, rows: int     ## the panel's size in characters, as last drawn, and
+                        ## what a program starting here is told it has.
     branch: string      ## cached result of `gitBranch`; see `insertPrompt`
     branchDir: string   ## the directory `branch` was read for. Anything else,
                         ## "" included, means the cache says nothing about the
@@ -401,11 +497,22 @@ proc getCommand(t: Terminal): string =
   for i in t.ed.readOnly + 1 ..< t.ed.len:
     result.add t.ed[i]
 
+proc endOutput(t: var Terminal) =
+  ## The program is gone, so the rows it could still have drawn on cannot be
+  ## drawn on any more. They stay where they are; what goes is the expectation
+  ## that anything will come back to them.
+  t.screen = initTermScreen()
+  t.liveStart = t.ed.len
+
 proc caretToEnd(t: var Terminal) =
-  ## Put the caret back where typing goes. What a program printed is text like
+  ## Put the caret back where typing goes, and the view back where the caret
+  ## is -- it may have been left at the top of a long piece of output on
+  ## purpose, and somebody who has started typing is done reading it.
+  ## What a program printed is text like
   ## any other here -- the caret walks into it and a selection can be taken out
   ## of it -- but a key that *edits* belongs to the line being typed, so
   ## everything that edits comes through here first.
+  t.ed.revealCaret()
   if t.ed.cursor.int > t.ed.readOnly: return
   t.ed.deselect()
   t.ed.gotoPos(t.ed.len)
@@ -547,6 +654,10 @@ proc insertPrompt*(t: var Terminal) =
     t.ed.appendOutput(t.cwd & " [" & t.branch & "]>")
   else:
     t.ed.appendOutput(t.cwd & ">")
+  # A prompt is not a program's output, and redrawing a live tail must never
+  # reach back over one. Saying it here rather than at each of the places that
+  # write a prompt is what keeps the two from drifting apart.
+  t.liveStart = t.ed.len
 
 # ---------------------------------------------------------------------------
 # Tab completion
@@ -658,7 +769,7 @@ proc runCommand*(t: var Terminal; cmd: var string): TermAction =
   t.hist[t.process].addCmd(cmd)
   t.ran.add cmd
   if t.processRunning:
-    requests.send(ThreadTask(cwd: t.cwd, cmd: cmd))
+    requests.send(ThreadTask(cwd: t.cwd, cmd: cmd, cols: t.cols, rows: t.rows))
     return
 
   var a = ""
@@ -762,7 +873,10 @@ proc runCommand*(t: var Terminal; cmd: var string): TermAction =
         a.startsWith"https://"):
       openDefaultBrowser(a)
     else:
-      requests.send(ThreadTask(cwd: t.cwd, cmd: cmd))
+      t.endOutput()
+      t.outputStart = t.ed.len
+      requests.send(ThreadTask(cwd: t.cwd, cmd: cmd,
+                               cols: t.cols, rows: t.rows))
       t.processRunning = true
       swap(t.process, cmd)
       if t.process notin t.hist:
@@ -775,6 +889,56 @@ proc enterPressed(t: var Terminal): TermAction =
 # ---------------------------------------------------------------------------
 # Update (poll background thread)
 # ---------------------------------------------------------------------------
+
+proc renderRows(t: var Terminal; rows: openArray[TermRow];
+                trailingNewline: bool) =
+  ## The rows into the buffer, in as few insertions as it takes.
+  ##
+  ## One per row is what this obviously wants to be, and it is what makes a
+  ## megabyte of output quadratic: `appendOutput` works out which line the
+  ## caret ended up on, and that is a walk of the buffer, so a `git log -p`
+  ## of forty thousand rows walks it forty thousand times. Rows that agree
+  ## about whether the program colored them go in together, and since a
+  ## program either colors its output or does not, that is usually all of them.
+  var i = 0
+  while i < rows.len:
+    var j = i
+    while j + 1 < rows.len and rows[j+1].colored == rows[i].colored: inc j
+    var text = ""
+    for k in i .. j:
+      text.add rows[k].text
+      if trailingNewline or k < rows.high: text.add "\L"
+    let start = t.ed.len
+    t.ed.appendOutput(text, highlight = not rows[i].colored)
+    if rows[i].colored:
+      var pos = start
+      for k in i .. j:
+        for run in rows[k].runs:
+          if run.tc != TokenClass.None:
+            t.ed.setStyleRange(pos, pos + run.len - 1, run.tc)
+          pos += run.len
+        if trailingNewline or k < rows.high: inc pos    # past the line break
+      t.ed.markProgramColored(pos)
+    i = j + 1
+
+proc showOutput(t: var Terminal; raw: string) =
+  ## What a program printed, as rows.
+  ##
+  ## A row it can still draw on again is not written into the buffer once and
+  ## left there: a progress meter rewrites its line every time it moves, so
+  ## the whole live tail comes back off and goes on again. Rows the program
+  ## has printed past are final and are never touched a second time -- which
+  ## is what keeps the cost of this to the handful of rows a meter uses,
+  ## whatever the length of the output above them.
+  ##
+  ## A row the program colored keeps the program's colors. A row it did not is
+  ## still the highlighter's to guess at, which is what keeps a `+` line green
+  ## in the output of something that never heard of color.
+  let final = t.screen.feed(raw, t.ed.tabSize)
+  t.ed.truncateOutput(t.liveStart)
+  t.renderRows(final, trailingNewline = true)
+  t.liveStart = t.ed.len
+  t.renderRows(t.screen.rows, trailingNewline = false)
 
 proc update*(t: var Terminal): bool =
   ## Takes whatever the thread running a program has said since the last look.
@@ -789,14 +953,35 @@ proc update*(t: var Terminal): bool =
   result = false
   if t.processRunning:
     if responses.peek > 0:
-      let resp = responses.recv()
+      # Everything that has piled up since the last look, not one piece of it.
+      # A program printing a megabyte hands it over in four-kilobyte pieces,
+      # and one piece per frame is hundreds of frames before the last of it is
+      # on screen -- the output would still be scrolling past long after the
+      # program had finished. Bounded, so that no single frame can be spent on
+      # an unbounded amount of it.
+      const MaxPerFrame = 256 * 1024
+      var text = ""
+      var over = false
+      while responses.peek > 0 and text.len < MaxPerFrame and not over:
+        let piece = responses.recv()
+        text.add piece.text
+        if piece.finished: over = true
+      let resp = ThreadReply(text: text, finished: over)
       if resp.text.len > 0:
-        t.ed.appendOutput(resp.text)
+        t.showOutput(resp.text)
       if resp.finished:
         t.processRunning = false
         t.process.setLen 0
+        # A program that died in the middle of a color, or halfway through
+        # drawing a row, must not leave the next one carrying on from there.
+        t.endOutput()
         t.ed.appendOutput "\L"
         t.insertPrompt()
+        # Last, because writing the prompt moves the caret and the view goes
+        # with it.
+        if t.outputStart >= 0:
+          t.ed.scrollToOutput(t.outputStart)
+          t.outputStart = -1
       result = true
 
 proc sendBreak*(t: var Terminal) =
@@ -815,6 +1000,9 @@ proc createTerminal*(font: Font; theme = defaultTheme()): Terminal =
     prefix: "",
     aliases: @[],
     process: "",
+    screen: initTermScreen(),
+    outputStart: -1,
+    cols: 80, rows: 24,
     cwd: os.getCurrentDir())
   result.ed.lang = langConsole
   result.hist[""] = CmdHistory(cmds: @[], suggested: -1)
@@ -828,6 +1016,11 @@ proc draw*(t: var Terminal; e: Event; area: Rect; focused: bool): TermAction =
   ## Per-frame entry point. When focused, processes input and shows cursor.
   ## When not focused, just paints. Always polls for process output.
   result = TermAction(kind: noAction)
+  # What a program starting here will be told it has to draw on. Read every
+  # frame because the panel is resized by dragging, and nothing else says so.
+  let ch = t.ed.charSize
+  t.cols = max(20, area.w div ch.w)
+  t.rows = max(4, area.h div ch.h)
   discard t.update()
 
   if focused:
@@ -847,6 +1040,7 @@ proc draw*(t: var Terminal; e: Event; area: Rect; focused: bool): TermAction =
         # in the output, Up is what it is in the editor and walks it further
         # up. Shift and Ctrl always mean select and scroll.
         if not ctrl and not shift and t.ed.cursor.int > t.ed.readOnly:
+          t.ed.revealCaret()
           let sug = t.hist[t.process].suggest(up = true)
           if sug.len > 0:
             t.emptyCmd()
@@ -855,6 +1049,7 @@ proc draw*(t: var Terminal; e: Event; area: Rect; focused: bool): TermAction =
           return
       of KeyDown:
         if not ctrl and not shift and t.ed.cursor.int > t.ed.readOnly:
+          t.ed.revealCaret()
           let sug = t.hist[t.process].suggest(up = false)
           if sug.len > 0:
             t.emptyCmd()
@@ -862,6 +1057,7 @@ proc draw*(t: var Terminal; e: Event; area: Rect; focused: bool): TermAction =
           t.ed.render(area, showCursor = true)
           return
       of KeyTab:
+        t.ed.revealCaret()
         t.tabPressed()
         t.ed.render(area, showCursor = true)
         return

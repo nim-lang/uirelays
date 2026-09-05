@@ -208,6 +208,10 @@ type
     changed: bool
     readOnly*: int                  ## -1 = fully editable;
                                     ## >= 0 = positions <= readOnly are protected
+    ansiEnd: int                    ## one past the last position whose color
+                                    ## the *program* that printed it chose --
+                                    ## see `appendOutput` and `highlight`. 0
+                                    ## when nothing here was colored that way.
     # Bracket matching
     bracketA, bracketB: int
     # Underline (set by the app via underline())
@@ -1073,13 +1077,20 @@ proc highlightMarkdown(s: var SynEdit; first, last: int) =
     pos = lineEnd + 1
 
 proc highlight(s: var SynEdit; first, last: int; initialState: TokenClass) =
+  # Text a program colored itself is not the highlighter's to guess at. Below
+  # `ansiEnd` the classes are the ones the program asked for, and a pass over
+  # them would put back what the shape of the line suggests instead -- which
+  # is what would happen on the next keystroke, since an edit sends the
+  # incremental pass back to the start of the buffer.
+  let a = max(first, s.ansiEnd)
+  if a > last: return
   var g: GeneralTokenizer
   g.buf = addr s
   g.kind = low(TokenClass)
-  g.start = first
+  g.start = a
   g.length = 0
   g.state = initialState
-  g.pos = first
+  g.pos = a
   while g.pos <= last:
     getNextToken(g, s.lang)
     if g.length == 0: break
@@ -1205,7 +1216,15 @@ proc setFirstLine(s: var SynEdit; line: int) =
 
 proc noteEdit(s: var SynEdit; at: int) {.inline.} =
   ## Text was inserted or removed at `at`, so everything behind it has moved.
-  if at < s.editLow: s.editLow = at
+  ##
+  ## Unless there is nothing behind it. An edit at the very end of the buffer
+  ## -- which is every character a program prints -- moves nothing that was
+  ## already there, and claiming otherwise is expensive: `syncFirstLine`
+  ## answers the claim by working out where the top line of the view begins
+  ## all over again, and that is a walk from the start of the buffer. A
+  ## `git log -p` of forty thousand lines did nine and a half *billion* bytes
+  ## of walking that way, which is most of the seven seconds it took.
+  if at < s.len and at < s.editLow: s.editLow = at
 
 proc syncFirstLine(s: var SynEdit) =
   ## `firstLine` is a line number and `firstLineOffset` is the position that
@@ -1325,6 +1344,25 @@ proc scrollTo*(s: var SynEdit; line: int) =
   ## move the view to show it, so a scroll set before one of those is undone
   ## by it.
   s.setFirstLine(line)
+
+proc centerLine*(s: var SynEdit; line: int) =
+  ## Put `line` halfway down the view and leave the caret alone.
+  ##
+  ## For a list whose lines are things rather than sentences, and where which
+  ## line is *the* one is decided somewhere other than here: the tab list
+  ## follows the editor, so its active row moves without anything in the list
+  ## having been touched. The middle is where a row can be read together with
+  ## the ones on either side of it, which is the point of showing the list at
+  ## all -- the top or the bottom edge shows the row and hides its
+  ## neighbourhood.
+  ##
+  ## Never past the end. A list shorter than the view stays where it is, and
+  ## the last line comes to rest on the bottom row instead of halfway up a
+  ## panel of blanks.
+  if s.span <= 0: return
+  let rows = max(1, s.span - 1)  # the last of `span` rows may be a sliver
+  let count = s.numberOfLines.int + 1  # `getLineCount` is not declared yet
+  s.setFirstLine(clamp(line - rows div 2, 0, max(0, count - rows)))
 
 proc wheelScroll*(s: var SynEdit; delta: int) =
   ## Scroll by one turn of the mouse wheel: three lines per notch, and the
@@ -2231,6 +2269,7 @@ proc clear*(s: var SynEdit) =
   s.firstLineOffset = 0
   s.editLow = high(int)
   s.readOnly = -1
+  s.ansiEnd = 0
   s.clicks = 0
   s.undoIdx = 0
   s.cursorDim = (0, 0, 0)
@@ -2267,9 +2306,15 @@ proc saveToFile*(s: var SynEdit; filename: string) =
   writeFile(filename, s.fullText)
   s.changed = false
 
-proc appendOutput*(s: var SynEdit; text: string) =
+proc appendOutput*(s: var SynEdit; text: string; highlight = true) =
   ## Append text and mark everything as read-only up to the end.
   ## For terminal/console use: output is protected, user types after it.
+  ##
+  ## `highlight` is for a caller that already knows what color this text is:
+  ## a program that prints escape sequences has *said* what it wants, and the
+  ## highlighter guessing from the shape of the lines would only overrule it.
+  ## Such a caller passes `false`, paints the range itself with
+  ## `setStyleRange`, and says so with `markProgramColored`.
   ##
   ## The caret follows the output down only if it was at the end to begin
   ## with. A caret left further up is a reader's -- somebody is looking at
@@ -2289,7 +2334,7 @@ proc appendOutput*(s: var SynEdit; text: string) =
   # newline. Highlighting that one line would leave the output colorless --
   # and appending does not bump `version`, so the incremental pass that walks
   # the rest of a buffer never comes for this text either.
-  s.highlightFrom(start)
+  if highlight: s.highlightFrom(start)
   s.readOnly = s.len - 1
   if stay:
     s.gotoPos(oldCursor)
@@ -2298,6 +2343,86 @@ proc appendOutput*(s: var SynEdit; text: string) =
     # top line begins, which is why this pair may be put back as it was.
     s.firstLine = oldFirstLine
     s.firstLineOffset = oldFirstLineOffset
+
+proc charSize*(s: SynEdit): tuple[w, h: int] =
+  ## How wide and tall one character is, for a caller that has to think in
+  ## characters rather than pixels -- a terminal telling a program how much
+  ## room it has. Measured on `M`, which in a monospaced family is every
+  ## character, and in one that is not is at least an honest upper bound.
+  (max(1, measureText(s.font, "M").w), max(1, fontLineSkip(s.font)))
+
+proc truncateOutput*(s: var SynEdit; at: int) =
+  ## Drop everything from `at` to the end. What a progress meter needs: it
+  ## draws its line again every time it moves, and the honest way to show that
+  ## is to take the previous drawing back off rather than to leave a hundred
+  ## of them stacked up.
+  ##
+  ## Not an edit anybody can undo -- output is not something the reader typed,
+  ## and a meter would otherwise fill the undo stack at its refresh rate.
+  let at = clamp(at, 0, s.len)
+  if at >= s.len: return
+  inc s.cacheId
+  s.noteEdit(at)
+  s.gotoPos(s.len)
+  s.prepareForEdit()          # which leaves all of it in `front`
+  var removed = 0
+  for i in at ..< s.front.len:
+    if s.front[i].c == '\L': inc removed
+  s.front.setLen at
+  s.cursor = at.Natural
+  s.numberOfLines = Natural(max(0, s.numberOfLines.int - removed))
+  if removed > 0: s.scroll(-removed)
+  if s.ansiEnd > at: s.ansiEnd = at
+  if s.readOnly >= at: s.readOnly = at - 1
+  if s.selected.b >= at or s.selected.a >= at: s.selected = (-1, -1)
+  s.currentLine = s.getLineFromOffset(s.cursor)
+  s.changed = true
+
+proc scrollToOutput*(s: var SynEdit; start: int) =
+  ## Leave the view at the top of what was printed from `start` on, which is
+  ## what a pager does and what the panel stopped doing when the pager was
+  ## taken away: a `git log` that follows its own output down leaves the
+  ## reader at the oldest commit in the repository, having sailed past the one
+  ## they asked about.
+  ##
+  ## Only when there is more of it than fits. Output already on screen needs no
+  ## scrolling, and scrolling it would push it up to make room for nothing.
+  ##
+  ## The caret stays where it is, off the bottom of the view. Moving it is what
+  ## brings the view back down, so the first key typed returns to the prompt.
+  if s.span <= 0: return
+  let start = clamp(start, 0, s.len)
+  let first = s.getLineFromOffset(start).int
+  let last = s.getLineFromOffset(s.len).int
+  if last - first < s.span: return
+  s.setFirstLine(first)
+
+proc revealCaret*(s: var SynEdit) =
+  ## Bring the view back to the caret, with it near the bottom -- which is
+  ## where a prompt is. The counterpart to `scrollToOutput`: having been left
+  ## up at the top of a long piece of output on purpose, the panel needs a way
+  ## back down, and the reader starting to type is it.
+  ##
+  ## Typing does not do this by itself. `render` chases the caret only when
+  ## something said it moved, and inserting a character where the caret
+  ## already is says nothing of the kind -- ordinarily there is no need,
+  ## because the caret was on screen to begin with.
+  if s.span <= 0: return
+  if s.currentLine >= s.firstLine and s.currentLine < s.firstLine + s.span - 1:
+    return
+  s.setFirstLine(s.currentLine.int - (s.span - 2))
+
+proc setStyleRange*(s: var SynEdit; a, b: int; tc: TokenClass) =
+  ## Paint `[a..b]` in one class. For a caller that *knows* the color instead
+  ## of working it out from the text -- which is what reading it out of a
+  ## program's escape sequences amounts to.
+  for i in max(a, 0) .. min(b, s.len - 1): s.setCellStyle(i, tc)
+
+proc markProgramColored*(s: var SynEdit; upTo: int) =
+  ## Everything below `upTo` carries colors that arrived with the text, and
+  ## the highlighter is to keep its hands off them from here on. Output only
+  ## ever grows at the end, so one mark is enough to say it for all of it.
+  if upTo > s.ansiEnd: s.ansiEnd = upTo
 
 proc setLabel*(s: var SynEdit; text: string) =
   ## Set text and make the entire buffer read-only. For labels and status bars.

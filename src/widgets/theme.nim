@@ -14,7 +14,16 @@ type
     TagStart, TagStandalone, TagEnd, Key, Value, RawData, Assembler,
     Preprocessor, Directive, Command, Rule, Link, Label,
     Reference, Text, Other, Green, Yellow, Red,
-    MarkdownFence
+    MarkdownFence,
+    # The sixteen a terminal has. `Green`, `Yellow` and `Red` above are three
+    # of them: the console highlighter already guesses those from the shape of
+    # a line, and a program that asks for them by name must not come out in a
+    # different shade than a `+` line does. The rest are new, and a theme is
+    # expected to answer for all sixteen -- ANSI black is not black here, it
+    # is whatever this theme's dimmest legible foreground is.
+    Black, Blue, Magenta, Cyan, White,
+    BrightBlack, BrightRed, BrightGreen, BrightYellow,
+    BrightBlue, BrightMagenta, BrightCyan, BrightWhite
 
   Theme* = object
     fg*: array[TokenClass, Color]   ## per-token foreground colors
@@ -135,6 +144,22 @@ proc catppuccinMocha*(): Theme =
   result.fg[TokenClass.Red] = color(243, 139, 168)
   result.fg[TokenClass.MarkdownFence] = color(128, 128, 128)
   result.fg[TokenClass.Link] = color(137, 180, 250)       # blue
+  # The sixteen. Catppuccin names its own ANSI set; the two darkest of them
+  # are lifted to `overlay1`/`overlay2` because a foreground has to be legible
+  # against `base`, and surface grey is not.
+  result.fg[TokenClass.Black] = color(127, 132, 156)       # overlay1
+  result.fg[TokenClass.Blue] = color(137, 180, 250)
+  result.fg[TokenClass.Magenta] = color(245, 194, 231)     # pink
+  result.fg[TokenClass.Cyan] = color(148, 226, 213)        # teal
+  result.fg[TokenClass.White] = color(186, 194, 222)       # subtext1
+  result.fg[TokenClass.BrightBlack] = color(147, 153, 178) # overlay2
+  result.fg[TokenClass.BrightRed] = color(235, 160, 172)   # maroon
+  result.fg[TokenClass.BrightGreen] = color(183, 232, 179)
+  result.fg[TokenClass.BrightYellow] = color(250, 234, 196)
+  result.fg[TokenClass.BrightBlue] = color(160, 195, 251)
+  result.fg[TokenClass.BrightMagenta] = color(248, 210, 238)
+  result.fg[TokenClass.BrightCyan] = color(172, 233, 223)
+  result.fg[TokenClass.BrightWhite] = color(230, 238, 255) # above the text
   result.bg = color(30, 30, 46)
   result.panelBg = color(24, 24, 37)             # crust, a step below the base
   result.selBg = color(88, 91, 112)
@@ -208,6 +233,22 @@ proc goldenDusk*(): Theme =
   result.fg[TokenClass.Green] = color(0x4F, 0xBF, 0x9F)
   result.fg[TokenClass.Yellow] = gold
   result.fg[TokenClass.Red] = color(0xE4, 0x63, 0x4A)
+  # And the sixteen a terminal has, in this theme's own gold and turquoise
+  # rather than in the primaries -- a program that asks for blue gets the cool
+  # accent here, because that is what blue is on this background.
+  result.fg[TokenClass.Black] = dim
+  result.fg[TokenClass.Blue] = turquoise
+  result.fg[TokenClass.Magenta] = color(0xD8, 0x8A, 0xA8)  # dusty rose
+  result.fg[TokenClass.Cyan] = brightTurq
+  result.fg[TokenClass.White] = text
+  result.fg[TokenClass.BrightBlack] = muted
+  result.fg[TokenClass.BrightRed] = color(0xF2, 0x86, 0x70)
+  result.fg[TokenClass.BrightGreen] = color(0x6F, 0xD9, 0xBB)
+  result.fg[TokenClass.BrightYellow] = color(0xF2, 0xCE, 0x7A)
+  result.fg[TokenClass.BrightBlue] = brightTurq
+  result.fg[TokenClass.BrightMagenta] = color(0xE8, 0xA6, 0xC0)
+  result.fg[TokenClass.BrightCyan] = color(0x7A, 0xE0, 0xD6)
+  result.fg[TokenClass.BrightWhite] = color(0xFF, 0xF8, 0xEA)
 
   result.bg = color(0x15, 0x17, 0x1B)
   result.panelBg = color(0x11, 0x13, 0x16)       # a step below the editor
