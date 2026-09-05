@@ -2359,6 +2359,40 @@ proc truncateOutput*(s: var SynEdit; at: int) =
   s.currentLine = s.getLineFromOffset(s.cursor)
   s.changed = true
 
+proc scrollToOutput*(s: var SynEdit; start: int) =
+  ## Leave the view at the top of what was printed from `start` on, which is
+  ## what a pager does and what the panel stopped doing when the pager was
+  ## taken away: a `git log` that follows its own output down leaves the
+  ## reader at the oldest commit in the repository, having sailed past the one
+  ## they asked about.
+  ##
+  ## Only when there is more of it than fits. Output already on screen needs no
+  ## scrolling, and scrolling it would push it up to make room for nothing.
+  ##
+  ## The caret stays where it is, off the bottom of the view. Moving it is what
+  ## brings the view back down, so the first key typed returns to the prompt.
+  if s.span <= 0: return
+  let start = clamp(start, 0, s.len)
+  let first = s.getLineFromOffset(start).int
+  let last = s.getLineFromOffset(s.len).int
+  if last - first < s.span: return
+  s.setFirstLine(first)
+
+proc revealCaret*(s: var SynEdit) =
+  ## Bring the view back to the caret, with it near the bottom -- which is
+  ## where a prompt is. The counterpart to `scrollToOutput`: having been left
+  ## up at the top of a long piece of output on purpose, the panel needs a way
+  ## back down, and the reader starting to type is it.
+  ##
+  ## Typing does not do this by itself. `render` chases the caret only when
+  ## something said it moved, and inserting a character where the caret
+  ## already is says nothing of the kind -- ordinarily there is no need,
+  ## because the caret was on screen to begin with.
+  if s.span <= 0: return
+  if s.currentLine >= s.firstLine and s.currentLine < s.firstLine + s.span - 1:
+    return
+  s.setFirstLine(s.currentLine.int - (s.span - 2))
+
 proc setStyleRange*(s: var SynEdit; a, b: int; tc: TokenClass) =
   ## Paint `[a..b]` in one class. For a caller that *knows* the color instead
   ## of working it out from the text -- which is what reading it out of a

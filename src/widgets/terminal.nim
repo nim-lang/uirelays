@@ -463,6 +463,9 @@ type
     liveStart: int      ## the buffer offset those rows begin at. Everything
                         ## before it is final; everything after is redrawn
                         ## whenever the program moves.
+    outputStart: int    ## where the running program's output began, so that
+                        ## the view can be left at the top of it when the
+                        ## program is done. -1 when nothing is running.
     cols, rows: int     ## the panel's size in characters, as last drawn, and
                         ## what a program starting here is told it has.
     branch: string      ## cached result of `gitBranch`; see `insertPrompt`
@@ -502,10 +505,14 @@ proc endOutput(t: var Terminal) =
   t.liveStart = t.ed.len
 
 proc caretToEnd(t: var Terminal) =
-  ## Put the caret back where typing goes. What a program printed is text like
+  ## Put the caret back where typing goes, and the view back where the caret
+  ## is -- it may have been left at the top of a long piece of output on
+  ## purpose, and somebody who has started typing is done reading it.
+  ## What a program printed is text like
   ## any other here -- the caret walks into it and a selection can be taken out
   ## of it -- but a key that *edits* belongs to the line being typed, so
   ## everything that edits comes through here first.
+  t.ed.revealCaret()
   if t.ed.cursor.int > t.ed.readOnly: return
   t.ed.deselect()
   t.ed.gotoPos(t.ed.len)
@@ -867,6 +874,7 @@ proc runCommand*(t: var Terminal; cmd: var string): TermAction =
       openDefaultBrowser(a)
     else:
       t.endOutput()
+      t.outputStart = t.ed.len
       requests.send(ThreadTask(cwd: t.cwd, cmd: cmd,
                                cols: t.cols, rows: t.rows))
       t.processRunning = true
@@ -969,6 +977,11 @@ proc update*(t: var Terminal): bool =
         t.endOutput()
         t.ed.appendOutput "\L"
         t.insertPrompt()
+        # Last, because writing the prompt moves the caret and the view goes
+        # with it.
+        if t.outputStart >= 0:
+          t.ed.scrollToOutput(t.outputStart)
+          t.outputStart = -1
       result = true
 
 proc sendBreak*(t: var Terminal) =
@@ -988,6 +1001,7 @@ proc createTerminal*(font: Font; theme = defaultTheme()): Terminal =
     aliases: @[],
     process: "",
     screen: initTermScreen(),
+    outputStart: -1,
     cols: 80, rows: 24,
     cwd: os.getCurrentDir())
   result.ed.lang = langConsole
@@ -1026,6 +1040,7 @@ proc draw*(t: var Terminal; e: Event; area: Rect; focused: bool): TermAction =
         # in the output, Up is what it is in the editor and walks it further
         # up. Shift and Ctrl always mean select and scroll.
         if not ctrl and not shift and t.ed.cursor.int > t.ed.readOnly:
+          t.ed.revealCaret()
           let sug = t.hist[t.process].suggest(up = true)
           if sug.len > 0:
             t.emptyCmd()
@@ -1034,6 +1049,7 @@ proc draw*(t: var Terminal; e: Event; area: Rect; focused: bool): TermAction =
           return
       of KeyDown:
         if not ctrl and not shift and t.ed.cursor.int > t.ed.readOnly:
+          t.ed.revealCaret()
           let sug = t.hist[t.process].suggest(up = false)
           if sug.len > 0:
             t.emptyCmd()
@@ -1041,6 +1057,7 @@ proc draw*(t: var Terminal; e: Event; area: Rect; focused: bool): TermAction =
           t.ed.render(area, showCursor = true)
           return
       of KeyTab:
+        t.ed.revealCaret()
         t.tabPressed()
         t.ed.render(area, showCursor = true)
         return

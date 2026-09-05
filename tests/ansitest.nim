@@ -330,4 +330,54 @@ block:
   let text = ed.fullText
   equals("and what was dropped is gone", text, "green\Lplain\L")
 
+echo "landing at the top of what a command printed:"
+
+block:
+  # The panel is its own pager -- it scrolls, searches and keeps everything --
+  # but a pager also decides where you *start*, and following the output down
+  # leaves the reader at the oldest commit in the repository.
+  var ed = console()
+  var back = ""
+  for i in 1..50: back.add "old " & $i & "\L"
+  ed.appendOutput(back)
+  ed.appendOutput("$ git log\L")
+  ed.render(Area, showCursor = true)
+  let start = ed.len                 # where the command's own output begins
+  var printed = ""
+  for i in 1..100: printed.add "commit " & $i & "\L"
+  ed.appendOutput(printed)
+  ed.appendOutput("$ ")
+  ed.render(Area, showCursor = true)
+  check("by default the view has followed the output down",
+        ed.firstLine > 100, $ed.firstLine)
+  ed.scrollToOutput(start)
+  ed.render(Area, showCursor = true)
+  check("and a pager lands on the first line of it",
+        ed.firstLine == 51, $ed.firstLine)
+  # The caret is still down at the prompt, off the bottom of the view: moving
+  # it is what brings the view back, so the first key typed returns there.
+  check("with the caret still at the prompt", ed.cursor == ed.len, $ed.cursor)
+  # Typing does not chase the caret by itself, so the panel says so on the
+  # reader's behalf -- `Terminal.caretToEnd` does this for every key that
+  # edits the command line.
+  ed.revealCaret()
+  ed.insertText("x")
+  ed.render(Area, showCursor = true)
+  check("and the way back down is one keystroke", ed.firstLine > 100,
+        $ed.firstLine)
+
+block:
+  var ed = console()
+  ed.appendOutput("$ cd src\L")
+  ed.render(Area, showCursor = true)
+  let start = ed.len
+  ed.appendOutput("two\Llines\L")
+  ed.appendOutput("$ ")
+  ed.render(Area, showCursor = true)
+  let before = ed.firstLine
+  ed.scrollToOutput(start)
+  ed.render(Area, showCursor = true)
+  check("output that already fits is left exactly where it was",
+        ed.firstLine == before, $ed.firstLine & " was " & $before)
+
 quit(if failures > 0: 1 else: 0)
