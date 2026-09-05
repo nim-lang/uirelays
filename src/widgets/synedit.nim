@@ -208,6 +208,10 @@ type
     changed: bool
     readOnly*: int                  ## -1 = fully editable;
                                     ## >= 0 = positions <= readOnly are protected
+    ansiEnd: int                    ## one past the last position whose color
+                                    ## the *program* that printed it chose --
+                                    ## see `appendOutput` and `highlight`. 0
+                                    ## when nothing here was colored that way.
     # Bracket matching
     bracketA, bracketB: int
     # Underline (set by the app via underline())
@@ -1073,13 +1077,20 @@ proc highlightMarkdown(s: var SynEdit; first, last: int) =
     pos = lineEnd + 1
 
 proc highlight(s: var SynEdit; first, last: int; initialState: TokenClass) =
+  # Text a program colored itself is not the highlighter's to guess at. Below
+  # `ansiEnd` the classes are the ones the program asked for, and a pass over
+  # them would put back what the shape of the line suggests instead -- which
+  # is what would happen on the next keystroke, since an edit sends the
+  # incremental pass back to the start of the buffer.
+  let a = max(first, s.ansiEnd)
+  if a > last: return
   var g: GeneralTokenizer
   g.buf = addr s
   g.kind = low(TokenClass)
-  g.start = first
+  g.start = a
   g.length = 0
   g.state = initialState
-  g.pos = first
+  g.pos = a
   while g.pos <= last:
     getNextToken(g, s.lang)
     if g.length == 0: break
@@ -2231,6 +2242,7 @@ proc clear*(s: var SynEdit) =
   s.firstLineOffset = 0
   s.editLow = high(int)
   s.readOnly = -1
+  s.ansiEnd = 0
   s.clicks = 0
   s.undoIdx = 0
   s.cursorDim = (0, 0, 0)
@@ -2267,9 +2279,15 @@ proc saveToFile*(s: var SynEdit; filename: string) =
   writeFile(filename, s.fullText)
   s.changed = false
 
-proc appendOutput*(s: var SynEdit; text: string) =
+proc appendOutput*(s: var SynEdit; text: string; highlight = true) =
   ## Append text and mark everything as read-only up to the end.
   ## For terminal/console use: output is protected, user types after it.
+  ##
+  ## `highlight` is for a caller that already knows what color this text is:
+  ## a program that prints escape sequences has *said* what it wants, and the
+  ## highlighter guessing from the shape of the lines would only overrule it.
+  ## Such a caller passes `false`, paints the range itself with
+  ## `setStyleRange`, and says so with `markProgramColored`.
   ##
   ## The caret follows the output down only if it was at the end to begin
   ## with. A caret left further up is a reader's -- somebody is looking at
@@ -2289,7 +2307,7 @@ proc appendOutput*(s: var SynEdit; text: string) =
   # newline. Highlighting that one line would leave the output colorless --
   # and appending does not bump `version`, so the incremental pass that walks
   # the rest of a buffer never comes for this text either.
-  s.highlightFrom(start)
+  if highlight: s.highlightFrom(start)
   s.readOnly = s.len - 1
   if stay:
     s.gotoPos(oldCursor)
@@ -2298,6 +2316,18 @@ proc appendOutput*(s: var SynEdit; text: string) =
     # top line begins, which is why this pair may be put back as it was.
     s.firstLine = oldFirstLine
     s.firstLineOffset = oldFirstLineOffset
+
+proc setStyleRange*(s: var SynEdit; a, b: int; tc: TokenClass) =
+  ## Paint `[a..b]` in one class. For a caller that *knows* the color instead
+  ## of working it out from the text -- which is what reading it out of a
+  ## program's escape sequences amounts to.
+  for i in max(a, 0) .. min(b, s.len - 1): s.setCellStyle(i, tc)
+
+proc markProgramColored*(s: var SynEdit; upTo: int) =
+  ## Everything below `upTo` carries colors that arrived with the text, and
+  ## the highlighter is to keep its hands off them from here on. Output only
+  ## ever grows at the end, so one mark is enough to say it for all of it.
+  if upTo > s.ansiEnd: s.ansiEnd = upTo
 
 proc setLabel*(s: var SynEdit; text: string) =
   ## Set text and make the entire buffer read-only. For labels and status bars.

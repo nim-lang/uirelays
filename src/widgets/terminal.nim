@@ -13,10 +13,11 @@
 ## The terminal runs commands in a background thread and streams
 ## their output into the editor buffer.
 
-import std/[os, osproc, streams, strutils, tables, times, browsers]
+import std/[os, osproc, streams, strtabs, strutils, tables, times, browsers]
 when defined(windows): import std/winlean
 else: import std/posix
 import synedit
+import ansi
 import filesearch
 import ../uirelays/[coords, screen, input]
 
@@ -222,6 +223,36 @@ else:
     result = posix.read(p.outputHandle, addr buf[0], buf.len)
     if result < 0: result = 0
 
+var forcedEnv {.threadvar.}: StringTableRef
+  ## Built once, on the thread that spawns -- a `threadvar` because that is
+  ## the thread that owns it, and a global would make every proc that touches
+  ## it un-GC-safe.
+
+proc colorEnv(): StringTableRef =
+  ## The environment a command is run in, with color asked for. Everything
+  ## here comes out of a pipe rather than a terminal, and a program that looks
+  ## before it colors -- which is all of them -- finds a pipe and turns color
+  ## off. These are the ways to say "do it anyway" that between them cover
+  ## what actually gets read in this panel; a variable the user already set is
+  ## left alone, since they have said something more specific than this has.
+  if forcedEnv == nil:
+    # Windows compares environment variable names without regard to case, so
+    # a table that does not would answer "no" to `PATH` and add a second one.
+    forcedEnv = newStringTable(
+      when defined(windows): modeCaseInsensitive else: modeCaseSensitive)
+    for k, v in envPairs(): forcedEnv[k] = v
+    template unless(key, value: string) =
+      if not forcedEnv.hasKey(key): forcedEnv[key] = value
+    unless("CLICOLOR_FORCE", "1")
+    unless("FORCE_COLOR", "1")
+    # Git has no environment variable for it, but it does take configuration
+    # from one, and `color.ui=always` is what `--color` sets.
+    if not forcedEnv.hasKey("GIT_CONFIG_COUNT"):
+      forcedEnv["GIT_CONFIG_COUNT"] = "1"
+      forcedEnv["GIT_CONFIG_KEY_0"] = "color.ui"
+      forcedEnv["GIT_CONFIG_VALUE_0"] = "always"
+  result = forcedEnv
+
 proc execThreadProc() {.thread.} =
   var p: Process
   var started = false
@@ -251,7 +282,7 @@ proc execThreadProc() {.thread.} =
           if not started:
             let (bin, args) = cmdToArgs(task.cmd)
             try:
-              p = startProcess(bin, task.cwd, args,
+              p = startProcess(bin, task.cwd, args, env = colorEnv(),
                         options = {poStdErrToStdOut, poUsePath, poInteractive,
                                    poDaemon})
               started = true
@@ -372,6 +403,10 @@ type
                         ## only a command here. In a terminal the same word is
                         ## a program's name, which is where it belongs -- see
                         ## `defaults` below.
+    ansi: AnsiState     ## the color a running program last asked for, and any
+                        ## escape sequence the end of a chunk cut in half --
+                        ## neither of which can be worked out from the next
+                        ## chunk on its own. See `showOutput`.
     branch: string      ## cached result of `gitBranch`; see `insertPrompt`
     branchDir: string   ## the directory `branch` was read for. Anything else,
                         ## "" included, means the cache says nothing about the
@@ -776,6 +811,28 @@ proc enterPressed(t: var Terminal): TermAction =
 # Update (poll background thread)
 # ---------------------------------------------------------------------------
 
+proc showOutput(t: var Terminal; raw: string) =
+  ## What a program printed, with the escape sequences taken out and the color
+  ## they asked for put on the text instead.
+  ##
+  ## A chunk that asked for nothing is left to the highlighter, which is what
+  ## keeps the `+` and `-` lines of a plain `git diff` green and red. A chunk
+  ## that did ask overrules it: the program knows what its output means and
+  ## the highlighter is only ever guessing from the shape of a line.
+  var text = ""
+  var runs: seq[AnsiRun] = @[]
+  let colored = t.ansi.parseAnsi(raw, t.ed.tabSize, text, runs)
+  if text.len == 0: return
+  let start = t.ed.len
+  t.ed.appendOutput(text, highlight = not colored)
+  if colored:
+    var pos = start
+    for r in runs:
+      if r.tc != TokenClass.None:
+        t.ed.setStyleRange(pos, pos + r.len - 1, r.tc)
+      pos += r.len
+    t.ed.markProgramColored(pos)
+
 proc update*(t: var Terminal): bool =
   ## Takes whatever the thread running a program has said since the last look.
   ## True when it said anything -- output to show, or the end of the program
@@ -791,10 +848,13 @@ proc update*(t: var Terminal): bool =
     if responses.peek > 0:
       let resp = responses.recv()
       if resp.text.len > 0:
-        t.ed.appendOutput(resp.text)
+        t.showOutput(resp.text)
       if resp.finished:
         t.processRunning = false
         t.process.setLen 0
+        # A program that died in the middle of a color must not leave the next
+        # one printing in it.
+        t.ansi = initAnsiState()
         t.ed.appendOutput "\L"
         t.insertPrompt()
       result = true
@@ -815,6 +875,7 @@ proc createTerminal*(font: Font; theme = defaultTheme()): Terminal =
     prefix: "",
     aliases: @[],
     process: "",
+    ansi: initAnsiState(),
     cwd: os.getCurrentDir())
   result.ed.lang = langConsole
   result.hist[""] = CmdHistory(cmds: @[], suggested: -1)
