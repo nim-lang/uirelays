@@ -161,7 +161,6 @@ const
   SRCCOPY = 0x00CC0020'u32
   BI_RGB = 0'u32          ## uncompressed, and for 32 bits a pixel that is
                           ## one `0x00RRGGBB` word each -- what `blitRGBA` has
-  DIB_RGB_COLORS = 0'u32  ## the colour table holds colours, not palette indices
   DIB_RGB_COLORS = 0'u32
 
   IDC_ARROW = cast[ptr uint16](32512)
