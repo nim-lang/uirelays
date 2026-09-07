@@ -164,6 +164,46 @@ proc sdlDrawPoint(x, y: cint; color: screen.Color) =
   renderer.setDrawColor(color.r, color.g, color.b, color.a)
   renderer.drawPoint(x, y)
 
+# One texture, kept between calls and remade only when the size changes.
+# A caller blits its picture every frame, because everything here is redrawn
+# every frame, and asking the GPU for a new texture that often is the one
+# cost worth avoiding.
+var
+  blitTex: TexturePtr
+  blitTexW, blitTexH: cint
+
+proc sdlBlitRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
+                 dst: coords.Rect): bool =
+  ## This driver decodes no pictures, so it fills in none of the image
+  ## relays. What it can do is take finished pixels from whoever does, and
+  ## that is all `blitRGBA` is.
+  if renderer == nil or pixels == nil or w <= 0 or h <= 0 or
+      dst.w <= 0 or dst.h <= 0:
+    return false
+  if blitTex == nil or blitTexW != w.cint or blitTexH != h.cint:
+    if blitTex != nil:
+      destroyTexture(blitTex)
+      blitTex = nil
+    # `RGB888` is SDL2's name for 32 bits a pixel with the top one ignored,
+    # which is the word `blitRGBA` hands over. Its alpha-carrying cousin
+    # would read that ignored byte as "fully transparent" and draw nothing.
+    blitTex = renderer.createTexture(uint32(SDL_PIXELFORMAT_RGB888),
+                                     cint(SDL_TEXTUREACCESS_STATIC),
+                                     w.cint, h.cint)
+    if blitTex == nil:
+      return false
+    blitTexW = w.cint
+    blitTexH = h.cint
+  discard blitTex.updateTexture(nil, cast[pointer](pixels), cint(w * 4))
+  # `dst` clips and does not scale, so the source rectangle shrinks with it
+  # rather than the destination stretching to fit.
+  let cw = min(w, dst.w)
+  let ch = min(h, dst.h)
+  var srcRect = toSdlRect(coords.rect(0, 0, cw, ch))
+  var dstRect = toSdlRect(coords.rect(dst.x, dst.y, cw, ch))
+  discard renderer.copy(blitTex, addr srcRect, addr dstRect)
+  result = true
+
 proc sdlSetCursor(c: CursorKind) =
   let sdlCursor = case c
     of curDefault, curArrow: SDL_SYSTEM_CURSOR_ARROW
@@ -380,7 +420,8 @@ proc initSdl2Driver*() =
     getFontMetrics: sdlGetFontMetrics, measureText: sdlMeasureText,
     drawText: sdlDrawTextShaded)
   drawRelays = DrawRelays(
-    fillRect: sdlFillRect, drawLine: sdlDrawLine, drawPoint: sdlDrawPoint)
+    fillRect: sdlFillRect, drawLine: sdlDrawLine, drawPoint: sdlDrawPoint,
+    blitRGBA: sdlBlitRGBA)
   inputRelays = InputRelays(
     pollEvent: sdlPollEvent, waitEvent: sdlWaitEvent,
     getTicks: sdlGetTicks, sleep: sdlDelay,

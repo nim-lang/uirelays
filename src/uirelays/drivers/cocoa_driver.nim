@@ -86,6 +86,11 @@ proc cDrawPoint(x, y: cint; r, g, b, a: cint) {.importc: "cocoa_drawPoint", cdec
 proc cLoadImage(path: cstring): cint {.importc: "cocoa_loadImage", cdecl.}
 proc cDrawImage(handle, srcX, srcY, srcW, srcH, dstX, dstY, dstW, dstH: cint)
   {.importc: "cocoa_drawImage", cdecl.}
+proc cFreeImage(handle: cint) {.importc: "cocoa_freeImage", cdecl.}
+proc cImageSize(handle: cint; outW, outH: ptr cint)
+  {.importc: "cocoa_imageSize", cdecl.}
+proc cBlitRGBA(pixels: pointer; w, h, dstX, dstY, dstW, dstH: cint): cint
+  {.importc: "cocoa_blitRGBA", cdecl.}
 
 proc cSetClipRect(x, y, w, h: cint) {.importc: "cocoa_setClipRect", cdecl.}
 proc cSaveState() {.importc: "cocoa_saveState", cdecl.}
@@ -139,6 +144,24 @@ proc cocoaDrawImage(img: Image; src, dst: Rect) =
   cDrawImage(img.int.cint,
              src.x.cint, src.y.cint, src.w.cint, src.h.cint,
              dst.x.cint, dst.y.cint, dst.w.cint, dst.h.cint)
+
+proc cocoaFreeImage(img: Image) =
+  ## The relay this driver was missing. The three image relays go together --
+  ## a caller checks for all of them before it asks for any -- so a driver
+  ## that loads and draws but cannot free was a driver that never got asked,
+  ## and every picture on macOS came out as the caller's placeholder.
+  cFreeImage(img.int.cint)
+
+proc cocoaImageSize(img: Image): tuple[w, h: int] =
+  var w, h: cint
+  cImageSize(img.int.cint, addr w, addr h)
+  (w.int, h.int)
+
+proc cocoaBlitRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
+                   dst: Rect): bool =
+  if pixels == nil: return false
+  cBlitRGBA(cast[pointer](pixels), w.cint, h.cint,
+            dst.x.cint, dst.y.cint, dst.w.cint, dst.h.cint) != 0
 
 proc cocoaOpenFont(path: string; size: int; style: FontStyles;
                    metrics: var FontMetrics): Font =
@@ -306,7 +329,9 @@ proc initCocoaDriver*() =
   drawRelays = DrawRelays(
     fillRect: cocoaFillRect, drawLine: cocoaDrawLine,
     drawPoint: cocoaDrawPoint,
-    loadImage: cocoaLoadImage, drawImage: cocoaDrawImage)
+    loadImage: cocoaLoadImage, freeImage: cocoaFreeImage,
+    drawImage: cocoaDrawImage,
+    imageSize: cocoaImageSize, blitRGBA: cocoaBlitRGBA)
   inputRelays = InputRelays(
     pollEvent: cocoaPollEvent, waitEvent: cocoaWaitEvent,
     getTicks: cocoaGetTicks, sleep: cocoaDelay,

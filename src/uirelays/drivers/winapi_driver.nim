@@ -64,6 +64,26 @@ type
   WINAPIRECT {.pure.} = object
     left, top, right, bottom: LONG
 
+  BITMAPINFOHEADER {.pure.} = object
+    biSize: DWORD
+    biWidth: LONG
+    biHeight: LONG
+    biPlanes: uint16
+    biBitCount: uint16
+    biCompression: DWORD
+    biSizeImage: DWORD
+    biXPelsPerMeter: LONG
+    biYPelsPerMeter: LONG
+    biClrUsed: DWORD
+    biClrImportant: DWORD
+
+  BITMAPINFO {.pure.} = object
+    ## The colour table after the header is what a palettised bitmap needs and
+    ## a 32-bit `BI_RGB` one does not, so the one entry here is only there to
+    ## make the struct the shape the API expects.
+    bmiHeader: BITMAPINFOHEADER
+    bmiColors: array[1, DWORD]
+
   PAINTSTRUCT {.pure.} = object
     hdc: HDC
     fErase: BOOL
@@ -139,6 +159,9 @@ const
   OPAQUE = 2
 
   SRCCOPY = 0x00CC0020'u32
+  BI_RGB = 0'u32          ## uncompressed, and for 32 bits a pixel that is
+                          ## one `0x00RRGGBB` word each -- what `blitRGBA` has
+  DIB_RGB_COLORS = 0'u32  ## the colour table holds colours, not palette indices
   DIB_RGB_COLORS = 0'u32
 
   IDC_ARROW = cast[ptr uint16](32512)
@@ -311,6 +334,14 @@ proc LineTo(hdc: HDC; x, y: int32): BOOL
 proc CreatePen(iStyle, cWidth: int32; color: COLORREF): HGDIOBJ
   {.stdcall, dynlib: "gdi32", importc.}
 proc SetPixel(hdc: HDC; x, y: int32; color: COLORREF): COLORREF
+  {.stdcall, dynlib: "gdi32", importc.}
+proc StretchDIBits(hdc: HDC; xDest, yDest, destW, destH: int32;
+  xSrc, ySrc, srcW, srcH: int32; lpBits: pointer; lpbmi: pointer;
+  iUsage: uint32; rop: DWORD): int32
+  {.stdcall, dynlib: "gdi32", importc.}
+proc SaveDC(hdc: HDC): int32
+  {.stdcall, dynlib: "gdi32", importc.}
+proc RestoreDC(hdc: HDC; nSavedDC: int32): BOOL
   {.stdcall, dynlib: "gdi32", importc.}
 proc IntersectClipRect(hdc: HDC; left, top, right, bottom: int32): int32
   {.stdcall, dynlib: "gdi32", importc.}
@@ -723,6 +754,37 @@ proc winSetClipRect(r: coords.Rect) =
     discard IntersectClipRect(gBackDC,
       r.x.int32, r.y.int32, (r.x + r.w).int32, (r.y + r.h).int32)
 
+proc winBlitRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
+                 dst: coords.Rect): bool =
+  ## This driver decodes no pictures, so it fills in none of the image
+  ## relays. What it can do is take finished pixels from whoever does.
+  if gBackDC == nil or pixels == nil: return false
+  if w <= 0 or h <= 0 or dst.w <= 0 or dst.h <= 0: return false
+  var bmi = BITMAPINFO()
+  bmi.bmiHeader.biSize = DWORD(sizeof(BITMAPINFOHEADER))
+  bmi.bmiHeader.biWidth = w.LONG
+  # Negative, which is how a DIB says its rows run top to bottom. They are
+  # handed over that way and a DIB is bottom-up unless told otherwise, so
+  # without the sign the picture arrives upside down.
+  bmi.bmiHeader.biHeight = LONG(-h)
+  bmi.bmiHeader.biPlanes = 1
+  bmi.bmiHeader.biBitCount = 32
+  bmi.bmiHeader.biCompression = BI_RGB
+  # `dst` clips and does not scale. Rather than take a corner out of the
+  # source -- where a top-down DIB's origin is a question with two answers --
+  # the whole of it goes down at its own size behind a clip that admits only
+  # what `dst` allows. Same picture, and no question.
+  let saved = SaveDC(gBackDC)
+  discard IntersectClipRect(gBackDC, dst.x.int32, dst.y.int32,
+    int32(dst.x + min(w, dst.w)), int32(dst.y + min(h, dst.h)))
+  discard StretchDIBits(gBackDC,
+    dst.x.int32, dst.y.int32, w.int32, h.int32,
+    0, 0, w.int32, h.int32,
+    cast[pointer](pixels), addr bmi, DIB_RGB_COLORS, SRCCOPY)
+  if saved != 0:
+    discard RestoreDC(gBackDC, saved)
+  result = true
+
 proc winOpenFont(path: string; size: int; style: FontStyles;
                  metrics: var FontMetrics): screen.Font =
   # Ensure the font file is available as a private resource (needed for
@@ -1003,7 +1065,8 @@ proc initWinapiDriver*() =
     getFontMetrics: winGetFontMetrics, measureText: winMeasureText,
     drawText: winDrawText)
   drawRelays = DrawRelays(
-    fillRect: winFillRect, drawLine: winDrawLine, drawPoint: winDrawPoint)
+    fillRect: winFillRect, drawLine: winDrawLine, drawPoint: winDrawPoint,
+    blitRGBA: winBlitRGBA)
   inputRelays = InputRelays(
     pollEvent: winPollEvent, waitEvent: winWaitEvent,
     getTicks: winGetTicks, sleep: winDelay,
