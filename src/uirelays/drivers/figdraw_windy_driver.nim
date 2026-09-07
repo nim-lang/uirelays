@@ -704,8 +704,16 @@ proc figSetWindowTitle(title: string) =
     appWindow.title = title
 
 proc figGetClipboardText(): string =
-  if TextContent in getClipboardContentKinds(): getClipboardString()
-  else: ""
+  # Windy has `getClipboardContentKinds` on Windows and macOS and not on its
+  # X11 platform, which is why this only ever failed to build on Linux.
+  # Asking first is an optimisation and nothing more: `getClipboardString`
+  # answers "" for a clipboard holding a picture either way. So ask where
+  # asking is possible, and read where it is not.
+  when compiles(getClipboardContentKinds()):
+    if TextContent in getClipboardContentKinds(): getClipboardString()
+    else: ""
+  else:
+    getClipboardString()
 
 proc figPutClipboardText(text: string) =
   setClipboardString(text)

@@ -469,7 +469,8 @@ proc sdlBlitRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
   # `XRGB8888` is the top byte ignored and the rest `0xRRGGBB`, which is the
   # word `blitRGBA` is handed. So the rows go over as they are: no channel
   # walk, no alpha to resolve -- the caller resolved it.
-  discard updateTexture(blitTex, nil, cast[pointer](pixels), cint(w * 4))
+  discard updateTexture(blitTex, nil,
+                        cast[ptr UncheckedArray[uint8]](pixels), cint(w * 4))
   # `dst` clips and does not scale, so the source rectangle shrinks with it
   # rather than the destination stretching to fit.
   let cw = min(w, dst.w)
