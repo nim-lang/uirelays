@@ -396,6 +396,40 @@ proc XDrawPoint(dpy: pointer; d: XID; gc: pointer; x, y: cint): cint
 proc XCopyArea(dpy: pointer; src, dst: XID; gc: pointer;
   srcX, srcY: cint; w, h: cuint; dstX, dstY: cint): cint
   {.cdecl, dynlib: libX11, importc.}
+
+type
+  XImageObj = object
+    ## The front of Xlib's `XImage`, which is longer than this. Only a prefix
+    ## is declared because only a prefix is touched, and a prefix of a C
+    ## struct is at the same offsets as the whole of it. Nothing here is ever
+    ## allocated on this side -- `XCreateImage` makes it and the fields are
+    ## read back through the pointer it returns.
+    width, height: cint
+    xoffset: cint
+    format: cint
+    data: pointer
+    byteOrder: cint         ## LSBFirst / MSBFirst, the *server's*
+    bitmapUnit: cint
+    bitmapBitOrder: cint
+    bitmapPad: cint
+    depth: cint
+    bytesPerLine: cint
+    bitsPerPixel: cint      ## 32 for the depth-24 visual nearly everything
+                            ## has; the one field worth asking about
+    redMask, greenMask, blueMask: culong
+
+const
+  ZPixmap = 2
+  LSBFirst = 0
+  MSBFirst = 1
+
+proc XCreateImage(dpy: pointer; visual: pointer; depth: cuint; format: cint;
+  offset: cint; data: pointer; w, h: cuint;
+  bitmapPad, bytesPerLine: cint): ptr XImageObj
+  {.cdecl, dynlib: libX11, importc.}
+proc XPutImage(dpy: pointer; d: XID; gc: pointer; image: ptr XImageObj;
+  srcX, srcY: cint; dstX, dstY: cint; w, h: cuint): cint
+  {.cdecl, dynlib: libX11, importc.}
 proc XSetClipRectangles(dpy: pointer; gc: pointer;
   x, y: cint; rects: ptr XRectangle; n, ordering: cint): cint
   {.cdecl, dynlib: libX11, importc.}
@@ -1181,6 +1215,64 @@ proc x11DrawPoint(x, y: int; color: screen.Color) =
   discard XSetForeground(gDisplay, gGC, toPixel(color))
   discard XDrawPoint(gDisplay, gBackPixmap, gGC, x.cint, y.cint)
 
+# ---- Pixel blitting ----
+
+var gBlitVerdict = 0
+  ## 0 = nobody has asked yet, 1 = the surface takes pixels, -1 = it does not.
+  ## Whether it does is a property of the visual, which does not change while
+  ## the program runs, so the answer is worth keeping rather than building a
+  ## throwaway XImage every frame to hear it again.
+
+proc x11BlitRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
+                 dst: coords.Rect): bool =
+  if gDisplay == nil or gBackPixmap == None or gBlitVerdict < 0: return false
+  if pixels == nil or w <= 0 or h <= 0 or dst.w <= 0 or dst.h <= 0: return false
+
+  var img = XCreateImage(gDisplay, gVisual, gDepth.cuint, ZPixmap.cint, 0,
+                         cast[pointer](pixels), w.cuint, h.cuint, 32, 0)
+  if img == nil:
+    gBlitVerdict = -1
+    return false
+
+  # What came in is one `uint32` per pixel in this machine's byte order, so
+  # the server has to want exactly that: 32 bits to a pixel, and the same end
+  # of the word first. Both hold on every ordinary desktop -- the depth-24
+  # TrueColor visual nearly everything has is padded to 32 bits a pixel, and
+  # a client almost always talks to a server on its own machine. Where they
+  # do not hold there is no fix worth having here, so the answer is no, once,
+  # and the caller draws whatever it draws when there is no picture.
+  let hostOrder = (if cpuEndian == littleEndian: LSBFirst else: MSBFirst).cint
+  if img.bitsPerPixel != 32 or img.byteOrder != hostOrder:
+    img.data = nil
+    discard XFree(cast[pointer](img))
+    gBlitVerdict = -1
+    return false
+  gBlitVerdict = 1
+
+  let cw = min(w, dst.w)
+  let ch = min(h, dst.h)
+
+  # Every pixel that lands has to reach the frame hash. The hash is what
+  # decides whether the finished back buffer is worth copying to the window,
+  # and two different pictures of one size in one place are the same frame to
+  # a hash that only saw the rectangle -- the second one would never appear.
+  # Walking the buffer costs a fraction of sending it to the server, which is
+  # the very next thing that happens to it.
+  mixFrame(7); mixFrame(dst.x); mixFrame(dst.y)
+  mixFrame(w); mixFrame(h); mixFrame(cw); mixFrame(ch)
+  for i in 0 ..< w * h: mixFrame(pixels[i].uint64)
+
+  discard XPutImage(gDisplay, gBackPixmap, gGC, img, 0, 0,
+                    dst.x.cint, dst.y.cint, cw.cuint, ch.cuint)
+
+  # `XDestroyImage` is a C macro, not a symbol to bind, and it frees the
+  # pixels along with the struct -- but the pixels are the caller's and it
+  # still wants them. Letting go of them first leaves `XFree` exactly what
+  # `XCreateImage` allocated, which is the struct.
+  img.data = nil
+  discard XFree(cast[pointer](img))
+  result = true
+
 proc x11SetCursor(c: CursorKind) =
   let shape = case c
     of curDefault, curArrow: XC_left_ptr
@@ -1306,7 +1398,12 @@ proc initX11Driver*() =
     getFontMetrics: x11GetFontMetrics, measureText: x11MeasureText,
     drawText: x11DrawText, drawMeasuredText: x11DrawMeasuredText)
   drawRelays = DrawRelays(
-    fillRect: x11FillRect, drawLine: x11DrawLine, drawPoint: x11DrawPoint)
+    fillRect: x11FillRect, drawLine: x11DrawLine, drawPoint: x11DrawPoint,
+    blitRGBA: x11BlitRGBA)
+    # No `loadImage` here, and so no `imageSize` either: this driver does not
+    # decode pictures. `blitRGBA` is how one gets on the screen -- whoever
+    # can turn a file into pixels hands them over and gets the clip rectangle
+    # and the frame's dirty tracking of this driver for free.
   inputRelays = InputRelays(
     pollEvent: x11PollEvent, waitEvent: x11WaitEvent,
     getTicks: x11GetTicks, sleep: x11Delay,

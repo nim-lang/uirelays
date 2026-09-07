@@ -435,6 +435,52 @@ proc sdlFreeImage(img: screen.Image) =
   slot[].w = 0
   slot[].h = 0
 
+proc sdlImageSize(img: screen.Image): tuple[w, h: int] =
+  ## The size the slot has held all along -- `drawImage`'s `src` rectangle is
+  ## in these pixels, so without a way to ask, a caller could crop a picture
+  ## but never ask for the whole of it.
+  let slot = getImageSlot(img)
+  if slot == nil or slot[].texture == nil: (0, 0)
+  else: (slot[].w, slot[].h)
+
+# One texture, kept between calls and remade only when the size changes.
+# Blitting is a per-frame thing -- the caller redraws its picture every frame
+# because everything else here is redrawn every frame -- and asking the GPU
+# for a new texture that often is the one cost worth avoiding.
+var
+  blitTex: sdl3.Texture
+  blitTexW, blitTexH: int
+
+proc sdlBlitRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
+                 dst: coords.Rect): bool =
+  if ren == nil or pixels == nil or w <= 0 or h <= 0 or
+      dst.w <= 0 or dst.h <= 0:
+    return false
+  if blitTex == nil or blitTexW != w or blitTexH != h:
+    if blitTex != nil:
+      destroyTexture(blitTex)
+      blitTex = nil
+    blitTex = createTexture(ren, PIXELFORMAT_XRGB8888, TEXTUREACCESS_STATIC,
+                            w.cint, h.cint)
+    if blitTex == nil:
+      return false
+    blitTexW = w
+    blitTexH = h
+  # `XRGB8888` is the top byte ignored and the rest `0xRRGGBB`, which is the
+  # word `blitRGBA` is handed. So the rows go over as they are: no channel
+  # walk, no alpha to resolve -- the caller resolved it.
+  discard updateTexture(blitTex, nil,
+                        cast[ptr UncheckedArray[uint8]](pixels), cint(w * 4))
+  # `dst` clips and does not scale, so the source rectangle shrinks with it
+  # rather than the destination stretching to fit.
+  let cw = min(w, dst.w)
+  let ch = min(h, dst.h)
+  var srcRect = FRect(x: 0, y: 0, w: cw.cfloat, h: ch.cfloat)
+  var dstRect = FRect(x: dst.x.cfloat, y: dst.y.cfloat,
+                      w: cw.cfloat, h: ch.cfloat)
+  discard renderTexture(ren, blitTex, addr srcRect, addr dstRect)
+  result = true
+
 proc sdlDrawImage(img: screen.Image; src, dst: coords.Rect) =
   let slot = getImageSlot(img)
   if slot == nil or slot[].texture == nil:
@@ -688,7 +734,8 @@ proc initSdl3Driver*() =
     drawText: sdlDrawText)
   drawRelays = DrawRelays(
     fillRect: sdlFillRect, drawLine: sdlDrawLine, drawPoint: sdlDrawPoint,
-    loadImage: sdlLoadImage, freeImage: sdlFreeImage, drawImage: sdlDrawImage)
+    loadImage: sdlLoadImage, freeImage: sdlFreeImage, drawImage: sdlDrawImage,
+    imageSize: sdlImageSize, blitRGBA: sdlBlitRGBA)
   inputRelays = InputRelays(
     pollEvent: sdlPollEvent, waitEvent: sdlWaitEvent,
     getTicks: sdlGetTicks, sleep: sdlDelay,

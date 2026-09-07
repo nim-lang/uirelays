@@ -91,6 +91,38 @@ type
     loadImage*: proc (path: string): Image {.nimcall.}
     freeImage*: proc (img: Image) {.nimcall.}
     drawImage*: proc (img: Image; src, dst: Rect) {.nimcall.}
+    imageSize*: proc (img: Image): tuple[w, h: int] {.nimcall.}
+      ## The picture's own size, in its own pixels. `drawImage`'s `src` is a
+      ## rectangle in exactly those, so without this a caller can crop but
+      ## cannot say "all of it": it has no idea how big all of it is, and a
+      ## whole image drawn as `rect(0, 0, dst.w, dst.h)` is the top-left
+      ## corner of it, cropped to the shape of the hole it was going into.
+      ## Optional, and `(0, 0)` when a driver leaves it nil -- a caller that
+      ## wants the aspect ratio has to have another plan for that case.
+    blitRGBA*: proc (pixels: ptr UncheckedArray[uint32]; w, h: int;
+                     dst: Rect): bool {.nimcall.}
+      ## Put `w` * `h` finished pixels on the surface at `dst`, one row after
+      ## another, each `0x00RRGGBB` in the host's own byte order. Opaque:
+      ## whatever was transparent about them the caller has already composited
+      ## against what it wanted behind them, because a surface is not asked to
+      ## blend and the top byte is ignored.
+      ##
+      ## No scaling -- `w` and `h` are what lands, and `dst.w` and `dst.h`
+      ## only clip. A caller with a picture of another size resizes it first,
+      ## which is where it belongs: the caller knows whether this is a
+      ## thumbnail or a print, and the surface would only ever nearest-
+      ## neighbour it.
+      ##
+      ## This is the escape hatch for anything a driver has no relay for.
+      ## An application that can produce pixels -- a picture decoder, a chart,
+      ## a PDF page -- needs nothing of the driver but somewhere to put them,
+      ## and gets the clip rectangle and the frame's dirty tracking for free
+      ## by going through the driver rather than around it.
+      ##
+      ## `false` when the surface cannot take them at all: too odd a pixel
+      ## format, or no window yet. It is not an error the caller can fix, so
+      ## the answer is meant for choosing a fallback to draw instead, and it
+      ## is the same answer every time for a given surface.
 
 proc `==`*(a, b: Font): bool {.borrow.}
 proc `==`*(a, b: Image): bool {.borrow.}
@@ -277,6 +309,16 @@ proc drawPoint*(x, y: int; color: Color) = drawRelays.drawPoint(x, y, color)
 proc loadImage*(path: string): Image = drawRelays.loadImage(path)
 proc freeImage*(img: Image) = drawRelays.freeImage(img)
 proc drawImage*(img: Image; src, dst: Rect) = drawRelays.drawImage(img, src, dst)
+proc imageSize*(img: Image): tuple[w, h: int] =
+  ## `(0, 0)` from a driver that does not offer it. See the relay.
+  if drawRelays.imageSize != nil: drawRelays.imageSize(img)
+  else: (0, 0)
+proc blitRGBA*(pixels: ptr UncheckedArray[uint32]; w, h: int; dst: Rect): bool =
+  ## `false` from a driver that does not offer it, which is the same answer
+  ## it gives for a surface that cannot take the pixels: either way the
+  ## caller draws something else. See the relay.
+  if drawRelays.blitRGBA != nil: drawRelays.blitRGBA(pixels, w, h, dst)
+  else: false
 
 # Color constructors
 proc color*(r, g, b: uint8; a: uint8 = 255): Color =

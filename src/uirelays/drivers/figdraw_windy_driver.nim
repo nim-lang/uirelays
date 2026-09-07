@@ -39,6 +39,7 @@ type
     dopPoint
     dopText
     dopImage
+    dopPixels
 
   DrawOp = object
     state: DrawState
@@ -60,6 +61,10 @@ type
     of dopImage:
       image: screen.Image
       src, dst: coords.Rect
+    of dopPixels:
+      pixels: pixie.Image
+      pixelsKey: Hash
+      pixelsDst: coords.Rect
 
 var
   appWindow: Window
@@ -355,6 +360,26 @@ proc replayImage(ctx: BackendContext; op: DrawOp) =
     false,
   )
 
+proc replayPixels(ctx: BackendContext; op: DrawOp) =
+  ## The blit path. It goes through the atlas like everything else, keyed on
+  ## what the pixels are rather than on where they came from: a caller that
+  ## hands over the same picture every frame -- which is the ordinary case,
+  ## an editor redrawing a document that has not changed -- puts one entry in
+  ## and hits it forever after. A caller whose pixels really do change every
+  ## frame puts in a new entry every frame, so this is not the road to a video
+  ## player; `blitRGBA` is for a picture, a chart, a page.
+  if op.pixels.isNil:
+    return
+  if op.pixelsKey notin ctx.entries():
+    ctx.putImage(op.pixelsKey, op.pixels)
+  ctx.drawImage(
+    op.pixelsKey,
+    vec2(scaledF(op.pixelsDst.x), scaledF(op.pixelsDst.y)),
+    toFigColor(color(255, 255, 255, 255)),
+    vec2(scaledF(op.pixels.width), scaledF(op.pixels.height)),
+    false,
+  )
+
 proc renderQueuedOps() =
   if appWindow.isNil or renderer.isNil:
     return
@@ -395,6 +420,8 @@ proc renderQueuedOps() =
       replayText(ctx, op)
     of dopImage:
       replayImage(ctx, op)
+    of dopPixels:
+      replayPixels(ctx, op)
     if hasClip:
       ctx.popMask()
   ctx.restoreTransform()
@@ -627,6 +654,39 @@ proc figDrawImage(img: screen.Image; src, dst: coords.Rect) =
     return
   drawOps.add DrawOp(kind: dopImage, state: currentState, image: img, src: src, dst: dst)
 
+proc figImageSize(img: screen.Image): tuple[w, h: int] =
+  ## Without this a caller can crop a picture but cannot ask for all of it,
+  ## because "all of it" is a rectangle in the picture's own pixels and it had
+  ## no way to learn how many there are.
+  let slot = getImageSlot(img)
+  if slot.isNil or slot.image.isNil: (0, 0)
+  else: (slot.image.width, slot.image.height)
+
+proc figBlitRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
+                 dst: coords.Rect): bool =
+  if pixels == nil or w <= 0 or h <= 0 or dst.w <= 0 or dst.h <= 0:
+    return false
+  # The ops are replayed after this returns and the pixels belong to the
+  # caller until it does, so they are copied now rather than pointed at.
+  # `dst` clips and never scales, so what is copied is only what lands.
+  let cw = min(w, dst.w)
+  let ch = min(h, dst.h)
+  var img = pixie.newImage(cw, ch)
+  var key = hash((cw, ch))
+  for y in 0 ..< ch:
+    for x in 0 ..< cw:
+      let p = pixels[y * w + x]
+      # Opaque, which is what `blitRGBA` promises -- so premultiplied and
+      # straight are the same thing here and there is nothing to convert.
+      img.data[y * cw + x] = rgbx(uint8((p shr 16) and 0xFF),
+                                  uint8((p shr 8) and 0xFF),
+                                  uint8(p and 0xFF), 255)
+      key = key !& hash(p)
+  drawOps.add DrawOp(kind: dopPixels, state: currentState,
+                     pixels: img, pixelsKey: !$key, pixelsDst: dst)
+  result = true
+
+
 proc figSetCursor(c: screen.CursorKind) =
   if appWindow.isNil:
     return
@@ -644,8 +704,16 @@ proc figSetWindowTitle(title: string) =
     appWindow.title = title
 
 proc figGetClipboardText(): string =
-  if TextContent in getClipboardContentKinds(): getClipboardString()
-  else: ""
+  # Windy has `getClipboardContentKinds` on Windows and macOS and not on its
+  # X11 platform, which is why this only ever failed to build on Linux.
+  # Asking first is an optimisation and nothing more: `getClipboardString`
+  # answers "" for a clipboard holding a picture either way. So ask where
+  # asking is possible, and read where it is not.
+  when compiles(getClipboardContentKinds()):
+    if TextContent in getClipboardContentKinds(): getClipboardString()
+    else: ""
+  else:
+    getClipboardString()
 
 proc figPutClipboardText(text: string) =
   setClipboardString(text)
@@ -724,6 +792,8 @@ proc initFigDrawWindyDriver*() =
     loadImage: figLoadImage,
     freeImage: figFreeImage,
     drawImage: figDrawImage,
+    imageSize: figImageSize,
+    blitRGBA: figBlitRGBA,
   )
   inputRelays = InputRelays(
     pollEvent: figPollEvent,

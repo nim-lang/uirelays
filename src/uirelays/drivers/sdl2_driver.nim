@@ -21,7 +21,9 @@ proc toSdlColor(c: screen.Color): sdl2.Color =
   result.a = c.a
 
 proc toSdlRect(r: coords.Rect): sdl2.Rect {.inline.} =
-  (r.x, r.y, r.w, r.h)
+  # `sdl2.Rect` is a tuple of `cint`, and a tuple does not convert a field at
+  # a time the way an assignment would.
+  (r.x.cint, r.y.cint, r.w.cint, r.h.cint)
 
 proc getFontPtr(f: Font): FontPtr {.inline.} =
   let idx = f.int - 1
@@ -122,25 +124,25 @@ proc sdlCloseFont(f: Font) =
     close(fonts[idx].sdlFont)
     fonts[idx].sdlFont = nil
 
-proc sdlMeasureText(f: Font; text: cstring): TextExtent =
+proc sdlMeasureText(f: Font; text: string): TextExtent =
   let fp = getFontPtr(f)
-  if fp != nil and text[0] != '\0':
+  if fp != nil and text.len > 0:
     var w, h: cint
-    discard sizeUtf8(fp, text, addr w, addr h)
+    discard sizeUtf8(fp, text.cstring, addr w, addr h)
     result = TextExtent(w: w, h: h)
 
-proc sdlDrawTextShaded(f: Font; x, y: cint; text: cstring;
+proc sdlDrawTextShaded(f: Font; x, y: int; text: string;
                        fg, bg: screen.Color): TextExtent =
   let fp = getFontPtr(f)
-  if fp == nil or text[0] == '\0': return
-  let surf = renderUtf8Shaded(fp, text, toSdlColor(fg), toSdlColor(bg))
+  if fp == nil or text.len == 0: return
+  let surf = renderUtf8Shaded(fp, text.cstring, toSdlColor(fg), toSdlColor(bg))
   if surf == nil: return
   let tex = renderer.createTextureFromSurface(surf)
   if tex == nil:
     freeSurface(surf)
     return
   var src: sdl2.Rect = (0.cint, 0.cint, surf.w, surf.h)
-  var dst: sdl2.Rect = (x, y, surf.w, surf.h)
+  var dst: sdl2.Rect = (x.cint, y.cint, surf.w, surf.h)
   renderer.copy(tex, addr src, addr dst)
   result = TextExtent(w: surf.w, h: surf.h)
   freeSurface(surf)
@@ -156,13 +158,53 @@ proc sdlFillRect(r: coords.Rect; color: screen.Color) =
   var sdlRect = toSdlRect(r)
   discard renderer.fillRect(sdlRect)
 
-proc sdlDrawLine(x1, y1, x2, y2: cint; color: screen.Color) =
+proc sdlDrawLine(x1, y1, x2, y2: int; color: screen.Color) =
   renderer.setDrawColor(color.r, color.g, color.b, color.a)
-  renderer.drawLine(x1, y1, x2, y2)
+  renderer.drawLine(x1.cint, y1.cint, x2.cint, y2.cint)
 
-proc sdlDrawPoint(x, y: cint; color: screen.Color) =
+proc sdlDrawPoint(x, y: int; color: screen.Color) =
   renderer.setDrawColor(color.r, color.g, color.b, color.a)
-  renderer.drawPoint(x, y)
+  renderer.drawPoint(x.cint, y.cint)
+
+# One texture, kept between calls and remade only when the size changes.
+# A caller blits its picture every frame, because everything here is redrawn
+# every frame, and asking the GPU for a new texture that often is the one
+# cost worth avoiding.
+var
+  blitTex: TexturePtr
+  blitTexW, blitTexH: cint
+
+proc sdlBlitRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
+                 dst: coords.Rect): bool =
+  ## This driver decodes no pictures, so it fills in none of the image
+  ## relays. What it can do is take finished pixels from whoever does, and
+  ## that is all `blitRGBA` is.
+  if renderer == nil or pixels == nil or w <= 0 or h <= 0 or
+      dst.w <= 0 or dst.h <= 0:
+    return false
+  if blitTex == nil or blitTexW != w.cint or blitTexH != h.cint:
+    if blitTex != nil:
+      destroyTexture(blitTex)
+      blitTex = nil
+    # `RGB888` is SDL2's name for 32 bits a pixel with the top one ignored,
+    # which is the word `blitRGBA` hands over. Its alpha-carrying cousin
+    # would read that ignored byte as "fully transparent" and draw nothing.
+    blitTex = renderer.createTexture(uint32(SDL_PIXELFORMAT_RGB888),
+                                     cint(SDL_TEXTUREACCESS_STATIC),
+                                     w.cint, h.cint)
+    if blitTex == nil:
+      return false
+    blitTexW = w.cint
+    blitTexH = h.cint
+  discard blitTex.updateTexture(nil, cast[pointer](pixels), cint(w * 4))
+  # `dst` clips and does not scale, so the source rectangle shrinks with it
+  # rather than the destination stretching to fit.
+  let cw = min(w, dst.w)
+  let ch = min(h, dst.h)
+  var srcRect = toSdlRect(coords.rect(0, 0, cw, ch))
+  var dstRect = toSdlRect(coords.rect(dst.x, dst.y, cw, ch))
+  discard renderer.copy(blitTex, addr srcRect, addr dstRect)
+  result = true
 
 proc sdlSetCursor(c: CursorKind) =
   let sdlCursor = case c
@@ -380,7 +422,8 @@ proc initSdl2Driver*() =
     getFontMetrics: sdlGetFontMetrics, measureText: sdlMeasureText,
     drawText: sdlDrawTextShaded)
   drawRelays = DrawRelays(
-    fillRect: sdlFillRect, drawLine: sdlDrawLine, drawPoint: sdlDrawPoint)
+    fillRect: sdlFillRect, drawLine: sdlDrawLine, drawPoint: sdlDrawPoint,
+    blitRGBA: sdlBlitRGBA)
   inputRelays = InputRelays(
     pollEvent: sdlPollEvent, waitEvent: sdlWaitEvent,
     getTicks: sdlGetTicks, sleep: sdlDelay,
