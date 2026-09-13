@@ -28,6 +28,10 @@ type
     tv_sec: clong
     tv_nsec: clong
 
+proc c_setlocale(category: cint; locale: cstring): cstring
+  {.importc: "setlocale", header: "<locale.h>".}
+var LC_CTYPE {.importc: "LC_CTYPE", header: "<locale.h>".}: cint
+
 proc clock_gettime(clk: ClockId; tp: var Timespec): cint
   {.importc, header: "<time.h>".}
 proc nanosleep(req: var Timespec; rem: var Timespec): cint
@@ -323,6 +327,14 @@ const
   XK_minus = 0x2d'u
   XK_equal = 0x3d'u
 
+  # Input method
+  XIMPreeditNothing = 0x0008
+  XIMStatusNothing = 0x0400
+  XBufferOverflow = -1.cint
+  XLookupChars = 2.cint
+  XLookupKeySymVal = 3.cint
+  XLookupBoth = 4.cint
+
 # ---- POSIX select for timeout waiting ----
 
 proc ConnectionNumber(dpy: pointer): cint
@@ -456,6 +468,29 @@ proc XDefineCursor(dpy: pointer; w: XID; cursor: XID): cint
 proc XLookupString(ev: ptr XKeyEvent; buf: cstring; bufSize: cint;
   keysym: ptr XKeySym; compose: pointer): cint
   {.cdecl, dynlib: libX11, importc.}
+proc XSetLocaleModifiers(modifiers: cstring): cstring
+  {.cdecl, dynlib: libX11, importc.}
+proc XOpenIM(dpy: pointer; rdb: pointer; resName, resClass: cstring): pointer
+  {.cdecl, dynlib: libX11, importc.}
+proc XCloseIM(im: pointer): XStatus
+  {.cdecl, dynlib: libX11, importc.}
+# The two varargs calls take a NULL-terminated list of name/value pairs. Every
+# argument is passed as a pointer, so the list is of one type.
+proc XCreateIC(im: pointer): pointer
+  {.cdecl, dynlib: libX11, importc, varargs.}
+proc XGetICValues(ic: pointer): cstring
+  {.cdecl, dynlib: libX11, importc, varargs.}
+proc XDestroyIC(ic: pointer)
+  {.cdecl, dynlib: libX11, importc.}
+proc XSetICFocus(ic: pointer)
+  {.cdecl, dynlib: libX11, importc.}
+proc XUnsetICFocus(ic: pointer)
+  {.cdecl, dynlib: libX11, importc.}
+proc Xutf8LookupString(ic: pointer; ev: ptr XKeyEvent; buf: cstring;
+  bufSize: cint; keysym: ptr XKeySym; status: ptr cint): cint
+  {.cdecl, dynlib: libX11, importc.}
+proc XFilterEvent(ev: ptr XEvent; w: XID): XBool
+  {.cdecl, dynlib: libX11, importc.}
 proc XSetSelectionOwner(dpy: pointer; selection: Atom; owner: XID; time: XTime): cint
   {.cdecl, dynlib: libX11, importc.}
 proc XConvertSelection(dpy: pointer; selection, target, property: Atom;
@@ -552,6 +587,8 @@ var
   gClipboardText: string
   gClipProperty: Atom
   gUiScale: int = 100
+  gXim: pointer        # input method, nil if none could be opened
+  gXic: pointer        # its input context for `gWindow`
 
 var eventQueue: seq[input.Event]
 
@@ -741,27 +778,62 @@ proc processXEvent(xev: XEvent) =
       pushEvent(input.Event(kind: WindowCloseEvent))
 
   of FocusIn:
+    if gXic != nil: XSetICFocus(gXic)
     pushEvent(input.Event(kind: WindowFocusGainedEvent))
 
   of FocusOut:
+    if gXic != nil: XUnsetICFocus(gXic)
     pushEvent(input.Event(kind: WindowFocusLostEvent))
 
   of KeyPress:
-    var buf {.noinit.}: array[8, char]
-    var ks {.noinit.}: XKeySym
-    let textLen = XLookupString(unsafeAddr xev.xkey, cast[cstring](addr buf[0]),
-      8, addr ks, nil)
-    # Key event
-    var e = input.Event(kind: KeyDownEvent)
-    e.key = translateKeySym(ks)
-    e.mods = translateMods(xev.xkey.state)
-    pushEvent(e)
-    # Text input (if printable)
-    if textLen > 0 and buf[0].uint8 >= 32 and buf[0].uint8 != 127:
-      var te = input.Event(kind: TextInputEvent)
-      for i in 0 ..< min(textLen, 4):
-        te.text[i] = buf[i]
-      pushEvent(te)
+    # The text a key types is UTF-8 from the input method, which is also what
+    # composes dead keys and runs an IME. `XLookupString` is only the fallback
+    # for a display without one: it speaks ISO 8859-1, so its byte for an 'ä'
+    # is re-encoded here -- passed on as it is, it is not UTF-8.
+    var buf {.noinit.}: array[64, char]
+    var ks: XKeySym = 0
+    var text = ""
+    var hasKey = true
+    if gXic != nil:
+      var status: cint = 0
+      var n = Xutf8LookupString(gXic, unsafeAddr xev.xkey,
+        cast[cstring](addr buf[0]), buf.len.cint, addr ks, addr status)
+      if status == XBufferOverflow:
+        text = newString(n)
+        n = Xutf8LookupString(gXic, unsafeAddr xev.xkey, cstr(text),
+          n.cint, addr ks, addr status)
+        text.setLen(max(n, 0))
+      elif status == XLookupChars or status == XLookupBoth:
+        for i in 0 ..< n: text.add buf[i]
+      # Text an IME commits arrives without a key to go with it.
+      hasKey = status == XLookupKeySymVal or status == XLookupBoth
+    else:
+      let n = XLookupString(unsafeAddr xev.xkey, cast[cstring](addr buf[0]),
+        buf.len.cint, addr ks, nil)
+      for i in 0 ..< n:
+        let b = buf[i].uint8
+        if b < 0x80:
+          text.add buf[i]
+        else:
+          text.add char(0xC0'u8 or (b shr 6))
+          text.add char(0x80'u8 or (b and 0x3F))
+    if hasKey:
+      var e = input.Event(kind: KeyDownEvent)
+      e.key = translateKeySym(ks)
+      e.mods = translateMods(xev.xkey.state)
+      pushEvent(e)
+    # Text input (if printable), one event per codepoint
+    if text.len > 0 and text[0].uint8 >= 32 and text[0].uint8 != 127:
+      var i = 0
+      while i < text.len:
+        var te = input.Event(kind: TextInputEvent)
+        var k = 0
+        while true:
+          if k < te.text.len: te.text[k] = text[i]
+          inc k
+          inc i
+          if i >= text.len or (text[i].uint8 and 0xC0) != 0x80: break
+        pushEvent(te)
 
   of ButtonPress:
     let btn = xev.xbutton.button
@@ -814,7 +886,8 @@ proc drainXEvents() =
   while XPending(gDisplay) > 0:
     var xev {.noinit.}: XEvent
     discard XNextEvent(gDisplay, addr xev)
-    processXEvent(xev)
+    if XFilterEvent(addr xev, None) == 0:
+      processXEvent(xev)
 
 # ---- Display density ----
 
@@ -914,6 +987,27 @@ proc sendStartupInfo(msg: string) =
     if i > msg.len: break
   discard XFlush(gDisplay)
 
+proc openInputMethod() =
+  ## The input method the environment asks for (`XMODIFIERS`, an IBus or
+  ## Fcitx say), else the one built into Xlib, which does dead keys and
+  ## Compose. Either hands out UTF-8. The locale's character type is what
+  ## picks the Compose table, so it is taken from the environment first.
+  discard c_setlocale(LC_CTYPE, "")
+  discard XSetLocaleModifiers("")
+  gXim = XOpenIM(gDisplay, nil, nil, nil)
+  if gXim == nil:
+    discard XSetLocaleModifiers("@im=none")
+    gXim = XOpenIM(gDisplay, nil, nil, nil)
+  if gXim == nil: return
+  gXic = XCreateIC(gXim,
+    cstring"inputStyle", cast[pointer](XIMPreeditNothing or XIMStatusNothing),
+    cstring"clientWindow", cast[pointer](gWindow),
+    cstring"focusWindow", cast[pointer](gWindow),
+    nil)
+  if gXic == nil:
+    discard XCloseIM(gXim)
+    gXim = nil
+
 proc x11CreateWindow(layout: var ScreenLayout; icon: pointer; iconLen: int) =
   gDisplay = XOpenDisplay(nil)
   if gDisplay == nil:
@@ -940,15 +1034,22 @@ proc x11CreateWindow(layout: var ScreenLayout; icon: pointer; iconLen: int) =
     0, 0, layout.width.cuint, layout.height.cuint, 0,
     XBlackPixel(gDisplay, gScreen), XBlackPixel(gDisplay, gScreen))
 
+  openInputMethod()
   # Key releases are not asked for: nothing in this library reads a
   # `KeyUpEvent`, and a host that repaints per event would pay a frame for
   # every key let go of -- one per repeat while a key is held down, which is
   # the one place where the keyboard produces events faster than a person
   # types. A key press carries its own modifier state, so nothing is lost.
+  # An input method may want them all the same (IBus does); it takes what it
+  # asked for out again in `XFilterEvent`, and a release that gets past it
+  # turns into no event at all.
+  var imEvents: clong = 0
+  if gXic != nil:
+    discard XGetICValues(gXic, cstring"filterEvents", addr imEvents, nil)
   discard XSelectInput(gDisplay, gWindow,
     (ExposureMask or KeyPressMask or
      ButtonPressMask or ButtonReleaseMask or PointerMotionMask or
-     StructureNotifyMask or FocusChangeMask).clong)
+     StructureNotifyMask or FocusChangeMask).clong or imEvents)
 
   # Register WM_DELETE_WINDOW
   gWmDeleteWindow = XInternAtom(gDisplay, "WM_DELETE_WINDOW", 0)
@@ -1354,7 +1455,7 @@ proc x11GetClipboardText(): string =
             result = $cast[cstring](data)
             discard XFree(data)
         return
-      else:
+      elif XFilterEvent(addr xev, None) == 0:
         processXEvent(xev)
     else:
       sleepMs(5)
@@ -1380,6 +1481,8 @@ proc x11Delay(ms: int) =
 
 proc x11QuitRequest() =
   if gDisplay != nil:
+    if gXic != nil: XDestroyIC(gXic)
+    if gXim != nil: discard XCloseIM(gXim)
     discard XDestroyWindow(gDisplay, gWindow)
     discard XCloseDisplay(gDisplay)
 
