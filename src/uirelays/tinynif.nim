@@ -21,8 +21,8 @@
 ## keeps getting errors, so it is safe to check for one at the end.
 ##
 ## Deliberate omissions -- add them the day something needs them:
-## * No floating point literals. A `1.5` is reported as an error rather than
-##   silently truncated.
+## * Floating point literals are decimal only: `1.5`, `-2e3`, `.5e-1` is not
+##   one (NIF wants a digit first). A hexadecimal `0x1.8p1` is an error.
 ## * Unsigned and typed literal suffixes are not distinguished from plain
 ##   integers; a trailing `u` is accepted and the digits are what you get.
 ## * NIF's own line information (the `<line>,<col>` prefixes that generated
@@ -32,6 +32,8 @@
 ## One addition, for the same reason: `#` starts a comment that runs to the end
 ## of the line. Plain NIF has no comments, but a file a human edits does need
 ## them.
+
+from std/parseutils import parseFloat
 
 type
   TokenKind* = enum
@@ -46,6 +48,7 @@ type
     tkSymbolDef,  ## the same, but introduced by a `:`, which is how NIF marks
                   ## the place a symbol is defined
     tkIntLit,     ## `intVal` has the value
+    tkFloatLit,   ## `floatVal` has the value
     tkCharLit,    ## `intVal` has the byte
     tkStringLit   ## `text` has the value, escapes already resolved
 
@@ -53,6 +56,7 @@ type
     kind*: TokenKind
     text*: string    ## the tag, name, string value or error message
     intVal*: int64   ## the value of an integer or character literal
+    floatVal*: float ## the value of a floating point literal
     line*, col*: int ## where the token starts, both 1-based
 
   Lexer* = object
@@ -156,7 +160,32 @@ proc readChar(lex: var Lexer; tok: var Token) =
   tok.kind = tkCharLit
   tok.intVal = int64(ord(buf[0]))
 
+proc readFraction(lex: var Lexer; tok: var Token; start: int) =
+  ## The part of a decimal float behind its integer digits: an optional
+  ## `.digits`, then an optional exponent. `start` is where the literal began,
+  ## sign included, so the whole spelling can be handed to `parseFloat`.
+  if lex.at == '.':
+    lex.bump
+    while lex.at in {'0'..'9'}: lex.bump
+  if lex.at == 'e' or lex.at == 'E':
+    lex.bump
+    if lex.at == '-' or lex.at == '+': lex.bump
+    if lex.at notin {'0'..'9'}:
+      tok.setError "expected digits in the exponent of a float literal"
+      return
+    while lex.at in {'0'..'9'}: lex.bump
+  if lex.at notin Delimiters:
+    tok.setError "unexpected '" & $lex.at & "' in a float literal"
+    return
+  var value = 0.0
+  if parseFloat(lex.input, value, start) != lex.pos - start:
+    tok.setError "malformed float literal"
+    return
+  tok.kind = tkFloatLit
+  tok.floatVal = value
+
 proc readNumber(lex: var Lexer; tok: var Token) =
+  let start = lex.pos
   let negative = lex.at == '-'
   if lex.at == '-' or lex.at == '+': lex.bump
   var value = 0'i64
@@ -178,12 +207,13 @@ proc readNumber(lex: var Lexer; tok: var Token) =
   if digits == 0:
     tok.setError "expected digits in an integer literal"
     return
-  # Whatever sticks to the digits is either a float or a typo; both deserve to
-  # be named rather than quietly dropped on the floor.
-  if lex.at == 'u': lex.bump
-  if (lex.at == '.' and hexValue(lex.at(1)) >= 0) or lex.at == 'e' or lex.at == 'E':
-    tok.setError "floating point literals are not supported"
+  # Whatever sticks to the digits is either a float or a typo; a typo deserves
+  # to be named rather than quietly dropped on the floor.
+  if base == 10 and ((lex.at == '.' and lex.at(1) in {'0'..'9'}) or
+                     lex.at == 'e' or lex.at == 'E'):
+    lex.readFraction(tok, start)
     return
+  if lex.at == 'u': lex.bump
   if lex.at notin Delimiters:
     tok.setError "unexpected '" & $lex.at & "' in an integer literal"
     return
@@ -252,6 +282,7 @@ proc `$`*(tok: Token): string =
   of tkDot: result = "."
   of tkIdent, tkSymbol, tkSymbolDef: result = tok.text
   of tkIntLit: result = $tok.intVal
+  of tkFloatLit: result = $tok.floatVal
   of tkStringLit: result = "\"" & tok.text & "\""
   of tkCharLit:
     const HexDigits = "0123456789ABCDEF"
