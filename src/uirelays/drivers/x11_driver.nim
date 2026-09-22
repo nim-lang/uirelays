@@ -247,7 +247,7 @@ const
 
   # Event types
   KeyPress = 2.cint
-  KeyRelease {.used.} = 3.cint   # not selected for; see XSelectInput below
+  KeyRelease = 3.cint
   ButtonPress = 4.cint
   ButtonRelease = 5.cint
   MotionNotify = 6.cint
@@ -262,7 +262,7 @@ const
   # Event masks
   ExposureMask = 1 shl 15
   KeyPressMask = 1 shl 0
-  KeyReleaseMask {.used.} = 1 shl 1
+  KeyReleaseMask = 1 shl 1
   ButtonPressMask = 1 shl 2
   ButtonReleaseMask = 1 shl 3
   PointerMotionMask = 1 shl 6
@@ -300,6 +300,8 @@ const
   # KeySyms
   XK_a = 0x61'u
   XK_z = 0x7a'u
+  XK_CapitalA = 0x41'u
+  XK_CapitalZ = 0x5a'u
   XK_0 = 0x30'u
   XK_9 = 0x39'u
   XK_F1 = 0xffbe'u
@@ -448,6 +450,11 @@ proc XSetClipRectangles(dpy: pointer; gc: pointer;
 proc XSetClipMask(dpy: pointer; gc: pointer; pixmap: XID): cint
   {.cdecl, dynlib: libX11, importc.}
 proc XNextEvent(dpy: pointer; ev: ptr XEvent): cint
+  {.cdecl, dynlib: libX11, importc.}
+proc XPeekEvent(dpy: pointer; ev: ptr XEvent): cint
+  {.cdecl, dynlib: libX11, importc.}
+proc XkbSetDetectableAutoRepeat(dpy: pointer; detectable: XBool;
+                                supported: ptr XBool): XBool
   {.cdecl, dynlib: libX11, importc.}
 proc XPending(dpy: pointer): cint
   {.cdecl, dynlib: libX11, importc.}
@@ -670,6 +677,11 @@ proc recreateBackBuffer() =
 proc translateKeySym(ks: XKeySym): input.KeyCode =
   if ks >= XK_a and ks <= XK_z:
     return input.KeyCode(ord(KeyA) + (ks.int - XK_a.int))
+  # With Shift (or Caps Lock) down, X hands over the capital's keysym. It is
+  # the same key: a press has to say so, and a release all the more -- the
+  # release of W is what stops the running, Shift or not.
+  if ks >= XK_CapitalA and ks <= XK_CapitalZ:
+    return input.KeyCode(ord(KeyA) + (ks.int - XK_CapitalA.int))
   if ks >= XK_0 and ks <= XK_9:
     return input.KeyCode(ord(Key0) + (ks.int - XK_0.int))
   if ks >= XK_F1 and ks <= XK_F12:
@@ -740,6 +752,24 @@ proc handleSelectionRequest(req: XSelectionRequestEvent) =
   discard XSendEvent(gDisplay, req.requestor, 0, 0, addr ev)
 
 # ---- Event processing ----
+
+var gRepeatsPaired = true
+  ## Whether the server still sends a held key's auto-repeat as release/press
+  ## pairs -- set once, by asking for XKB's detectable auto-repeat.
+
+proc isAutoRepeatRelease(xev: XEvent): bool =
+  ## A release that auto-repeat made up: the very next event is a press of
+  ## the same key with the same timestamp. Only asked where the server could
+  ## not be told to leave those out, and only of an event straight off the
+  ## queue: an input method that wants releases takes them in through
+  ## `XFilterEvent` and hands them back later, by which time the press that
+  ## came with a made-up one is no longer next to it.
+  if not gRepeatsPaired or XPending(gDisplay) == 0: return false
+  var next {.noinit.}: XEvent
+  discard XPeekEvent(gDisplay, addr next)
+  result = next.xkey.theType == KeyPress and
+           next.xkey.keycode == xev.xkey.keycode and
+           next.xkey.time == xev.xkey.time
 
 var lastClickTime: XTime
 var lastClickX, lastClickY: int
@@ -835,6 +865,14 @@ proc processXEvent(xev: XEvent) =
           if i >= text.len or (text[i].uint8 and 0xC0) != 0x80: break
         pushEvent(te)
 
+  of KeyRelease:
+    var ks {.noinit.}: XKeySym
+    discard XLookupString(unsafeAddr xev.xkey, nil, 0, addr ks, nil)
+    var e = input.Event(kind: KeyUpEvent)
+    e.key = translateKeySym(ks)
+    e.mods = translateMods(xev.xkey.state)
+    pushEvent(e)
+
   of ButtonPress:
     let btn = xev.xbutton.button
     if btn == Button4 or btn == Button5:
@@ -882,12 +920,19 @@ proc processXEvent(xev: XEvent) =
   else:
     discard
 
+proc dispatchXEvent(xev: var XEvent) =
+  ## One event just taken off the queue: a release that auto-repeat made up
+  ## goes nowhere, the input method gets the first look at the rest, and
+  ## what it leaves is ours.
+  if xev.xkey.theType == KeyRelease and isAutoRepeatRelease(xev): return
+  if XFilterEvent(addr xev, None) == 0:
+    processXEvent(xev)
+
 proc drainXEvents() =
   while XPending(gDisplay) > 0:
     var xev {.noinit.}: XEvent
     discard XNextEvent(gDisplay, addr xev)
-    if XFilterEvent(addr xev, None) == 0:
-      processXEvent(xev)
+    dispatchXEvent(xev)
 
 # ---- Display density ----
 
@@ -1035,21 +1080,29 @@ proc x11CreateWindow(layout: var ScreenLayout; icon: pointer; iconLen: int) =
     XBlackPixel(gDisplay, gScreen), XBlackPixel(gDisplay, gScreen))
 
   openInputMethod()
-  # Key releases are not asked for: nothing in this library reads a
-  # `KeyUpEvent`, and a host that repaints per event would pay a frame for
-  # every key let go of -- one per repeat while a key is held down, which is
-  # the one place where the keyboard produces events faster than a person
-  # types. A key press carries its own modifier state, so nothing is lost.
-  # An input method may want them all the same (IBus does); it takes what it
-  # asked for out again in `XFilterEvent`, and a release that gets past it
-  # turns into no event at all.
+  # Key releases are reported, as every other backend reports them: a game
+  # moves for as long as a key is *held*, and only the release says when that
+  # ends. What they must not be is one release per auto-repeat. Plain X11
+  # repeats a held key as release/press pairs, and a host that repaints per
+  # event would pay a frame for every one of them -- the one place where the
+  # keyboard produces events faster than a person types. XKB's "detectable
+  # auto-repeat" makes the server send the presses alone, so a `KeyUpEvent`
+  # means a finger came off the key. A server without XKB gets the pairs, and
+  # `isAutoRepeatRelease` takes them apart on this side instead.
+  #
+  # An input method may ask for events of its own (IBus wants the releases
+  # too); it takes what it asked for out again in `XFilterEvent`, before any
+  # of it becomes an event here.
   var imEvents: clong = 0
   if gXic != nil:
     discard XGetICValues(gXic, cstring"filterEvents", addr imEvents, nil)
   discard XSelectInput(gDisplay, gWindow,
-    (ExposureMask or KeyPressMask or
+    (ExposureMask or KeyPressMask or KeyReleaseMask or
      ButtonPressMask or ButtonReleaseMask or PointerMotionMask or
      StructureNotifyMask or FocusChangeMask).clong or imEvents)
+  var detectable: XBool = 0
+  discard XkbSetDetectableAutoRepeat(gDisplay, 1, addr detectable)
+  gRepeatsPaired = detectable == 0
 
   # Register WM_DELETE_WINDOW
   gWmDeleteWindow = XInternAtom(gDisplay, "WM_DELETE_WINDOW", 0)
@@ -1455,8 +1508,8 @@ proc x11GetClipboardText(): string =
             result = $cast[cstring](data)
             discard XFree(data)
         return
-      elif XFilterEvent(addr xev, None) == 0:
-        processXEvent(xev)
+      else:
+        dispatchXEvent(xev)
     else:
       sleepMs(5)
 

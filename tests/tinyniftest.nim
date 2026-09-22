@@ -70,6 +70,16 @@ block:
         $t[5].kind & " " & $t[5].intVal)
 
 block:
+  let t = tokens("1.5 -0.25 2e3 -1.5E-2 0x1e")
+  check("a float", t[0].kind == tkFloatLit and t[0].floatVal == 1.5, $t[0])
+  check("a negative float", t[1].floatVal == -0.25, $t[1])
+  check("an exponent without a point", t[2].kind == tkFloatLit and
+        t[2].floatVal == 2000.0, $t[2])
+  check("a negative exponent", t[3].floatVal == -0.015, $t[3])
+  check("'e' is a hex digit, not an exponent, after 0x",
+        t[4].kind == tkIntLit and t[4].intVal == 30, $t[4])
+
+block:
   let t = tokens("- -x")
   check("a lone '-' is a name", t[0].kind == tkIdent, $t[0].kind)
   check("so is '-x'", t[1].kind == tkIdent and t[1].text == "-x", $t[1].text)
@@ -114,8 +124,10 @@ check("a newline inside a string",
       firstError("\"oops\nmore\"").len > 0, "accepted")
 check("a half-written escape",
       firstError("\"a\\zz\"").contains("two hex digits"), firstError("\"a\\zz\""))
-check("a float literal is named, not truncated",
-      firstError("1.5").contains("floating point"), firstError("1.5"))
+check("an exponent without digits", firstError("1e").contains("exponent"),
+      firstError("1e"))
+check("junk stuck to a float",
+      firstError("1.5x").contains("float literal"), firstError("1.5x"))
 check("no tag behind '('", firstError("( a)").contains("expected a tag"),
       firstError("( a)"))
 check("'()' has no tag", firstError("()").contains("expected a tag"),
@@ -127,8 +139,8 @@ check("an integer too large for int64",
       firstError("99999999999999999999"))
 check("an unclosed character literal",
       firstError("'ab'").contains("apostrophe"), firstError("'ab'"))
-equals("the error carries its position", firstError("(a\n  1.5)").split(":")[0] & ":" &
-       firstError("(a\n  1.5)").split(":")[1], "2:3")
+equals("the error carries its position", firstError("(a\n  1e)").split(":")[0] & ":" &
+       firstError("(a\n  1e)").split(":")[1], "2:3")
 
 # ---------------------------------------------------------------------------
 echo "layout:"
@@ -266,8 +278,10 @@ rejects("a nested layout", "(layout (layout (a)))", "outermost")
 rejects("another tag at the top", "(rows (a))", "expected (layout ...)")
 rejects("an empty input", "", "nothing here")
 rejects("comments only", "# just a note\n", "nothing here")
-rejects("a lexer error is passed along", "(layout (a (px 1.5)))",
-        "floating point")
+rejects("a lexer error is passed along", "(layout (a (px 1e)))",
+        "exponent")
+rejects("a float where a size wants pixels", "(layout (a (px 1.5)))",
+        "expected a number")
 
 block:
   # A layout that did not parse resolves to nothing at all, so a caller that
