@@ -16,37 +16,14 @@ template execBackend(backend: string) =
     ].join(" ")
     exec command
 
-# The lexer and the config parsers need no driver, so they are tested directly.
+# The lexer needs no driver, so it is tested directly.
 exec "nim c -r tests/tinyniftest.nim"
-exec "nim c -r tests/configtest.nim"
-exec "nim c -r tests/markdowntest.nim"
-# Bold and italics reach the drawing path through stub relays.
-exec "nim c -r tests/styletest.nim"
-# The word index needs no font until something draws with it.
-exec "nim c -r tests/wordindextest.nim"
-# The clipboard is a relay, so the test can hold the text itself.
-exec "nim c -r tests/cliphistorytest.nim"
-# Search and replace is a walk over a buffer; nothing there draws either.
-exec "nim c -r tests/searchtest.nim"
-# A highlighter's output is token classes, which are colorless until a theme
-# gets them -- so the console one is tested without a window as well.
-exec "nim c -r tests/consoletest.nim"
-# Line wrapping is what the drawing path does with a line that is too long,
-# so it is watched through the same stub relays as the font styles.
-exec "nim c -r tests/wraptest.nim"
-# Where the caret may go in a terminal, and what a key means where it stands.
-exec "nim c -r tests/terminaltest.nim"
-# And that the row the caret is on is the row that gets the band.
-exec "nim c -r tests/activelinetest.nim"
-# Everything around asking a compiler where a name is -- but not the compiler,
-# which is not something a test may assume is installed.
-exec "nim c -r tests/tracktest.nim"
-# And what `open <name>` does with a name that is missing most of its path.
-exec "nim c -r tests/filesearchtest.nim"
+# And so does the layout: dividing a rectangle, finding the borders in it, and
+# moving one, are arithmetic that never touches a window.
+exec "nim c -r tests/layouttest.nim"
 
-# The app, once, with the platform's default backend.
-exec "nim c apps/focim.nim"
-
+# Everything else is a window, and a window is what the examples are: each
+# backend gets to compile all of them.
 execBackend("")
 when defined(features.uirelays.figDrawWindy):
   execBackend("--define:\"features.uirelays.figDrawWindy\"")

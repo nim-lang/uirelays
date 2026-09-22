@@ -28,6 +28,10 @@ type
     tv_sec: clong
     tv_nsec: clong
 
+proc c_setlocale(category: cint; locale: cstring): cstring
+  {.importc: "setlocale", header: "<locale.h>".}
+var LC_CTYPE {.importc: "LC_CTYPE", header: "<locale.h>".}: cint
+
 proc clock_gettime(clk: ClockId; tp: var Timespec): cint
   {.importc, header: "<time.h>".}
 proc nanosleep(req: var Timespec; rem: var Timespec): cint
@@ -325,6 +329,14 @@ const
   XK_minus = 0x2d'u
   XK_equal = 0x3d'u
 
+  # Input method
+  XIMPreeditNothing = 0x0008
+  XIMStatusNothing = 0x0400
+  XBufferOverflow = -1.cint
+  XLookupChars = 2.cint
+  XLookupKeySymVal = 3.cint
+  XLookupBoth = 4.cint
+
 # ---- POSIX select for timeout waiting ----
 
 proc ConnectionNumber(dpy: pointer): cint
@@ -398,6 +410,40 @@ proc XDrawPoint(dpy: pointer; d: XID; gc: pointer; x, y: cint): cint
 proc XCopyArea(dpy: pointer; src, dst: XID; gc: pointer;
   srcX, srcY: cint; w, h: cuint; dstX, dstY: cint): cint
   {.cdecl, dynlib: libX11, importc.}
+
+type
+  XImageObj = object
+    ## The front of Xlib's `XImage`, which is longer than this. Only a prefix
+    ## is declared because only a prefix is touched, and a prefix of a C
+    ## struct is at the same offsets as the whole of it. Nothing here is ever
+    ## allocated on this side -- `XCreateImage` makes it and the fields are
+    ## read back through the pointer it returns.
+    width, height: cint
+    xoffset: cint
+    format: cint
+    data: pointer
+    byteOrder: cint         ## LSBFirst / MSBFirst, the *server's*
+    bitmapUnit: cint
+    bitmapBitOrder: cint
+    bitmapPad: cint
+    depth: cint
+    bytesPerLine: cint
+    bitsPerPixel: cint      ## 32 for the depth-24 visual nearly everything
+                            ## has; the one field worth asking about
+    redMask, greenMask, blueMask: culong
+
+const
+  ZPixmap = 2
+  LSBFirst = 0
+  MSBFirst = 1
+
+proc XCreateImage(dpy: pointer; visual: pointer; depth: cuint; format: cint;
+  offset: cint; data: pointer; w, h: cuint;
+  bitmapPad, bytesPerLine: cint): ptr XImageObj
+  {.cdecl, dynlib: libX11, importc.}
+proc XPutImage(dpy: pointer; d: XID; gc: pointer; image: ptr XImageObj;
+  srcX, srcY: cint; dstX, dstY: cint; w, h: cuint): cint
+  {.cdecl, dynlib: libX11, importc.}
 proc XSetClipRectangles(dpy: pointer; gc: pointer;
   x, y: cint; rects: ptr XRectangle; n, ordering: cint): cint
   {.cdecl, dynlib: libX11, importc.}
@@ -428,6 +474,29 @@ proc XDefineCursor(dpy: pointer; w: XID; cursor: XID): cint
   {.cdecl, dynlib: libX11, importc.}
 proc XLookupString(ev: ptr XKeyEvent; buf: cstring; bufSize: cint;
   keysym: ptr XKeySym; compose: pointer): cint
+  {.cdecl, dynlib: libX11, importc.}
+proc XSetLocaleModifiers(modifiers: cstring): cstring
+  {.cdecl, dynlib: libX11, importc.}
+proc XOpenIM(dpy: pointer; rdb: pointer; resName, resClass: cstring): pointer
+  {.cdecl, dynlib: libX11, importc.}
+proc XCloseIM(im: pointer): XStatus
+  {.cdecl, dynlib: libX11, importc.}
+# The two varargs calls take a NULL-terminated list of name/value pairs. Every
+# argument is passed as a pointer, so the list is of one type.
+proc XCreateIC(im: pointer): pointer
+  {.cdecl, dynlib: libX11, importc, varargs.}
+proc XGetICValues(ic: pointer): cstring
+  {.cdecl, dynlib: libX11, importc, varargs.}
+proc XDestroyIC(ic: pointer)
+  {.cdecl, dynlib: libX11, importc.}
+proc XSetICFocus(ic: pointer)
+  {.cdecl, dynlib: libX11, importc.}
+proc XUnsetICFocus(ic: pointer)
+  {.cdecl, dynlib: libX11, importc.}
+proc Xutf8LookupString(ic: pointer; ev: ptr XKeyEvent; buf: cstring;
+  bufSize: cint; keysym: ptr XKeySym; status: ptr cint): cint
+  {.cdecl, dynlib: libX11, importc.}
+proc XFilterEvent(ev: ptr XEvent; w: XID): XBool
   {.cdecl, dynlib: libX11, importc.}
 proc XSetSelectionOwner(dpy: pointer; selection: Atom; owner: XID; time: XTime): cint
   {.cdecl, dynlib: libX11, importc.}
@@ -525,6 +594,8 @@ var
   gClipboardText: string
   gClipProperty: Atom
   gUiScale: int = 100
+  gXim: pointer        # input method, nil if none could be opened
+  gXic: pointer        # its input context for `gWindow`
 
 var eventQueue: seq[input.Event]
 
@@ -689,7 +760,10 @@ var gRepeatsPaired = true
 proc isAutoRepeatRelease(xev: XEvent): bool =
   ## A release that auto-repeat made up: the very next event is a press of
   ## the same key with the same timestamp. Only asked where the server could
-  ## not be told to leave those out.
+  ## not be told to leave those out, and only of an event straight off the
+  ## queue: an input method that wants releases takes them in through
+  ## `XFilterEvent` and hands them back later, by which time the press that
+  ## came with a made-up one is no longer next to it.
   if not gRepeatsPaired or XPending(gDisplay) == 0: return false
   var next {.noinit.}: XEvent
   discard XPeekEvent(gDisplay, addr next)
@@ -734,36 +808,70 @@ proc processXEvent(xev: XEvent) =
       pushEvent(input.Event(kind: WindowCloseEvent))
 
   of FocusIn:
+    if gXic != nil: XSetICFocus(gXic)
     pushEvent(input.Event(kind: WindowFocusGainedEvent))
 
   of FocusOut:
+    if gXic != nil: XUnsetICFocus(gXic)
     pushEvent(input.Event(kind: WindowFocusLostEvent))
 
   of KeyPress:
-    var buf {.noinit.}: array[8, char]
-    var ks {.noinit.}: XKeySym
-    let textLen = XLookupString(unsafeAddr xev.xkey, cast[cstring](addr buf[0]),
-      8, addr ks, nil)
-    # Key event
-    var e = input.Event(kind: KeyDownEvent)
-    e.key = translateKeySym(ks)
-    e.mods = translateMods(xev.xkey.state)
-    pushEvent(e)
-    # Text input (if printable)
-    if textLen > 0 and buf[0].uint8 >= 32 and buf[0].uint8 != 127:
-      var te = input.Event(kind: TextInputEvent)
-      for i in 0 ..< min(textLen, 4):
-        te.text[i] = buf[i]
-      pushEvent(te)
-
-  of KeyRelease:
-    if not isAutoRepeatRelease(xev):
-      var ks {.noinit.}: XKeySym
-      discard XLookupString(unsafeAddr xev.xkey, nil, 0, addr ks, nil)
-      var e = input.Event(kind: KeyUpEvent)
+    # The text a key types is UTF-8 from the input method, which is also what
+    # composes dead keys and runs an IME. `XLookupString` is only the fallback
+    # for a display without one: it speaks ISO 8859-1, so its byte for an 'ä'
+    # is re-encoded here -- passed on as it is, it is not UTF-8.
+    var buf {.noinit.}: array[64, char]
+    var ks: XKeySym = 0
+    var text = ""
+    var hasKey = true
+    if gXic != nil:
+      var status: cint = 0
+      var n = Xutf8LookupString(gXic, unsafeAddr xev.xkey,
+        cast[cstring](addr buf[0]), buf.len.cint, addr ks, addr status)
+      if status == XBufferOverflow:
+        text = newString(n)
+        n = Xutf8LookupString(gXic, unsafeAddr xev.xkey, cstr(text),
+          n.cint, addr ks, addr status)
+        text.setLen(max(n, 0))
+      elif status == XLookupChars or status == XLookupBoth:
+        for i in 0 ..< n: text.add buf[i]
+      # Text an IME commits arrives without a key to go with it.
+      hasKey = status == XLookupKeySymVal or status == XLookupBoth
+    else:
+      let n = XLookupString(unsafeAddr xev.xkey, cast[cstring](addr buf[0]),
+        buf.len.cint, addr ks, nil)
+      for i in 0 ..< n:
+        let b = buf[i].uint8
+        if b < 0x80:
+          text.add buf[i]
+        else:
+          text.add char(0xC0'u8 or (b shr 6))
+          text.add char(0x80'u8 or (b and 0x3F))
+    if hasKey:
+      var e = input.Event(kind: KeyDownEvent)
       e.key = translateKeySym(ks)
       e.mods = translateMods(xev.xkey.state)
       pushEvent(e)
+    # Text input (if printable), one event per codepoint
+    if text.len > 0 and text[0].uint8 >= 32 and text[0].uint8 != 127:
+      var i = 0
+      while i < text.len:
+        var te = input.Event(kind: TextInputEvent)
+        var k = 0
+        while true:
+          if k < te.text.len: te.text[k] = text[i]
+          inc k
+          inc i
+          if i >= text.len or (text[i].uint8 and 0xC0) != 0x80: break
+        pushEvent(te)
+
+  of KeyRelease:
+    var ks {.noinit.}: XKeySym
+    discard XLookupString(unsafeAddr xev.xkey, nil, 0, addr ks, nil)
+    var e = input.Event(kind: KeyUpEvent)
+    e.key = translateKeySym(ks)
+    e.mods = translateMods(xev.xkey.state)
+    pushEvent(e)
 
   of ButtonPress:
     let btn = xev.xbutton.button
@@ -812,11 +920,19 @@ proc processXEvent(xev: XEvent) =
   else:
     discard
 
+proc dispatchXEvent(xev: var XEvent) =
+  ## One event just taken off the queue: a release that auto-repeat made up
+  ## goes nowhere, the input method gets the first look at the rest, and
+  ## what it leaves is ours.
+  if xev.xkey.theType == KeyRelease and isAutoRepeatRelease(xev): return
+  if XFilterEvent(addr xev, None) == 0:
+    processXEvent(xev)
+
 proc drainXEvents() =
   while XPending(gDisplay) > 0:
     var xev {.noinit.}: XEvent
     discard XNextEvent(gDisplay, addr xev)
-    processXEvent(xev)
+    dispatchXEvent(xev)
 
 # ---- Display density ----
 
@@ -916,6 +1032,27 @@ proc sendStartupInfo(msg: string) =
     if i > msg.len: break
   discard XFlush(gDisplay)
 
+proc openInputMethod() =
+  ## The input method the environment asks for (`XMODIFIERS`, an IBus or
+  ## Fcitx say), else the one built into Xlib, which does dead keys and
+  ## Compose. Either hands out UTF-8. The locale's character type is what
+  ## picks the Compose table, so it is taken from the environment first.
+  discard c_setlocale(LC_CTYPE, "")
+  discard XSetLocaleModifiers("")
+  gXim = XOpenIM(gDisplay, nil, nil, nil)
+  if gXim == nil:
+    discard XSetLocaleModifiers("@im=none")
+    gXim = XOpenIM(gDisplay, nil, nil, nil)
+  if gXim == nil: return
+  gXic = XCreateIC(gXim,
+    cstring"inputStyle", cast[pointer](XIMPreeditNothing or XIMStatusNothing),
+    cstring"clientWindow", cast[pointer](gWindow),
+    cstring"focusWindow", cast[pointer](gWindow),
+    nil)
+  if gXic == nil:
+    discard XCloseIM(gXim)
+    gXim = nil
+
 proc x11CreateWindow(layout: var ScreenLayout; icon: pointer; iconLen: int) =
   gDisplay = XOpenDisplay(nil)
   if gDisplay == nil:
@@ -942,6 +1079,7 @@ proc x11CreateWindow(layout: var ScreenLayout; icon: pointer; iconLen: int) =
     0, 0, layout.width.cuint, layout.height.cuint, 0,
     XBlackPixel(gDisplay, gScreen), XBlackPixel(gDisplay, gScreen))
 
+  openInputMethod()
   # Key releases are reported, as every other backend reports them: a game
   # moves for as long as a key is *held*, and only the release says when that
   # ends. What they must not be is one release per auto-repeat. Plain X11
@@ -951,10 +1089,17 @@ proc x11CreateWindow(layout: var ScreenLayout; icon: pointer; iconLen: int) =
   # auto-repeat" makes the server send the presses alone, so a `KeyUpEvent`
   # means a finger came off the key. A server without XKB gets the pairs, and
   # `isAutoRepeatRelease` takes them apart on this side instead.
+  #
+  # An input method may ask for events of its own (IBus wants the releases
+  # too); it takes what it asked for out again in `XFilterEvent`, before any
+  # of it becomes an event here.
+  var imEvents: clong = 0
+  if gXic != nil:
+    discard XGetICValues(gXic, cstring"filterEvents", addr imEvents, nil)
   discard XSelectInput(gDisplay, gWindow,
     (ExposureMask or KeyPressMask or KeyReleaseMask or
      ButtonPressMask or ButtonReleaseMask or PointerMotionMask or
-     StructureNotifyMask or FocusChangeMask).clong)
+     StructureNotifyMask or FocusChangeMask).clong or imEvents)
   var detectable: XBool = 0
   discard XkbSetDetectableAutoRepeat(gDisplay, 1, addr detectable)
   gRepeatsPaired = detectable == 0
@@ -1224,6 +1369,64 @@ proc x11DrawPoint(x, y: int; color: screen.Color) =
   discard XSetForeground(gDisplay, gGC, toPixel(color))
   discard XDrawPoint(gDisplay, gBackPixmap, gGC, x.cint, y.cint)
 
+# ---- Pixel blitting ----
+
+var gBlitVerdict = 0
+  ## 0 = nobody has asked yet, 1 = the surface takes pixels, -1 = it does not.
+  ## Whether it does is a property of the visual, which does not change while
+  ## the program runs, so the answer is worth keeping rather than building a
+  ## throwaway XImage every frame to hear it again.
+
+proc x11BlitRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
+                 dst: coords.Rect): bool =
+  if gDisplay == nil or gBackPixmap == None or gBlitVerdict < 0: return false
+  if pixels == nil or w <= 0 or h <= 0 or dst.w <= 0 or dst.h <= 0: return false
+
+  var img = XCreateImage(gDisplay, gVisual, gDepth.cuint, ZPixmap.cint, 0,
+                         cast[pointer](pixels), w.cuint, h.cuint, 32, 0)
+  if img == nil:
+    gBlitVerdict = -1
+    return false
+
+  # What came in is one `uint32` per pixel in this machine's byte order, so
+  # the server has to want exactly that: 32 bits to a pixel, and the same end
+  # of the word first. Both hold on every ordinary desktop -- the depth-24
+  # TrueColor visual nearly everything has is padded to 32 bits a pixel, and
+  # a client almost always talks to a server on its own machine. Where they
+  # do not hold there is no fix worth having here, so the answer is no, once,
+  # and the caller draws whatever it draws when there is no picture.
+  let hostOrder = (if cpuEndian == littleEndian: LSBFirst else: MSBFirst).cint
+  if img.bitsPerPixel != 32 or img.byteOrder != hostOrder:
+    img.data = nil
+    discard XFree(cast[pointer](img))
+    gBlitVerdict = -1
+    return false
+  gBlitVerdict = 1
+
+  let cw = min(w, dst.w)
+  let ch = min(h, dst.h)
+
+  # Every pixel that lands has to reach the frame hash. The hash is what
+  # decides whether the finished back buffer is worth copying to the window,
+  # and two different pictures of one size in one place are the same frame to
+  # a hash that only saw the rectangle -- the second one would never appear.
+  # Walking the buffer costs a fraction of sending it to the server, which is
+  # the very next thing that happens to it.
+  mixFrame(7); mixFrame(dst.x); mixFrame(dst.y)
+  mixFrame(w); mixFrame(h); mixFrame(cw); mixFrame(ch)
+  for i in 0 ..< w * h: mixFrame(pixels[i].uint64)
+
+  discard XPutImage(gDisplay, gBackPixmap, gGC, img, 0, 0,
+                    dst.x.cint, dst.y.cint, cw.cuint, ch.cuint)
+
+  # `XDestroyImage` is a C macro, not a symbol to bind, and it frees the
+  # pixels along with the struct -- but the pixels are the caller's and it
+  # still wants them. Letting go of them first leaves `XFree` exactly what
+  # `XCreateImage` allocated, which is the struct.
+  img.data = nil
+  discard XFree(cast[pointer](img))
+  result = true
+
 proc x11SetCursor(c: CursorKind) =
   let shape = case c
     of curDefault, curArrow: XC_left_ptr
@@ -1306,7 +1509,7 @@ proc x11GetClipboardText(): string =
             discard XFree(data)
         return
       else:
-        processXEvent(xev)
+        dispatchXEvent(xev)
     else:
       sleepMs(5)
 
@@ -1331,6 +1534,8 @@ proc x11Delay(ms: int) =
 
 proc x11QuitRequest() =
   if gDisplay != nil:
+    if gXic != nil: XDestroyIC(gXic)
+    if gXim != nil: discard XCloseIM(gXim)
     discard XDestroyWindow(gDisplay, gWindow)
     discard XCloseDisplay(gDisplay)
 
@@ -1349,7 +1554,12 @@ proc initX11Driver*() =
     getFontMetrics: x11GetFontMetrics, measureText: x11MeasureText,
     drawText: x11DrawText, drawMeasuredText: x11DrawMeasuredText)
   drawRelays = DrawRelays(
-    fillRect: x11FillRect, drawLine: x11DrawLine, drawPoint: x11DrawPoint)
+    fillRect: x11FillRect, drawLine: x11DrawLine, drawPoint: x11DrawPoint,
+    blitRGBA: x11BlitRGBA)
+    # No `loadImage` here, and so no `imageSize` either: this driver does not
+    # decode pictures. `blitRGBA` is how one gets on the screen -- whoever
+    # can turn a file into pixels hands them over and gets the clip rectangle
+    # and the frame's dirty tracking of this driver for free.
   inputRelays = InputRelays(
     pollEvent: x11PollEvent, waitEvent: x11WaitEvent,
     getTicks: x11GetTicks, sleep: x11Delay,

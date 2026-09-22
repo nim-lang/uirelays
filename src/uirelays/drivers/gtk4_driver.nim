@@ -81,6 +81,7 @@ const
   GTK_EVENT_CONTROLLER_SCROLL_BOTH_AXES = 3
   FcMatchPattern = 0
   CAIRO_FORMAT_ARGB32 = 0 ## cairo_format_t; pixel buffer must be flushed before another cairo_t reads it
+  CAIRO_FORMAT_RGB24 = 1 ## cairo_format_t; 32 bits a pixel with the top byte unused -- the word `blitRGBA` hands over
 
 const
   FC_FILE = "file"
@@ -171,6 +172,8 @@ proc cairo_destroy(cr: pointer) {.importc, nodecl, cdecl.}
 proc cairo_surface_destroy(surf: pointer) {.importc, nodecl, cdecl.}
 proc cairo_surface_flush(surf: pointer) {.importc, nodecl, cdecl.}
 proc cairo_image_surface_create(fmt, w, h: gint): pointer {.importc, nodecl, cdecl.}
+proc cairo_image_surface_create_for_data(data: pointer; fmt, w, h, stride: gint):
+  pointer {.importc, nodecl, cdecl.}
 proc cairo_save(cr: pointer) {.importc, nodecl, cdecl.}
 proc cairo_restore(cr: pointer) {.importc, nodecl, cdecl.}
 proc cairo_reset_clip(cr: pointer) {.importc, nodecl, cdecl.}
@@ -775,6 +778,33 @@ proc gtkDrawLine(x1, y1, x2, y2: int; color: screen.Color) =
 proc gtkDrawPoint(x, y: int; color: screen.Color) =
   gtkFillRect(rect(x, y, 1, 1), color)
 
+proc gtkBlitRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
+                 dst: coords.Rect): bool =
+  ## This driver decodes no pictures, so it fills in none of the image
+  ## relays. What it can do is take finished pixels from whoever does.
+  ensureBackingCr()
+  if backingCr == nil or pixels == nil: return false
+  if w <= 0 or h <= 0 or dst.w <= 0 or dst.h <= 0: return false
+  # No copy: cairo reads the caller's rows straight through, and it has read
+  # all of them by the time `cairo_paint` returns -- which is before this
+  # does, and so before the caller may touch them again.
+  let surf = cairo_image_surface_create_for_data(cast[pointer](pixels),
+    gint(CAIRO_FORMAT_RGB24), gint(w), gint(h), gint(w * 4))
+  if surf == nil: return false
+  # `dst` clips and does not scale, so what goes on is the clip and the
+  # source lands at its own size inside it.
+  cairo_save(backingCr)
+  cairo_rectangle(backingCr, gdouble(dst.x), gdouble(dst.y),
+                  gdouble(min(w, dst.w)), gdouble(min(h, dst.h)))
+  cairo_clip(backingCr)
+  cairo_set_source_surface(backingCr, surf, gdouble(dst.x), gdouble(dst.y))
+  cairo_paint(backingCr)
+  # `restore` drops the source pattern, which is what was holding the surface;
+  # this only lets go of the reference made above.
+  cairo_restore(backingCr)
+  cairo_surface_destroy(surf)
+  result = true
+
 proc gtkSetCursor(c: CursorKind) =
   if drawingArea == nil: return
   let name = case c
@@ -871,7 +901,8 @@ proc initGtk4Driver*() =
     getFontMetrics: gtkGetFontMetrics, measureText: gtkMeasureText,
     drawText: gtkDrawText, drawMeasuredText: gtkDrawMeasuredText)
   drawRelays = DrawRelays(
-    fillRect: gtkFillRect, drawLine: gtkDrawLine, drawPoint: gtkDrawPoint)
+    fillRect: gtkFillRect, drawLine: gtkDrawLine, drawPoint: gtkDrawPoint,
+    blitRGBA: gtkBlitRGBA)
   inputRelays = InputRelays(
     pollEvent: gtkPollEvent, waitEvent: gtkWaitEvent,
     getTicks: gtkGetTicks, sleep: gtkDelay,

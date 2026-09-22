@@ -528,7 +528,6 @@ static int imageCount = 0;
 
 int cocoa_loadImage(const char *path) {
   if (!path || path[0] == '\0') return 0;
-  if (imageCount >= MAX_IMAGES) return 0;
 
   CFStringRef cfPath = CFStringCreateWithCString(NULL, path, kCFStringEncodingUTF8);
   if (!cfPath) return 0;
@@ -544,9 +543,75 @@ int cocoa_loadImage(const char *path) {
   CFRelease(source);
   if (!cgImage) return 0;
 
-  int idx = imageCount++;
+  /* Take a slot cocoa_freeImage emptied before growing the table, the way
+     cocoa_openFont does. Without it a document that opens and closes the
+     same picture often runs a fixed table out. */
+  int idx = -1;
+  for (int i = 0; i < imageCount; i++) {
+    if (!imageSlots[i]) { idx = i; break; }
+  }
+  if (idx < 0) {
+    if (imageCount >= MAX_IMAGES) { CGImageRelease(cgImage); return 0; }
+    idx = imageCount++;
+  }
   imageSlots[idx] = cgImage;
   return idx + 1; /* 1-based handle */
+}
+
+void cocoa_freeImage(int handle) {
+  int idx = handle - 1;
+  if (idx < 0 || idx >= imageCount || !imageSlots[idx]) return;
+  CGImageRelease(imageSlots[idx]);
+  imageSlots[idx] = NULL;
+}
+
+void cocoa_imageSize(int handle, int *outW, int *outH) {
+  if (outW) *outW = 0;
+  if (outH) *outH = 0;
+  int idx = handle - 1;
+  if (idx < 0 || idx >= imageCount || !imageSlots[idx]) return;
+  if (outW) *outW = (int)CGImageGetWidth(imageSlots[idx]);
+  if (outH) *outH = (int)CGImageGetHeight(imageSlots[idx]);
+}
+
+/* Finished pixels from whoever made them: one 0x00RRGGBB word per pixel in
+   this machine's byte order, opaque, rows top to bottom. Nothing is decoded
+   here and nothing is scaled -- dstW and dstH only clip. */
+int cocoa_blitRGBA(const uint32_t *pixels, int w, int h,
+                   int dstX, int dstY, int dstW, int dstH) {
+  if (!backingCtx || !pixels || w <= 0 || h <= 0 || dstW <= 0 || dstH <= 0)
+    return 0;
+
+  CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+  if (!cs) return 0;
+  CGDataProviderRef prov =
+    CGDataProviderCreateWithData(NULL, pixels, (size_t)w * (size_t)h * 4, NULL);
+  if (!prov) { CGColorSpaceRelease(cs); return 0; }
+
+  /* Little-endian 32-bit words with the top byte skipped is exactly
+     0x00RRGGBB as an int on every Mac Apple has shipped. */
+  CGImageRef img = CGImageCreate(
+    (size_t)w, (size_t)h, 8, 32, (size_t)w * 4, cs,
+    kCGBitmapByteOrder32Little | kCGImageAlphaNoneSkipFirst,
+    prov, NULL, false, kCGRenderingIntentDefault);
+  CGDataProviderRelease(prov);
+  CGColorSpaceRelease(cs);
+  if (!img) return 0;
+
+  int cw = w < dstW ? w : dstW;
+  int ch = h < dstH ? h : dstH;
+
+  CGContextSaveGState(backingCtx);
+  CGContextClipToRect(backingCtx, CGRectMake(dstX, dstY, cw, ch));
+  /* The view is flipped and a CGImage is bottom-up, so the destination is
+     flipped back around itself before the picture goes down in it. */
+  CGContextTranslateCTM(backingCtx, dstX, dstY + h);
+  CGContextScaleCTM(backingCtx, 1.0, -1.0);
+  CGContextDrawImage(backingCtx, CGRectMake(0, 0, w, h), img);
+  CGContextRestoreGState(backingCtx);
+
+  CGImageRelease(img);
+  return 1;
 }
 
 void cocoa_drawImage(int handle, int srcX, int srcY, int srcW, int srcH,
