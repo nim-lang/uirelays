@@ -408,30 +408,44 @@ static CGRect clipStack[MAX_CLIP_STACK];
 static int clipTop = 0;
 
 static void ensureBacking(int w, int h, CGFloat scale) {
-  if (backingCtx && backingW == w && backingH == h) return;
-  if (backingCtx) CGContextRelease(backingCtx);
-
-  backingW = w;
-  backingH = h;
-  backingScale = scale;
+  if (w <= 0 || h <= 0 || scale <= 0) return;
+  if (backingCtx && backingW == w && backingH == h && backingScale == scale) return;
 
   int pw = (int)(w * scale);
   int ph = (int)(h * scale);
-
   CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
-  backingCtx = CGBitmapContextCreate(NULL, pw, ph, 8, pw * 4,
+  CGContextRef next = CGBitmapContextCreate(NULL, pw, ph, 8, pw * 4,
     cs, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Host);
   CGColorSpaceRelease(cs);
+  if (!next) return;
+
+  /* Drawing APIs use point coordinates, with their origin at the top left. */
+  CGContextScaleCTM(next, scale, scale);
+  CGContextTranslateCTM(next, 0, h);
+  CGContextScaleCTM(next, 1.0, -1.0);
+  CGContextSetShouldAntialias(next, true);
+  CGContextSetShouldSmoothFonts(next, true);
 
   if (backingCtx) {
-    /* Scale so we can draw in point coordinates */
-    CGContextScaleCTM(backingCtx, scale, scale);
-    /* Flip coordinate system: Core Graphics is bottom-up, we want top-down */
-    CGContextTranslateCTM(backingCtx, 0, h);
-    CGContextScaleCTM(backingCtx, 1.0, -1.0);
-    CGContextSetShouldAntialias(backingCtx, true);
-    CGContextSetShouldSmoothFonts(backingCtx, true);
+    /* Cocoa's live-resize loop can block the application's event pump.
+       Retain the last frame at its original point size until the application
+       redraws. A newly allocated blank bitmap makes the content disappear. */
+    CGImageRef previous = CGBitmapContextCreateImage(backingCtx);
+    if (previous) {
+      CGContextSaveGState(next);
+      CGContextTranslateCTM(next, 0, backingH);
+      CGContextScaleCTM(next, 1.0, -1.0);
+      CGContextSetInterpolationQuality(next, kCGInterpolationNone);
+      CGContextDrawImage(next, CGRectMake(0, 0, backingW, backingH), previous);
+      CGContextRestoreGState(next);
+      CGImageRelease(previous);
+    }
+    CGContextRelease(backingCtx);
   }
+  backingCtx = next;
+  backingW = w;
+  backingH = h;
+  backingScale = scale;
 }
 
 /* ---- Drawing primitives ----------------------------------------------- */
@@ -574,11 +588,10 @@ void cocoa_imageSize(int handle, int *outW, int *outH) {
   if (outH) *outH = (int)CGImageGetHeight(imageSlots[idx]);
 }
 
-/* Finished pixels from whoever made them: one 0x00RRGGBB word per pixel in
-   this machine's byte order, opaque, rows top to bottom. Nothing is decoded
-   here and nothing is scaled -- dstW and dstH only clip. */
-int cocoa_blitRGBA(const uint32_t *pixels, int w, int h,
-                   int dstX, int dstY, int dstW, int dstH) {
+/* Finished pixels: opaque 0x00RRGGBB words in host byte order, top to bottom.
+   blitRGBA clips only; drawRGBA maps the whole image into its destination. */
+static int drawRGBA(const uint32_t *pixels, int w, int h,
+                    int dstX, int dstY, int dstW, int dstH, int scaleImage) {
   if (!backingCtx || !pixels || w <= 0 || h <= 0 || dstW <= 0 || dstH <= 0)
     return 0;
 
@@ -598,20 +611,33 @@ int cocoa_blitRGBA(const uint32_t *pixels, int w, int h,
   CGColorSpaceRelease(cs);
   if (!img) return 0;
 
-  int cw = w < dstW ? w : dstW;
-  int ch = h < dstH ? h : dstH;
+  int cw = scaleImage ? dstW : (w < dstW ? w : dstW);
+  int ch = scaleImage ? dstH : (h < dstH ? h : dstH);
+  int drawW = scaleImage ? dstW : w;
+  int drawH = scaleImage ? dstH : h;
 
   CGContextSaveGState(backingCtx);
   CGContextClipToRect(backingCtx, CGRectMake(dstX, dstY, cw, ch));
   /* The view is flipped and a CGImage is bottom-up, so the destination is
      flipped back around itself before the picture goes down in it. */
-  CGContextTranslateCTM(backingCtx, dstX, dstY + h);
+  CGContextTranslateCTM(backingCtx, dstX, dstY + drawH);
   CGContextScaleCTM(backingCtx, 1.0, -1.0);
-  CGContextDrawImage(backingCtx, CGRectMake(0, 0, w, h), img);
+  if (scaleImage) CGContextSetInterpolationQuality(backingCtx, kCGInterpolationNone);
+  CGContextDrawImage(backingCtx, CGRectMake(0, 0, drawW, drawH), img);
   CGContextRestoreGState(backingCtx);
 
   CGImageRelease(img);
   return 1;
+}
+
+int cocoa_blitRGBA(const uint32_t *pixels, int w, int h,
+                   int dstX, int dstY, int dstW, int dstH) {
+  return drawRGBA(pixels, w, h, dstX, dstY, dstW, dstH, 0);
+}
+
+int cocoa_drawRGBA(const uint32_t *pixels, int w, int h,
+                   int dstX, int dstY, int dstW, int dstH) {
+  return drawRGBA(pixels, w, h, dstX, dstY, dstW, dstH, 1);
 }
 
 void cocoa_drawImage(int handle, int srcX, int srcY, int srcW, int srcH,
@@ -993,12 +1019,18 @@ static int currentButtons(NSEvent *event) {
   NSRect frame = [[w contentView] frame];
   CGFloat scale = [w backingScaleFactor];
   ensureBacking((int)frame.size.width, (int)frame.size.height, scale);
+  [[w contentView] setNeedsDisplay:YES];
 
   NEEvent e = {0};
   e.kind = NE_WINDOW_RESIZE;
   e.x = (int)frame.size.width;
   e.y = (int)frame.size.height;
   pushEvent(e);
+}
+
+- (void)windowDidChangeBackingProperties:(NSNotification *)n {
+  /* A screen-density change can leave the point dimensions unchanged. */
+  [self windowDidResize:n];
 }
 
 - (void)windowDidBecomeKey:(NSNotification *)n {

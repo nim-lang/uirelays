@@ -124,6 +124,14 @@ type
       ## the answer is meant for choosing a fallback to draw instead, and it
       ## is the same answer every time for a given surface.
 
+    drawRGBA*: proc (pixels: ptr UncheckedArray[uint32]; w, h: int;
+                     dst: Rect): bool {.nimcall.}
+      ## Draw the entire opaque 0x00RRGGBB image into `dst` in driver
+      ## coordinates. Unlike blitRGBA, source and destination sizes may differ.
+      ## A Retina caller supplies two source pixels per point to match
+      ## ScreenLayout.scaleX/scaleY without upscaling. Pixels are borrowed
+      ## only until this callback returns. Optional.
+
 proc `==`*(a, b: Font): bool {.borrow.}
 proc `==`*(a, b: Image): bool {.borrow.}
 
@@ -319,6 +327,19 @@ proc blitRGBA*(pixels: ptr UncheckedArray[uint32]; w, h: int; dst: Rect): bool =
   ## caller draws something else. See the relay.
   if drawRelays.blitRGBA != nil: drawRelays.blitRGBA(pixels, w, h, dst)
   else: false
+
+proc drawRGBA*(pixels: ptr UncheckedArray[uint32]; w, h: int; dst: Rect): bool =
+  ## Draw a full-resolution image into a logical destination rectangle.
+  ## Falls back to blitRGBA only when source and destination sizes match.
+  ## False means the driver cannot draw the requested image.
+  if pixels == nil or w <= 0 or h <= 0 or dst.w <= 0 or dst.h <= 0:
+    return false
+  if drawRelays.drawRGBA != nil:
+    drawRelays.drawRGBA(pixels, w, h, dst)
+  elif w == dst.w and h == dst.h:
+    blitRGBA(pixels, w, h, dst)
+  else:
+    false
 
 # Color constructors
 proc color*(r, g, b: uint8; a: uint8 = 255): Color =

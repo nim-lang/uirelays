@@ -22,6 +22,14 @@ exec "nim c -r tests/tinyniftest.nim"
 # moving one, are arithmetic that never touches a window.
 exec "nim c -r tests/layouttest.nim"
 
+exec "nim c -r tests/rgbatest.nim"
+when defined(macosx):
+  let cocoaTest = getTempDir() / ("uirelays-cocoargbatest-" & $getCurrentProcessId())
+  exec "clang -fobjc-arc tests/cocoargbatest.m -o " & quoteShell(cocoaTest) &
+    " -framework Cocoa -framework CoreText -framework CoreGraphics -framework QuartzCore"
+  exec quoteShell(cocoaTest)
+  removeFile(cocoaTest)
+
 # Everything else is a window, and a window is what the examples are: each
 # backend gets to compile all of them.
 execBackend("")

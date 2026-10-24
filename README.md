@@ -254,6 +254,23 @@ allocation -- just plain proc pointers.
 See [Writing a custom driver](doc/drivers.md) for a guide on
 adding support for a new platform or graphics toolkit.
 
+## Drawing full-resolution images
+
+`drawRGBA(pixels, width, height, destination)` draws an opaque image of packed
+`0x00RRGGBB` words into a destination in driver coordinates. Cocoa and the
+FigDraw siwin/Windy drivers support it. The driver copies or consumes the
+buffer before returning.
+
+On a Retina surface, rasterize `layout.width * layout.scaleX` by
+`layout.height * layout.scaleY` pixels, then draw into
+`rect(0, 0, layout.width, layout.height)`. Each source pixel then maps to a
+backing pixel. Native text and drawing continue to use logical coordinates.
+
+The existing `blitRGBA` retains its clipping-only behavior. `drawRGBA` falls
+back to it when source and destination dimensions match, and returns `false`
+for unsupported drawing requests. Cocoa also preserves the last backing image
+during live resize, until the application repaints the new dimensions.
+
 ## Layout
 
 A window's boxes are described in NIF -- a

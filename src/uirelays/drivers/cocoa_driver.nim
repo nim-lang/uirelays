@@ -91,6 +91,8 @@ proc cImageSize(handle: cint; outW, outH: ptr cint)
   {.importc: "cocoa_imageSize", cdecl.}
 proc cBlitRGBA(pixels: pointer; w, h, dstX, dstY, dstW, dstH: cint): cint
   {.importc: "cocoa_blitRGBA", cdecl.}
+proc cDrawRGBA(pixels: pointer; w, h, dstX, dstY, dstW, dstH: cint): cint
+  {.importc: "cocoa_drawRGBA", cdecl.}
 
 proc cSetClipRect(x, y, w, h: cint) {.importc: "cocoa_setClipRect", cdecl.}
 proc cSaveState() {.importc: "cocoa_saveState", cdecl.}
@@ -161,6 +163,12 @@ proc cocoaBlitRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
                    dst: Rect): bool =
   if pixels == nil: return false
   cBlitRGBA(cast[pointer](pixels), w.cint, h.cint,
+            dst.x.cint, dst.y.cint, dst.w.cint, dst.h.cint) != 0
+
+proc cocoaDrawRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
+                   dst: Rect): bool =
+  if pixels == nil: return false
+  cDrawRGBA(cast[pointer](pixels), w.cint, h.cint,
             dst.x.cint, dst.y.cint, dst.w.cint, dst.h.cint) != 0
 
 proc cocoaOpenFont(path: string; size: int; style: FontStyles;
@@ -331,7 +339,7 @@ proc initCocoaDriver*() =
     drawPoint: cocoaDrawPoint,
     loadImage: cocoaLoadImage, freeImage: cocoaFreeImage,
     drawImage: cocoaDrawImage,
-    imageSize: cocoaImageSize, blitRGBA: cocoaBlitRGBA)
+    imageSize: cocoaImageSize, blitRGBA: cocoaBlitRGBA, drawRGBA: cocoaDrawRGBA)
   inputRelays = InputRelays(
     pollEvent: cocoaPollEvent, waitEvent: cocoaWaitEvent,
     getTicks: cocoaGetTicks, sleep: cocoaDelay,
