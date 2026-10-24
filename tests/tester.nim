@@ -1,4 +1,4 @@
-import std/[os, strutils]
+import std/[os, osproc, strutils]
 
 proc fatal(msg: string) = quit "FAILURE " & msg
 
@@ -29,6 +29,15 @@ when defined(macosx):
     " -framework Cocoa -framework CoreText -framework CoreGraphics -framework QuartzCore"
   exec quoteShell(cocoaTest)
   removeFile(cocoaTest)
+
+when defined(linux) or defined(macosx):
+  if findExe("pkg-config").len > 0 and execShellCmd("pkg-config --exists cairo") == 0:
+    let cairoTest = getTempDir() / ("uirelays-cairorgbatest-" & $getCurrentProcessId())
+    let cairoFlags = execProcess("pkg-config", args = ["--cflags", "--libs", "cairo"],
+                                 options = {poUsePath}).strip()
+    exec "cc tests/cairorgbatest.c -o " & quoteShell(cairoTest) & " " & cairoFlags
+    exec quoteShell(cairoTest)
+    removeFile(cairoTest)
 
 # Everything else is a window, and a window is what the examples are: each
 # backend gets to compile all of them.

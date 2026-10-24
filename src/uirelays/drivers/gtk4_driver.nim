@@ -188,7 +188,9 @@ proc cairo_move_to(cr: pointer; x, y: gdouble) {.importc, nodecl, cdecl.}
 proc cairo_line_to(cr: pointer; x, y: gdouble) {.importc, nodecl, cdecl.}
 proc cairo_set_line_width(cr: pointer; w: gdouble) {.importc, nodecl, cdecl.}
 proc cairo_scale(cr: pointer; sx, sy: gdouble) {.importc, nodecl, cdecl.}
-proc cairo_translate(cr: pointer; tx, ty: gdouble) {.importc, nodecl, cdecl.}
+const cairoRgbaHeader = currentSourcePath().parentDir / "cairo_rgba.h"
+proc drawCairoRGBA(cr, surf: pointer; w, h, x, y, dstW, dstH: cint)
+  {.importc: "uirelays_draw_cairo_rgba", header: cairoRgbaHeader, cdecl.}
 
 proc pango_cairo_create_layout(cr: pointer): pointer {.importc, nodecl, cdecl.}
 proc pango_cairo_update_layout(cr, layout: pointer) {.importc, nodecl, cdecl.}
@@ -792,22 +794,18 @@ proc gtkPutRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
   let surf = cairo_image_surface_create_for_data(cast[pointer](pixels),
     gint(CAIRO_FORMAT_RGB24), gint(w), gint(h), gint(w * 4))
   if surf == nil: return false
-  # Legacy blits clip; image draws map the full source to their destination.
-  cairo_save(backingCr)
-  cairo_rectangle(backingCr, gdouble(dst.x), gdouble(dst.y),
-                  gdouble(if scaleImage: dst.w else: min(w, dst.w)),
-                  gdouble(if scaleImage: dst.h else: min(h, dst.h)))
-  cairo_clip(backingCr)
   if scaleImage:
-    cairo_translate(backingCr, gdouble(dst.x), gdouble(dst.y))
-    cairo_scale(backingCr, gdouble(dst.w) / gdouble(w), gdouble(dst.h) / gdouble(h))
-    cairo_set_source_surface(backingCr, surf, 0.0, 0.0)
+    drawCairoRGBA(backingCr, surf, w.cint, h.cint, dst.x.cint, dst.y.cint,
+                  dst.w.cint, dst.h.cint)
   else:
+    # Preserve the clipping-only behavior of the original blit relay.
+    cairo_save(backingCr)
+    cairo_rectangle(backingCr, gdouble(dst.x), gdouble(dst.y),
+                    gdouble(min(w, dst.w)), gdouble(min(h, dst.h)))
+    cairo_clip(backingCr)
     cairo_set_source_surface(backingCr, surf, gdouble(dst.x), gdouble(dst.y))
-  cairo_paint(backingCr)
-  # `restore` drops the source pattern, which is what was holding the surface;
-  # this only lets go of the reference made above.
-  cairo_restore(backingCr)
+    cairo_paint(backingCr)
+    cairo_restore(backingCr)
   cairo_surface_destroy(surf)
   result = true
 
