@@ -188,6 +188,7 @@ proc cairo_move_to(cr: pointer; x, y: gdouble) {.importc, nodecl, cdecl.}
 proc cairo_line_to(cr: pointer; x, y: gdouble) {.importc, nodecl, cdecl.}
 proc cairo_set_line_width(cr: pointer; w: gdouble) {.importc, nodecl, cdecl.}
 proc cairo_scale(cr: pointer; sx, sy: gdouble) {.importc, nodecl, cdecl.}
+proc cairo_translate(cr: pointer; tx, ty: gdouble) {.importc, nodecl, cdecl.}
 
 proc pango_cairo_create_layout(cr: pointer): pointer {.importc, nodecl, cdecl.}
 proc pango_cairo_update_layout(cr, layout: pointer) {.importc, nodecl, cdecl.}
@@ -778,8 +779,8 @@ proc gtkDrawLine(x1, y1, x2, y2: int; color: screen.Color) =
 proc gtkDrawPoint(x, y: int; color: screen.Color) =
   gtkFillRect(rect(x, y, 1, 1), color)
 
-proc gtkBlitRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
-                 dst: coords.Rect): bool =
+proc gtkPutRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
+                dst: coords.Rect; scaleImage: bool): bool =
   ## This driver decodes no pictures, so it fills in none of the image
   ## relays. What it can do is take finished pixels from whoever does.
   ensureBackingCr()
@@ -791,19 +792,32 @@ proc gtkBlitRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
   let surf = cairo_image_surface_create_for_data(cast[pointer](pixels),
     gint(CAIRO_FORMAT_RGB24), gint(w), gint(h), gint(w * 4))
   if surf == nil: return false
-  # `dst` clips and does not scale, so what goes on is the clip and the
-  # source lands at its own size inside it.
+  # Legacy blits clip; image draws map the full source to their destination.
   cairo_save(backingCr)
   cairo_rectangle(backingCr, gdouble(dst.x), gdouble(dst.y),
-                  gdouble(min(w, dst.w)), gdouble(min(h, dst.h)))
+                  gdouble(if scaleImage: dst.w else: min(w, dst.w)),
+                  gdouble(if scaleImage: dst.h else: min(h, dst.h)))
   cairo_clip(backingCr)
-  cairo_set_source_surface(backingCr, surf, gdouble(dst.x), gdouble(dst.y))
+  if scaleImage:
+    cairo_translate(backingCr, gdouble(dst.x), gdouble(dst.y))
+    cairo_scale(backingCr, gdouble(dst.w) / gdouble(w), gdouble(dst.h) / gdouble(h))
+    cairo_set_source_surface(backingCr, surf, 0.0, 0.0)
+  else:
+    cairo_set_source_surface(backingCr, surf, gdouble(dst.x), gdouble(dst.y))
   cairo_paint(backingCr)
   # `restore` drops the source pattern, which is what was holding the surface;
   # this only lets go of the reference made above.
   cairo_restore(backingCr)
   cairo_surface_destroy(surf)
   result = true
+
+proc gtkBlitRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
+                 dst: coords.Rect): bool =
+  gtkPutRGBA(pixels, w, h, dst, false)
+
+proc gtkDrawRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
+                 dst: coords.Rect): bool =
+  gtkPutRGBA(pixels, w, h, dst, true)
 
 proc gtkSetCursor(c: CursorKind) =
   if drawingArea == nil: return
@@ -902,7 +916,7 @@ proc initGtk4Driver*() =
     drawText: gtkDrawText, drawMeasuredText: gtkDrawMeasuredText)
   drawRelays = DrawRelays(
     fillRect: gtkFillRect, drawLine: gtkDrawLine, drawPoint: gtkDrawPoint,
-    blitRGBA: gtkBlitRGBA)
+    blitRGBA: gtkBlitRGBA, drawRGBA: gtkDrawRGBA)
   inputRelays = InputRelays(
     pollEvent: gtkPollEvent, waitEvent: gtkWaitEvent,
     getTicks: gtkGetTicks, sleep: gtkDelay,

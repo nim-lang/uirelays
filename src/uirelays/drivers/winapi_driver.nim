@@ -753,8 +753,8 @@ proc winSetClipRect(r: coords.Rect) =
     discard IntersectClipRect(gBackDC,
       r.x.int32, r.y.int32, (r.x + r.w).int32, (r.y + r.h).int32)
 
-proc winBlitRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
-                 dst: coords.Rect): bool =
+proc winPutRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
+                dst: coords.Rect; scaleImage: bool): bool =
   ## This driver decodes no pictures, so it fills in none of the image
   ## relays. What it can do is take finished pixels from whoever does.
   if gBackDC == nil or pixels == nil: return false
@@ -769,20 +769,30 @@ proc winBlitRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
   bmi.bmiHeader.biPlanes = 1
   bmi.bmiHeader.biBitCount = 32
   bmi.bmiHeader.biCompression = BI_RGB
-  # `dst` clips and does not scale. Rather than take a corner out of the
-  # source -- where a top-down DIB's origin is a question with two answers --
-  # the whole of it goes down at its own size behind a clip that admits only
-  # what `dst` allows. Same picture, and no question.
+  # Blits clip a source-sized rectangle. Image draws map the full source
+  # into the logical destination, using the same top-down DIB data.
+  let drawW = if scaleImage: dst.w else: w
+  let drawH = if scaleImage: dst.h else: h
+  let clipW = if scaleImage: dst.w else: min(w, dst.w)
+  let clipH = if scaleImage: dst.h else: min(h, dst.h)
   let saved = SaveDC(gBackDC)
   discard IntersectClipRect(gBackDC, dst.x.int32, dst.y.int32,
-    int32(dst.x + min(w, dst.w)), int32(dst.y + min(h, dst.h)))
+    int32(dst.x + clipW), int32(dst.y + clipH))
   discard StretchDIBits(gBackDC,
-    dst.x.int32, dst.y.int32, w.int32, h.int32,
+    dst.x.int32, dst.y.int32, drawW.int32, drawH.int32,
     0, 0, w.int32, h.int32,
     cast[pointer](pixels), addr bmi, DIB_RGB_COLORS, SRCCOPY)
   if saved != 0:
     discard RestoreDC(gBackDC, saved)
   result = true
+
+proc winBlitRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
+                 dst: coords.Rect): bool =
+  winPutRGBA(pixels, w, h, dst, false)
+
+proc winDrawRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
+                 dst: coords.Rect): bool =
+  winPutRGBA(pixels, w, h, dst, true)
 
 proc winOpenFont(path: string; size: int; style: FontStyles;
                  metrics: var FontMetrics): screen.Font =
@@ -1065,7 +1075,7 @@ proc initWinapiDriver*() =
     drawText: winDrawText)
   drawRelays = DrawRelays(
     fillRect: winFillRect, drawLine: winDrawLine, drawPoint: winDrawPoint,
-    blitRGBA: winBlitRGBA)
+    blitRGBA: winBlitRGBA, drawRGBA: winDrawRGBA)
   inputRelays = InputRelays(
     pollEvent: winPollEvent, waitEvent: winWaitEvent,
     getTicks: winGetTicks, sleep: winDelay,

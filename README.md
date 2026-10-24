@@ -257,14 +257,20 @@ adding support for a new platform or graphics toolkit.
 ## Drawing full-resolution images
 
 `drawRGBA(pixels, width, height, destination)` draws an opaque image of packed
-`0x00RRGGBB` words into a destination in driver coordinates. Cocoa and the
-FigDraw siwin/Windy drivers support it. The driver copies or consumes the
+`0x00RRGGBB` words into a destination in driver coordinates. Cocoa, WinAPI,
+X11, GTK4, and the FigDraw siwin/Windy drivers support it. The driver copies or consumes the
 buffer before returning.
 
 On a Retina surface, rasterize `layout.width * layout.scaleX` by
 `layout.height * layout.scaleY` pixels, then draw into
 `rect(0, 0, layout.width, layout.height)`. Each source pixel then maps to a
 backing pixel. Native text and drawing continue to use logical coordinates.
+
+WinAPI and X11 expose physical window pixels, with fractional UI enlargement
+reported by `ScreenLayout.uiScale` (for example, 125 or 150). Rasterizing the
+full window dimensions then draws pixels directly. X11 resamples only when
+source and destination sizes actually differ; its ordinary HiDPI path does
+not copy or filter the image.
 
 The existing `blitRGBA` retains its clipping-only behavior. `drawRGBA` falls
 back to it when source and destination dimensions match, and returns `false`

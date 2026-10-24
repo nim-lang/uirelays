@@ -3,6 +3,7 @@
 # Double-buffered via X Pixmap.
 
 import ../coords, ../input, ../screen
+from ../pixelutils import resizedRGBA
 import std/[strutils, os]
 when defined(nimony):
   {.feature: "lenientnils".}
@@ -1427,6 +1428,16 @@ proc x11BlitRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
   discard XFree(cast[pointer](img))
   result = true
 
+proc x11DrawRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
+                 dst: coords.Rect): bool =
+  if pixels == nil or w <= 0 or h <= 0 or dst.w <= 0 or dst.h <= 0:
+    return false
+  if w == dst.w and h == dst.h:
+    return x11BlitRGBA(pixels, w, h, dst)
+  let resized = resizedRGBA(pixels, w, h, dst.w, dst.h)
+  x11BlitRGBA(cast[ptr UncheckedArray[uint32]](unsafeAddr resized[0]),
+              dst.w, dst.h, dst)
+
 proc x11SetCursor(c: CursorKind) =
   let shape = case c
     of curDefault, curArrow: XC_left_ptr
@@ -1555,7 +1566,7 @@ proc initX11Driver*() =
     drawText: x11DrawText, drawMeasuredText: x11DrawMeasuredText)
   drawRelays = DrawRelays(
     fillRect: x11FillRect, drawLine: x11DrawLine, drawPoint: x11DrawPoint,
-    blitRGBA: x11BlitRGBA)
+    blitRGBA: x11BlitRGBA, drawRGBA: x11DrawRGBA)
     # No `loadImage` here, and so no `imageSize` either: this driver does not
     # decode pictures. `blitRGBA` is how one gets on the screen -- whoever
     # can turn a file into pixels hands them over and gets the clip rectangle
