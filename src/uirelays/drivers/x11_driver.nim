@@ -442,6 +442,9 @@ proc XCreateImage(dpy: pointer; visual: pointer; depth: cuint; format: cint;
   offset: cint; data: pointer; w, h: cuint;
   bitmapPad, bytesPerLine: cint): ptr XImageObj
   {.cdecl, dynlib: libX11, importc.}
+proc XGetImage(dpy: pointer; d: XID; x, y: cint; w, h: cuint;
+  planeMask: culong; format: cint): ptr XImageObj
+  {.cdecl, dynlib: libX11, importc.}
 proc XPutImage(dpy: pointer; d: XID; gc: pointer; image: ptr XImageObj;
   srcX, srcY: cint; dstX, dstY: cint; w, h: cuint): cint
   {.cdecl, dynlib: libX11, importc.}
@@ -537,6 +540,8 @@ proc XftDrawStringUtf8(draw: pointer; color: ptr XftColor; font: ptr XftFont;
   {.cdecl, dynlib: libXft, importc.}
 proc XftTextExtentsUtf8(dpy: pointer; font: ptr XftFont;
   text: cstring; len: cint; extents: ptr XGlyphInfo): void
+  {.cdecl, dynlib: libXft, importc.}
+proc XftDrawCreateAlpha(dpy: pointer; pixmap: XID; depth: cint): pointer
   {.cdecl, dynlib: libXft, importc.}
 proc XftDrawRect(draw: pointer; color: ptr XftColor;
   x, y: cint; w, h: cuint): void
@@ -1080,7 +1085,8 @@ proc openInputMethod() =
     gXim = nil
 
 proc x11CreateWindow(layout: var ScreenLayout; icon: pointer; iconLen: int) =
-  gDisplay = XOpenDisplay(nil)
+  # Fonts opened before the window already have the connection.
+  if gDisplay == nil: gDisplay = XOpenDisplay(nil)
   if gDisplay == nil:
     quit("Cannot open X11 display")
   gUiScale = computeUiScale()
@@ -1272,8 +1278,18 @@ proc x11SetClipRect(r: coords.Rect) =
   discard XSetClipRectangles(gDisplay, gGC, 0, 0, addr xr, 1, 0)
   discard XftDrawSetClipRectangles(gXftDraw, 0, 0, addr xr, 1)
 
+proc ensureDisplay(): bool =
+  ## Fonts are opened before the window, and without one by a renderer that
+  ## draws in a window of its own; either way they need the connection.
+  if gDisplay == nil:
+    gDisplay = XOpenDisplay(nil)
+    if gDisplay == nil: return false
+    gScreen = XDefaultScreen(gDisplay)
+  true
+
 proc x11OpenFont(path: string; size: int; style: FontStyles;
                  metrics: var FontMetrics): screen.Font =
+  if not ensureDisplay(): return screen.Font(0)
   # Asked for outright, or -- for a path that names one face of a family --
   # detected from the filename.
   # Note: `substr in str` is avoided on purpose -- Nimony's system `in`
@@ -1374,6 +1390,51 @@ proc x11DrawMeasuredText(f: screen.Font; x, y: int; text: string;
   if fp == nil or text.len == 0: return
   var t = text
   paintText(fp, x, y, cstr(t), text.len.cint, size.w.cuint, fg, bg)
+
+proc x11RenderText(f: screen.Font; text: string; fg: screen.Color;
+                  pixels: var seq[uint32]): TextExtent =
+  ## Xft draws the run into an 8-bit alpha pixmap of its own: what lands
+  ## there is coverage, and coverage times `fg` is the premultiplied pixel.
+  pixels.setLen 0
+  let fp = getFontPtr(f)
+  if fp == nil or text.len == 0: return
+  var t = text
+  var extents {.noinit.}: XGlyphInfo
+  XftTextExtentsUtf8(gDisplay, fp, cstr(t), text.len.cint, addr extents)
+  let w = extents.xOff.int
+  let h = fp.height.int
+  if w <= 0 or h <= 0: return
+  let pixmap = XCreatePixmap(gDisplay, XRootWindow(gDisplay, gScreen),
+    w.cuint, h.cuint, 8)
+  let draw = XftDrawCreateAlpha(gDisplay, pixmap, 8)
+  if draw == nil:
+    discard XFreePixmap(gDisplay, pixmap)
+    return
+  # A new pixmap holds garbage; Xft fills rectangles with PictOpSrc.
+  var clear = XftColor()
+  XftDrawRect(draw, addr clear, 0, 0, w.cuint, h.cuint)
+  var ink = XftColor(color: XRenderColor(red: 0xFFFF, green: 0xFFFF,
+                                         blue: 0xFFFF, alpha: 0xFFFF))
+  XftDrawStringUtf8(draw, addr ink, fp, 0, fp.ascent, cstr(t), text.len.cint)
+  let image = XGetImage(gDisplay, pixmap, 0, 0, w.cuint, h.cuint,
+    not 0.culong, ZPixmap)
+  XftDrawDestroy(draw)
+  discard XFreePixmap(gDisplay, pixmap)
+  if image == nil: return
+  defer:
+    # What `XDestroyImage` -- a macro -- does for an image Xlib allocated.
+    discard XFree(image.data)
+    discard XFree(cast[pointer](image))
+  if image.depth != 8 or image.bitsPerPixel != 8: return
+  let src = cast[ptr UncheckedArray[uint8]](image.data)
+  pixels.setLen w * h
+  for y in 0 ..< h:
+    for x in 0 ..< w:
+      let a = src[y * image.bytesPerLine.int + x].uint32 * fg.a.uint32 div 255
+      pixels[y * w + x] = (a shl 24) or ((fg.r.uint32 * a div 255) shl 16) or
+                          ((fg.g.uint32 * a div 255) shl 8) or
+                          (fg.b.uint32 * a div 255)
+  result = TextExtent(w: w, h: h)
 
 proc x11GetFontMetrics(f: screen.Font): FontMetrics =
   let idx = f.int - 1
@@ -1658,7 +1719,8 @@ proc initX11Driver*() =
   fontRelays = FontRelays(
     openFont: x11OpenFont, closeFont: x11CloseFont,
     getFontMetrics: x11GetFontMetrics, measureText: x11MeasureText,
-    drawText: x11DrawText, drawMeasuredText: x11DrawMeasuredText)
+    drawText: x11DrawText, drawMeasuredText: x11DrawMeasuredText,
+    renderText: x11RenderText)
   drawRelays = DrawRelays(
     fillRect: x11FillRect, drawLine: x11DrawLine, drawPoint: x11DrawPoint,
     blitRGBA: x11BlitRGBA, drawRGBA: x11DrawRGBA)

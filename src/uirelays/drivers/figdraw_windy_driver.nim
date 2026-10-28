@@ -618,6 +618,30 @@ proc figDrawText(f: screen.Font; x, y: int; text: string;
     bg: bg,
   )
 
+proc figRenderText(f: screen.Font; text: string; fg: screen.Color;
+                   pixels: var seq[uint32]): TextExtent =
+  ## Pixie fills the run into an image of its own, premultiplied as the
+  ## pixels `renderText` hands out are.
+  pixels.setLen 0
+  let slot = getFontSlot(f)
+  if slot.isNil or slot.pixieFont.isNil or text.len == 0:
+    return
+  let size = figMeasureText(f, text)
+  if size.w <= 0 or size.h <= 0:
+    return
+  let font = slot.pixieFont.copy()
+  font.paint = toFigColor(fg)
+  let image = newImage(size.w, size.h)
+  try:
+    image.fillText(font.typeset(text))
+  except PixieError:
+    return
+  pixels.setLen size.w * size.h
+  for i, c in image.data:
+    pixels[i] = (c.a.uint32 shl 24) or (c.r.uint32 shl 16) or
+                (c.g.uint32 shl 8) or c.b.uint32
+  result = size
+
 proc figGetFontMetrics(f: screen.Font): FontMetrics =
   let slot = getFontSlot(f)
   if not slot.isNil:
@@ -792,6 +816,7 @@ proc initFigDrawWindyDriver*() =
     getFontMetrics: figGetFontMetrics,
     measureText: figMeasureText,
     drawText: figDrawText,
+    renderText: figRenderText,
   )
   drawRelays = DrawRelays(
     fillRect: figFillRect,
