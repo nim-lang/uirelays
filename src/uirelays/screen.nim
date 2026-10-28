@@ -75,6 +75,10 @@ type
   FontRelays* = object
     openFont*: proc (path: string; size: int; style: FontStyles;
                      metrics: var FontMetrics): Font {.nimcall.}
+    openFontFace*: proc (path: string; faceIndex, size: int; style: FontStyles;
+                         metrics: var FontMetrics): Font {.nimcall.}
+      ## Optional exact collection-face selector. Zero is the first face;
+      ## callers must not silently substitute another face when unavailable.
     closeFont*: proc (f: Font) {.nimcall.}
     getFontMetrics*: proc (f: Font): FontMetrics {.nimcall.}
     measureText*: proc (f: Font; text: string): TextExtent {.nimcall.}

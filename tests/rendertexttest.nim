@@ -35,6 +35,20 @@ for p in pixels:
 doAssert inked > 0
 doAssert inked < pixels.len, "text is drawn on transparency"
 
+for foreground in [Color(r: 255, g: 255, b: 255, a: 255),
+                   Color(r: 200, g: 100, b: 50, a: 128)]:
+  doAssert renderText(font, "Hello, world", foreground, pixels) == measured
+  for p in pixels:
+    let a = p shr 24
+    doAssert a <= foreground.a.uint32
+    doAssert ((p shr 16) and 0xFF) <= a
+    doAssert ((p shr 8) and 0xFF) <= a
+    doAssert (p and 0xFF) <= a
+    if foreground.r == 255:
+      doAssert ((p shr 16) and 0xFF) == a
+      doAssert ((p shr 8) and 0xFF) == a
+      doAssert (p and 0xFF) == a
+
 doAssert renderText(font, "", fg, pixels) == TextExtent()
 doAssert pixels.len == 0
 closeFont(font)
@@ -50,3 +64,23 @@ when defined(windows):
     closeFont(regular)
     closeFont(bold)
 echo "rendertexttest: OK"
+
+when defined(windows):
+  proc getCurrentProcess(): pointer {.stdcall, dynlib: "kernel32", importc: "GetCurrentProcess".}
+  proc getGuiResources(process: pointer, flags: uint32): uint32 {.stdcall, dynlib: "user32", importc: "GetGuiResources".}
+
+  # Font-only clients must leave the application's installed relays untouched.
+  let installed = fontRelays
+  let isolated = winapiFontRelays()
+  doAssert fontRelays.openFont == installed.openFont
+  let before = getGuiResources(getCurrentProcess(), 0)
+  for i in 0 ..< 100:
+    var metrics: FontMetrics
+    let font = isolated.openFont("", 12 + i mod 12, {}, metrics)
+    doAssert font.int != 0
+    doAssert isolated.measureText(font, "hello").w > 0
+    isolated.closeFont(font)
+  doAssert getGuiResources(getCurrentProcess(), 0) <= before + 1
+
+  var invalidMetrics: FontMetrics
+  doAssert isolated.openFontFace("", 1, 16, {}, invalidMetrics).int == 0
