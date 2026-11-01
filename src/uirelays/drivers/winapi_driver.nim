@@ -361,6 +361,8 @@ proc CreateRectRgn(x1, y1, x2, y2: int32): HRGN
   {.stdcall, dynlib: "gdi32", importc.}
 proc AddFontResourceExW(name: ptr uint16; fl: DWORD; res: pointer): int32
   {.stdcall, dynlib: "gdi32", importc.}
+proc RemoveFontResourceExW(name: ptr uint16; fl: DWORD; res: pointer): BOOL
+  {.stdcall, dynlib: "gdi32", importc.}
 
 # ---- Helpers ----
 
@@ -381,6 +383,7 @@ type
     metrics: FontMetrics
     faceName: string
     size: int
+    registeredPath: string
 
 var fonts: seq[FontSlot]
 
@@ -397,7 +400,6 @@ var
   gBackDC: HDC        # off-screen DC for double buffering
   gBackBmp: HBITMAP   # off-screen bitmap
   gOldBmp: HGDIOBJ    # original bitmap selected into gBackDC
-  gTextDC: HDC        # for fonts used before, or without, a window
   gWidth, gHeight: int32
   gQuitFlag: bool
   gSavedClipRgn: HRGN
@@ -822,21 +824,14 @@ proc winDrawRGBA(pixels: ptr UncheckedArray[uint32]; w, h: int;
                  dst: coords.Rect; format: RGBAFormat): bool =
   winPutRGBA(pixels, w, h, dst, true, format)
 
-proc fontDC(): HDC =
-  ## The back buffer once there is a window. A renderer with a window of its
-  ## own never makes one here, and its fonts still need a DC to be measured.
-  if gBackDC != nil: return gBackDC
-  if gTextDC == nil: gTextDC = CreateCompatibleDC(nil)
-  result = gTextDC
-
 type FaceInfo = object
   family: string     ## the name GDI selects the face by; "" if unknown
   weight: int
   italic: bool
 
-proc readFaceInfo(path: string): FaceInfo =
+proc readFaceInfo(path: string; faceIndex: int): FaceInfo =
   ## The GDI family name (`name` ID 1), weight and slant (`OS/2`) of the
-  ## first face in a TrueType/OpenType file or collection.
+  ## selected face in a TrueType/OpenType file or collection.
   var data: string
   try: data = readFile(path)
   except IOError, OSError: return
@@ -845,7 +840,11 @@ proc readFaceInfo(path: string): FaceInfo =
     else: (data[at].ord shl 8) or data[at+1].ord
   proc u32(at: int): int = (u16(at) shl 16) or u16(at + 2)
   var face = 0
-  if data.len >= 16 and data[0 ..< 4] == "ttcf": face = u32(12)
+  if data.len >= 16 and data[0 ..< 4] == "ttcf":
+    if faceIndex < 0 or faceIndex >= u32(8): return
+    face = u32(12 + faceIndex * 4)
+  elif faceIndex != 0:
+    return
   var nameAt, os2At = -1
   for i in 0 ..< u16(face + 4):
     let rec = face + 12 + i * 16
@@ -872,14 +871,21 @@ proc readFaceInfo(path: string): FaceInfo =
   w.add Utf16Char(0)
   result.family = $cast[WideCString](addr w[0])
 
-proc winOpenFont(path: string; size: int; style: FontStyles;
-                 metrics: var FontMetrics): screen.Font =
+proc winOpenFontFace(path: string; faceIndex, size: int; style: FontStyles;
+                     metrics: var FontMetrics): screen.Font =
   # Ensure the font file is available as a private resource (needed for
   # fonts outside C:\Windows\Fonts, harmless for system-installed ones).
   let wpath = newWideCString(path)
   let FR_PRIVATE = 0x10'u32
-  discard AddFontResourceExW(cast[ptr uint16](wpath[0].addr), FR_PRIVATE, nil)
-  let info = readFaceInfo(path)
+  let info = readFaceInfo(path, faceIndex)
+  if faceIndex < 0 or (faceIndex != 0 and info.family.len == 0):
+    return screen.Font(0)
+  let registered = path.len > 0 and
+    AddFontResourceExW(cast[ptr uint16](wpath[0].addr), FR_PRIVATE, nil) > 0
+  var keepRegistration = false
+  defer:
+    if registered and not keepRegistration:
+      discard RemoveFontResourceExW(cast[ptr uint16](wpath[0].addr), FR_PRIVATE, nil)
 
   # Asked for outright, or -- for a path that names one face of a family --
   # read from the file, or detected from the filename.
@@ -957,7 +963,11 @@ proc winOpenFont(path: string; size: int; style: FontStyles;
     return screen.Font(0)
 
   # Get font metrics
-  let dc = fontDC()
+  let dc = CreateCompatibleDC(nil)
+  if dc == nil:
+    discard DeleteObject(cast[HGDIOBJ](hf))
+    return screen.Font(0)
+  defer: discard DeleteDC(dc)
   let oldFont = SelectObject(dc, cast[HGDIOBJ](hf))
   var tm: TEXTMETRICW
   discard GetTextMetricsW(dc, addr tm)
@@ -967,19 +977,36 @@ proc winOpenFont(path: string; size: int; style: FontStyles;
   metrics.descent = tm.tmDescent.int
   metrics.lineHeight = tm.tmHeight.int + tm.tmExternalLeading.int
 
-  fonts.add FontSlot(hFont: hf, metrics: metrics, faceName: path, size: size)
+  let slot = FontSlot(hFont: hf, metrics: metrics, faceName: path, size: size,
+    registeredPath: (if registered: path else: ""))
+  keepRegistration = registered
+  for i in 0 ..< fonts.len:
+    if fonts[i].hFont == nil:
+      fonts[i] = slot
+      return screen.Font(i + 1)
+  fonts.add slot
   result = screen.Font(fonts.len)
+
+proc winOpenFont(path: string; size: int; style: FontStyles;
+                 metrics: var FontMetrics): screen.Font =
+  winOpenFontFace(path, 0, size, style, metrics)
 
 proc winCloseFont(f: screen.Font) =
   let idx = f.int - 1
   if idx >= 0 and idx < fonts.len and fonts[idx].hFont != nil:
     discard DeleteObject(cast[HGDIOBJ](fonts[idx].hFont))
     fonts[idx].hFont = nil
+    if fonts[idx].registeredPath.len > 0:
+      let path = newWideCString(fonts[idx].registeredPath)
+      discard RemoveFontResourceExW(cast[ptr uint16](path[0].addr), 0x10, nil)
+      fonts[idx].registeredPath.setLen(0)
 
 proc winMeasureText(f: screen.Font; text: string): TextExtent =
   let hf = getFontHandle(f)
   if hf == nil or text.len == 0: return
-  let dc = fontDC()
+  let dc = CreateCompatibleDC(nil)
+  if dc == nil: return
+  defer: discard DeleteDC(dc)
   let oldFont = SelectObject(dc, cast[HGDIOBJ](hf))
   let wtext = newWideCString(text)
   var sz: SIZE
@@ -1011,7 +1038,7 @@ proc winRenderText(f: screen.Font; text: string; fg: screen.Color;
   pixels.setLen 0
   let hf = getFontHandle(f)
   if hf == nil or text.len == 0: return
-  let dc = CreateCompatibleDC(fontDC())
+  let dc = CreateCompatibleDC(nil)
   if dc == nil: return
   defer: discard DeleteDC(dc)
   let oldFont = SelectObject(dc, cast[HGDIOBJ](hf))
@@ -1205,13 +1232,16 @@ proc setDpiAware() =
     discard SetProcessDPIAware()
   except: discard
 
-proc initWinapiFontRelays*() =
-  ## Only the fonts, for a renderer that draws in a window of its own and
-  ## takes text from `renderText`.
-  fontRelays = FontRelays(
-    openFont: winOpenFont, closeFont: winCloseFont,
+proc winapiFontRelays*(): FontRelays =
+  ## A font provider independent of the installed window/drawing relays.
+  FontRelays(
+    openFont: winOpenFont, openFontFace: winOpenFontFace, closeFont: winCloseFont,
     getFontMetrics: winGetFontMetrics, measureText: winMeasureText,
     drawText: winDrawText, renderText: winRenderText)
+
+proc initWinapiFontRelays*() =
+  ## Installs only the Win32 font provider.
+  fontRelays = winapiFontRelays()
 
 proc initWinapiDriver*() =
   setDpiAware()
