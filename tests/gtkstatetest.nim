@@ -2,9 +2,6 @@
 ## Requires GTK4 development headers; no window/display is initialized.
 include ../src/uirelays/drivers/gtk4_driver
 
-proc cairo_image_surface_get_data(surface: pointer): pointer {.importc, nodecl, cdecl.}
-proc cairo_image_surface_get_stride(surface: pointer): cint {.importc, nodecl, cdecl.}
-
 proc pixel(x, y: int): uint32 =
   cairo_surface_flush(backingSurf)
   let data = cast[ptr UncheckedArray[uint32]](cairo_image_surface_get_data(backingSurf))

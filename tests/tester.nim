@@ -25,9 +25,15 @@ exec "nim c -r tests/layouttest.nim"
 exec "nim c -r tests/rgbatest.nim"
 when defined(windows):
   exec "nim c -r tests/nativealphatest.nim"
+  exec "nim c -r tests/rendertexttest.nim"
 elif defined(linux):
   if findExe("xvfb-run").len > 0:
     exec "xvfb-run -a nim c -r tests/nativealphatest.nim"
+    # Xft needs a display even for text that never reaches a window.
+    exec "xvfb-run -a nim c -r tests/rendertexttest.nim"
+  exec "nim c -r -d:gtk4 tests/rendertexttest.nim"
+elif defined(macosx):
+  exec "nim c -r tests/rendertexttest.nim"
 when defined(macosx):
   let cocoaTest = getTempDir() / ("uirelays-cocoargbatest-" & $getCurrentProcessId())
   exec "clang -fobjc-arc tests/cocoargbatest.m -o " & quoteShell(cocoaTest) &

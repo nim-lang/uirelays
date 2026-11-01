@@ -396,6 +396,53 @@ void cocoa_measureText(int handle, const char *text, int *outW, int *outH) {
   CFRelease(str);
 }
 
+/* Draw text into `pixels` (w * h premultiplied 0xAARRGGBB, zeroed by the
+   caller) instead of the window: the run as Core Text lays it out, its line
+   placed the way cocoa_drawText places it. */
+void cocoa_renderText(int handle, const char *text, int w, int h,
+                      int r, int g, int b, int a, uint32_t *pixels) {
+  int idx = handle - 1;
+  if (idx < 0 || idx >= fontCount || !fonts[idx].font || !text || !text[0]) return;
+  if (w <= 0 || h <= 0 || !pixels) return;
+
+  CGColorSpaceRef space = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+  /* Premultiplied ARGB in a little-endian 32-bit word: the bytes are B, G,
+     R, A, which is what a uint32_t 0xAARRGGBB is on every Mac. */
+  CGContextRef ctx = CGBitmapContextCreate(pixels, w, h, 8, w * 4, space,
+    kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+  CGColorSpaceRelease(space);
+  if (!ctx) return;
+
+  CFStringRef str = CFStringCreateWithCString(NULL, text, kCFStringEncodingUTF8);
+  if (!str) { CGContextRelease(ctx); return; }
+  CGColorRef color = CGColorCreateSRGB(r/255.0, g/255.0, b/255.0, a/255.0);
+  CFStringRef keys[] = { kCTFontAttributeName, kCTForegroundColorAttributeName };
+  CFTypeRef vals[] = { fonts[idx].font, color };
+  CFDictionaryRef attrs = CFDictionaryCreate(NULL,
+    (const void **)keys, (const void **)vals, 2,
+    &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+  CFAttributedStringRef attrStr = CFAttributedStringCreate(NULL, str, attrs);
+  CTLineRef line = CTLineCreateWithAttributedString(attrStr);
+
+  /* A bitmap context is bottom-up already, and its first row in memory is
+     the top one, so the baseline is measured from the bottom as in
+     cocoa_drawText after its un-flip. */
+  int lh = fonts[idx].lineHeight;
+  CGFloat baseline = fonts[idx].descent +
+                     (lh - fonts[idx].ascent - fonts[idx].descent) * 0.5;
+  if (baseline < fonts[idx].descent) baseline = fonts[idx].descent;
+  CGContextSetTextPosition(ctx, 0, baseline + (h - lh));
+  CTLineDraw(line, ctx);
+  CGContextFlush(ctx);
+
+  CFRelease(line);
+  CFRelease(attrStr);
+  CFRelease(attrs);
+  CGColorRelease(color);
+  CFRelease(str);
+  CGContextRelease(ctx);
+}
+
 /* ---- Backing bitmap context ------------------------------------------- */
 
 static CGContextRef backingCtx = NULL;

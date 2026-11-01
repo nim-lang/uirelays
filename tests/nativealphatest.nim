@@ -30,15 +30,6 @@ when defined(windows):
 elif defined(linux):
   include ../src/uirelays/drivers/x11_driver
 
-  proc XGetImage(
-    display: pointer,
-    drawable: XID,
-    x, y: cint,
-    width, height: cuint,
-    mask: culong,
-    format: cint,
-  ): ptr XImageObj {.cdecl, dynlib: libX11, importc.}
-
   proc prepare() =
     initX11Driver()
     discard screen.createWindow(4, 3)

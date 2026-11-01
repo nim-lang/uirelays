@@ -80,6 +80,9 @@ proc cCloseFont(handle: cint) {.importc: "cocoa_closeFont", cdecl.}
 proc cGetFontMetrics(handle: cint; asc, desc, lh: ptr cint) {.importc: "cocoa_getFontMetrics", cdecl.}
 proc cMeasureText(handle: cint; text: cstring;
                   outW, outH: ptr cint) {.importc: "cocoa_measureText", cdecl.}
+proc cRenderText(handle: cint; text: cstring; w, h: cint;
+                 r, g, b, a: cint; pixels: ptr uint32)
+  {.importc: "cocoa_renderText", cdecl.}
 proc cDrawText(handle: cint; x, y: cint; text: cstring;
                fgR, fgG, fgB, fgA: cint;
                bgR, bgG, bgB, bgA: cint;
@@ -208,6 +211,17 @@ proc cocoaDrawText(f: Font; x, y: int; text: string;
             bg.r.cint, bg.g.cint, bg.b.cint, bg.a.cint,
             addr w, addr h)
   result = TextExtent(w: w, h: h)
+
+proc cocoaRenderText(f: Font; text: string; fg: Color;
+                     pixels: var seq[uint32]): TextExtent =
+  pixels.setLen 0
+  if text == "": return TextExtent()
+  let size = cocoaMeasureText(f, text)
+  if size.w <= 0 or size.h <= 0: return TextExtent()
+  pixels.setLen size.w * size.h  # zeroed: transparent until drawn on
+  cRenderText(f.int.cint, cstring(text), size.w.cint, size.h.cint,
+              fg.r.cint, fg.g.cint, fg.b.cint, fg.a.cint, addr pixels[0])
+  result = size
 
 proc cocoaGetFontMetrics(f: Font): FontMetrics =
   var asc, desc, lh: cint
@@ -339,7 +353,7 @@ proc initCocoaDriver*() =
   fontRelays = FontRelays(
     openFont: cocoaOpenFont, closeFont: cocoaCloseFont,
     getFontMetrics: cocoaGetFontMetrics, measureText: cocoaMeasureText,
-    drawText: cocoaDrawText)
+    drawText: cocoaDrawText, renderText: cocoaRenderText)
   drawRelays = DrawRelays(
     fillRect: cocoaFillRect, drawLine: cocoaDrawLine,
     drawPoint: cocoaDrawPoint,

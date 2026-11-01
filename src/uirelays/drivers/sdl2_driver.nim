@@ -148,6 +148,34 @@ proc sdlDrawTextShaded(f: Font; x, y: int; text: string;
   freeSurface(surf)
   destroy(tex)
 
+proc sdlRenderText(f: Font; text: string; fg: screen.Color;
+                   pixels: var seq[uint32]): TextExtent =
+  ## SDL_ttf blends the run onto transparency in straight alpha; the pixels
+  ## handed out are premultiplied.
+  pixels.setLen 0
+  let fp = getFontPtr(f)
+  if fp == nil or text.len == 0: return
+  let blended = renderUtf8Blended(fp, text.cstring, toSdlColor(fg))
+  if blended == nil: return
+  let surf = convertSurfaceFormat(blended, SDL_PIXELFORMAT_ARGB8888, 0)
+  freeSurface(blended)
+  if surf == nil: return
+  let w = surf.w.int
+  let h = surf.h.int
+  let src = cast[ptr UncheckedArray[uint8]](surf.pixels)
+  pixels.setLen w * h
+  for y in 0 ..< h:
+    let row = cast[ptr UncheckedArray[uint32]](addr src[y * surf.pitch.int])
+    for x in 0 ..< w:
+      let p = row[x]
+      let a = p shr 24
+      pixels[y * w + x] = (a shl 24) or
+        ((((p shr 16) and 0xFF) * a div 255) shl 16) or
+        ((((p shr 8) and 0xFF) * a div 255) shl 8) or
+        ((p and 0xFF) * a div 255)
+  freeSurface(surf)
+  result = TextExtent(w: w, h: h)
+
 proc sdlGetFontMetrics(f: Font): FontMetrics =
   let idx = f.int - 1
   if idx >= 0 and idx < fonts.len: fonts[idx].metrics
@@ -421,7 +449,7 @@ proc initSdl2Driver*() =
   fontRelays = FontRelays(
     openFont: sdlOpenFont, closeFont: sdlCloseFont,
     getFontMetrics: sdlGetFontMetrics, measureText: sdlMeasureText,
-    drawText: sdlDrawTextShaded)
+    drawText: sdlDrawTextShaded, renderText: sdlRenderText)
   drawRelays = DrawRelays(
     fillRect: sdlFillRect, drawLine: sdlDrawLine, drawPoint: sdlDrawPoint,
     blitRGBA: sdlBlitRGBA)
