@@ -329,6 +329,7 @@ const
   XK_period = 0x2e'u
   XK_minus = 0x2d'u
   XK_equal = 0x3d'u
+  XK_slash = 0x2f'u
 
   # Input method
   XIMPreeditNothing = 0x0008
@@ -739,6 +740,7 @@ proc translateKeySym(ks: XKeySym): input.KeyCode =
   of XK_period: KeyPeriod
   of XK_minus: KeyMinus
   of XK_equal: KeyEqual
+  of XK_slash: KeySlash
   else: KeyNone
 
 proc translateMods(state: cuint): set[Modifier] =
