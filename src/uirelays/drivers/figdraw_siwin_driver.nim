@@ -82,6 +82,7 @@ var
   renderer: FigRenderer[SiwinRenderBackend]
   useAutoScale: bool
   eventQueue: Deque[input.Event]
+  wheelAcc: float32  ## scroll lines not sent yet
   fontSlots: seq[FontSlot]
   images: seq[ImageSlot]
   drawOps: seq[DrawOp]
@@ -119,6 +120,19 @@ proc toLogicalSize(v: int32): int =
 
 proc queueEvent(e: input.Event) =
   eventQueue.addLast(e)
+
+proc queueScroll(lines, dx: int) =
+  ## A wheel event in lines. Merged into a wheel event still waiting in the
+  ## queue: a touchpad fires far faster than frames render, and one frame per
+  ## event leaves scrolling trailing behind the finger.
+  if eventQueue.len > 0 and eventQueue[eventQueue.len - 1].kind == MouseWheelEvent:
+    var last = addr eventQueue[eventQueue.len - 1]
+    last.preciseLines += lines
+    last.x += dx
+    last.y = cmp(last.preciseLines, 0)
+  else:
+    queueEvent(input.Event(kind: MouseWheelEvent, x: dx, y: cmp(lines, 0),
+                           preciseLines: lines))
 
 proc resolveFontPath(path: string): string =
   ## An empty path means "the platform default", and for this library that is
@@ -446,11 +460,15 @@ proc figCreateWindow(layout: var ScreenLayout; icon: pointer; iconLen: int) =
             last.clicks = if e.double: 2 else: 1
           eventQueue.addLast(last),
       onScroll: proc(e: siwin.ScrollEvent) =
-        queueEvent(input.Event(
-          kind: MouseWheelEvent,
-          x: e.deltaX.round().int,
-          y: e.delta.round().int,
-        )),
+        # siwin reports notches: 1 a wheel click, fractions from a touchpad.
+        # Count lines (3 a notch) and carry the rest, so a touchpad's small
+        # steps add up instead of each rounding to nothing. siwin's positive is
+        # down, uirelays' is up.
+        wheelAcc -= e.delta * 3
+        let lines = wheelAcc.int
+        wheelAcc -= lines.float32
+        let dx = e.deltaX.round().int
+        if lines != 0 or dx != 0: queueScroll(lines, dx),
     )
     appWindow.firstStep()
     siwinInitialized = true
