@@ -47,6 +47,9 @@ type
                            ## window moved to a display of another density.
     button*: MouseButton   ## MouseDownEvent/MouseUpEvent: which button
     clicks*: int           ## number of consecutive clicks (double-click = 2)
+    preciseLines*: int     ## MouseWheelEvent: lines to scroll, from a driver
+                           ## that tracks fine-grained (touchpad) scrolling;
+                           ## 0 = derive from `y` notches (see `wheelLines`)
 
   ClipboardRelays* = object
     getText*: proc (): string {.nimcall.}
@@ -82,3 +85,8 @@ proc putClipboardText*(text: string) = clipboardRelays.putText(text)
 proc getTicks*(): int = inputRelays.getTicks()
 proc sleep*(ms: int) = inputRelays.sleep(ms)
 proc shutdown*() = inputRelays.shutdown()
+
+proc wheelLines*(e: Event): int =
+  ## How many lines a MouseWheelEvent scrolls (positive = up): the driver's
+  ## precise count when it gives one, else 3 a wheel notch.
+  if e.preciseLines != 0: e.preciseLines else: e.y * 3
