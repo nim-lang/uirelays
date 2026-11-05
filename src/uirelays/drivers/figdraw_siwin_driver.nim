@@ -196,13 +196,13 @@ proc queueTextEvent(text: string) =
       e.text[i] = text[i]
   queueEvent(e)
 
-proc applyClip(ctx: BackendContext; state: DrawState): bool =
-  if not state.clipActive:
-    return false
-  let clipRect = scaledRect(state.clipRect)
-  ctx.beginMask(clipRect, [0.0'f32, 0.0'f32, 0.0'f32, 0.0'f32])
+proc sameClip(a, b: DrawState): bool =
+  a.clipActive == b.clipActive and (not a.clipActive or a.clipRect == b.clipRect)
+
+proc applyClip(ctx: BackendContext; state: DrawState) =
+  ## Open a mask for `state`'s clip. The caller pops it when the clip changes.
+  ctx.beginMask(scaledRect(state.clipRect), [0.0'f32, 0.0'f32, 0.0'f32, 0.0'f32])
   ctx.endMask()
-  true
 
 proc replayText(ctx: BackendContext; op: DrawOp) =
   let slot = getFontSlot(op.font)
@@ -338,8 +338,14 @@ proc renderQueuedOps() =
   ctx.saveTransform()
   ctx.scale(ctx.pixelScale)
   var pixelIndex = 0
+  # A mask per op is a stencil pass per op, and nearly every op is clipped to its
+  # pane: open one only where the clip changes.
+  var open = DrawState()
   for op in drawOps:
-    let hasClip = applyClip(ctx, op.state)
+    if not sameClip(op.state, open):
+      if open.clipActive: ctx.popMask()
+      if op.state.clipActive: applyClip(ctx, op.state)
+      open = op.state
     case op.kind
     of dopFillRect:
       ctx.drawRect(scaledRect(op.rect), toFigColor(op.fillColor))
@@ -368,8 +374,7 @@ proc renderQueuedOps() =
     of dopPixels:
       replayPixels(ctx, op, pixelIndex)
       inc pixelIndex
-    if hasClip:
-      ctx.popMask()
+  if open.clipActive: ctx.popMask()
   ctx.restoreTransform()
   ctx.endFrame()
   renderer.endFrame()
