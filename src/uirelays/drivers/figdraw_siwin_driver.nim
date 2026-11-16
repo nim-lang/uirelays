@@ -21,7 +21,7 @@ import figdraw/windowing/siwinshim
 import figdraw/extras/systemfonts
 import figdraw/common/[fontglyphs, fonttypes, fontutils, typefaces]
 
-import ../coords, ../input, ../screen
+import ../coords, ../input, ../screen, ../waitinterrupt
 import ./siwin_keys
 
 type
@@ -79,6 +79,7 @@ type
 var
   appWindow: siwin.Window
   appGlobals: SiwinGlobals
+  appWaker: EventLoopWaker  ## thread-safe handle to appGlobals' loop
   renderer: FigRenderer[SiwinRenderBackend]
   useAutoScale: bool
   eventQueue: Deque[input.Event]
@@ -411,6 +412,7 @@ proc figCreateWindow(layout: var ScreenLayout; icon: pointer; iconLen: int) =
     )
     useAutoScale = appWindow.configureUiScale()
     appGlobals = sharedSiwinGlobals()
+    appWaker = appGlobals.eventLoopWaker()
     renderer.setupBackend(appWindow)
     appWindow.eventsHandler = WindowEventsHandler(
       onClose: proc(e: CloseEvent) =
@@ -716,6 +718,8 @@ proc figWaitEvent(e: var input.Event; timeoutMs: int; flags: set[InputFlag]): bo
   let deadline = getMonoTime() + initDuration(milliseconds = max(timeoutMs, 0))
   if figPollEvent(e, flags):
     return true
+  if takeInterrupt():
+    return false
   while not appWindow.isNil and appWindow.opened:
     let remaining =
       if timeoutMs < 0: high(Duration)
@@ -728,9 +732,16 @@ proc figWaitEvent(e: var input.Event; timeoutMs: int; flags: set[InputFlag]): bo
     if eventQueue.len > 0:
       e = eventQueue.popFirst()
       return true
-    if activity == eventTimeout:
+    if takeInterrupt() or activity == eventTimeout:
       return false
   false
+
+proc figInterruptWaitEvent() {.gcsafe.} =
+  # The waker stays valid (and harmless) after the loop shuts down; it must
+  # not be called while createWindow replaces it.
+  if raiseInterrupt():
+    {.cast(gcsafe).}:
+      appWaker.wake()
 
 proc figGetTicks(): int =
   (epochTime() * 1000).int
@@ -789,6 +800,7 @@ proc initFigDrawSiwinDriver*() =
   inputRelays = InputRelays(
     pollEvent: figPollEvent,
     waitEvent: figWaitEvent,
+    interruptWaitEvent: figInterruptWaitEvent,
     getTicks: figGetTicks,
     sleep: figDelay,
     shutdown: figShutdown,

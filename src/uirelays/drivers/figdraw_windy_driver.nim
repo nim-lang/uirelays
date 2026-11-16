@@ -18,7 +18,7 @@ import figdraw/windowing/windyshim
 import figdraw/extras/systemfonts
 import figdraw/common/[fontglyphs, fonttypes, fontutils, typefaces]
 
-import ../coords, ../input, ../screen
+import ../coords, ../input, ../screen, ../waitinterrupt
 
 type
   DrawState = object
@@ -772,12 +772,19 @@ proc figWaitEvent(e: var input.Event; timeoutMs: int; flags: set[InputFlag]): bo
     else: figGetTicks() + timeoutMs
   while eventQueue.len == 0:
     pumpWindowStep()
+    if eventQueue.len == 0 and takeInterrupt():
+      return false
     if timeoutMs >= 0 and figGetTicks() >= deadlineMs:
       return false
     if timeoutMs >= 0:
       os.sleep(1)
   e = eventQueue.popFirst()
   true
+
+proc figInterruptWaitEvent() {.gcsafe.} =
+  # Windy has no cross-thread wakeup, but figWaitEvent polls in a loop and
+  # checks the flag on every pass.
+  discard raiseInterrupt()
 
 proc figDelay(ms: int) =
   let deadline = figGetTicks() + max(ms, 0)
@@ -832,6 +839,7 @@ proc initFigDrawWindyDriver*() =
   inputRelays = InputRelays(
     pollEvent: figPollEvent,
     waitEvent: figWaitEvent,
+    interruptWaitEvent: figInterruptWaitEvent,
     getTicks: figGetTicks,
     sleep: figDelay,
     shutdown: figShutdown,
