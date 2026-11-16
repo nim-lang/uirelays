@@ -3,7 +3,7 @@
 
 import sdl2 except Rect, Point
 import sdl2/ttf
-import ../coords, ../input, ../screen
+import ../coords, ../input, ../screen, ../waitinterrupt
 
 # --- Font handle management ---
 
@@ -412,11 +412,13 @@ proc sdlPollEvent(e: var input.Event; flags: set[InputFlag]): bool =
 
 proc sdlWaitEvent(e: var input.Event; timeoutMs: int;
                   flags: set[InputFlag]): bool =
-  # Use pollEvent with delay for timeout behavior
+  # Use pollEvent with delay for timeout behavior. The 10ms polling slices
+  # double as the interruptWaitEvent latency, so no native wakeup is needed.
   if timeoutMs < 0:
     # Block until event
     while true:
       if sdlPollEvent(e, flags): return true
+      if takeInterrupt(): return false
       sdl2.delay(10)
   elif timeoutMs == 0:
     return sdlPollEvent(e, flags)
@@ -424,8 +426,12 @@ proc sdlWaitEvent(e: var input.Event; timeoutMs: int;
     let start = sdl2.getTicks()
     while sdl2.getTicks() - start < timeoutMs.uint32:
       if sdlPollEvent(e, flags): return true
+      if takeInterrupt(): return false
       sdl2.delay(10)
     return false
+
+proc sdlInterruptWaitEvent() {.gcsafe.} =
+  discard raiseInterrupt()
 
 proc sdlGetTicks(): int = sdl2.getTicks().int
 
@@ -455,6 +461,7 @@ proc initSdl2Driver*() =
     blitRGBA: sdlBlitRGBA)
   inputRelays = InputRelays(
     pollEvent: sdlPollEvent, waitEvent: sdlWaitEvent,
+    interruptWaitEvent: sdlInterruptWaitEvent,
     getTicks: sdlGetTicks, sleep: sdlDelay,
     shutdown: sdlQuitRequest)
   clipboardRelays = ClipboardRelays(

@@ -3,7 +3,7 @@ import std/[deques, math, monotimes, os, times, unicode]
 import siwin
 import siwin/platforms/any/clipboards
 import vmath
-import ../[coords, input, screen]
+import ../[coords, input, screen, waitinterrupt]
 import ./siwin_keys
 
 when defined(macosx):
@@ -23,6 +23,7 @@ else:
 var
   appWindow: siwin.Window
   appGlobals: SiwinGlobals
+  appWaker: EventLoopWaker  ## thread-safe handle to appGlobals' loop
   events: Deque[input.Event]
   presenting: bool
   ticksStart = getMonoTime()
@@ -129,6 +130,7 @@ proc create(layout: var ScreenLayout, icon: pointer, iconLen: int) =
     appGlobals = newSiwinGlobals(Platform.x11)
   else:
     appGlobals = newSiwinGlobals()
+  appWaker = appGlobals.eventLoopWaker()
   appWindow = appGlobals.newSoftwareRenderingWindow(
     size = ivec2(max(layout.width, 1).int32, max(layout.height, 1).int32),
     title = "uirelays",
@@ -224,6 +226,8 @@ proc wait(event: var input.Event, timeoutMs: int, flags: set[InputFlag]): bool =
   let deadline = getMonoTime() + initDuration(milliseconds = max(timeoutMs, 0))
   if poll(event, flags):
     return true
+  if takeInterrupt():
+    return false
   while not appWindow.isNil and appWindow.opened:
     let remaining =
       if timeoutMs < 0:
@@ -239,9 +243,16 @@ proc wait(event: var input.Event, timeoutMs: int, flags: set[InputFlag]): bool =
     if events.len > 0:
       event = events.popFirst()
       return true
-    if activity == eventTimeout:
+    if takeInterrupt() or activity == eventTimeout:
       return false
   false
+
+proc interruptWait() {.gcsafe.} =
+  # The waker stays valid (and harmless) after the loop shuts down; it must
+  # not be called while createWindow replaces it.
+  if raiseInterrupt():
+    {.cast(gcsafe).}:
+      appWaker.wake()
 
 proc shutdown() =
   platformNative.detachSiwinSurface()
@@ -287,6 +298,7 @@ proc initSiwinDriver*() =
   inputRelays = InputRelays(
     pollEvent: poll,
     waitEvent: wait,
+    interruptWaitEvent: interruptWait,
     getTicks: proc(): int =
       (getMonoTime() - ticksStart).inMilliseconds.int,
     sleep: proc(ms: int) =

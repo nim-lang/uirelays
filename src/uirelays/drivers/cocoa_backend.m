@@ -60,6 +60,35 @@ static void pushEvent(NEEvent ev) {
   eqHead = next;
 }
 
+/* ---- Wakeup for interruptWaitEvent ------------------------------------ */
+
+/* An application-defined event with this subtype carries no input; it only
+   makes a blocked nextEventMatchingMask return. The sticky flag lives on the
+   Nim side (waitinterrupt.nim). */
+#define NE_WAKE_SUBTYPE 0x7552  /* 'uR' */
+
+static BOOL isWakeEvent(NSEvent *ev) {
+  return [ev type] == NSEventTypeApplicationDefined &&
+         [ev subtype] == NE_WAKE_SUBTYPE;
+}
+
+/* Callable from any thread: -postEvent:atStart: is documented as safe to
+   call from subthreads. */
+void cocoa_postWake(void) {
+  @autoreleasepool {
+    NSEvent *ev = [NSEvent otherEventWithType:NSEventTypeApplicationDefined
+                                     location:NSZeroPoint
+                                modifierFlags:0
+                                    timestamp:0
+                                 windowNumber:0
+                                      context:nil
+                                      subtype:NE_WAKE_SUBTYPE
+                                        data1:0
+                                        data2:0];
+    [NSApp postEvent:ev atStart:NO];
+  }
+}
+
 int cocoa_pollEvent(NEEvent *out) {
   /* Pump the run loop briefly so Cocoa delivers events */
   @autoreleasepool {
@@ -68,6 +97,7 @@ int cocoa_pollEvent(NEEvent *out) {
                                     untilDate:nil
                                        inMode:NSDefaultRunLoopMode
                                       dequeue:YES]) != nil) {
+      if (isWakeEvent(ev)) continue;
       [NSApp sendEvent:ev];
       [NSApp updateWindows];
     }
@@ -88,21 +118,28 @@ int cocoa_waitEvent(NEEvent *out, int timeoutMs) {
 
   /* Loop until we have an event in our queue or the deadline passes.
      nextEventMatchingMask may return internal Cocoa events that don't
-     produce NEEvents -- we must keep waiting in that case. */
-  while (eqTail == eqHead) {
+     produce NEEvents -- we must keep waiting in that case. A wake event
+     (cocoa_postWake) ends the wait. */
+  BOOL woken = NO;
+  while (eqTail == eqHead && !woken) {
     @autoreleasepool {
       NSEvent *ev = [NSApp nextEventMatchingMask:NSEventMaskAny
                                        untilDate:deadline
                                           inMode:NSDefaultRunLoopMode
                                          dequeue:YES];
       if (ev) {
-        [NSApp sendEvent:ev];
-        [NSApp updateWindows];
+        if (isWakeEvent(ev)) {
+          woken = YES;
+        } else {
+          [NSApp sendEvent:ev];
+          [NSApp updateWindows];
+        }
         /* drain remaining without blocking */
         while ((ev = [NSApp nextEventMatchingMask:NSEventMaskAny
                                         untilDate:nil
                                            inMode:NSDefaultRunLoopMode
                                           dequeue:YES]) != nil) {
+          if (isWakeEvent(ev)) { woken = YES; continue; }
           [NSApp sendEvent:ev];
           [NSApp updateWindows];
         }
