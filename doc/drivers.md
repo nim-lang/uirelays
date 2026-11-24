@@ -73,9 +73,18 @@ Font handles are `distinct int`, 1-based. Drivers typically maintain a
 |-------|-----------|-------|
 | `pollEvent` | `proc (e: var Event; flags: set[InputFlag]): bool` | Non-blocking. Drain the platform message queue, return the next event. Return false if no events are pending. |
 | `waitEvent` | `proc (e: var Event; timeoutMs: int; flags: set[InputFlag]): bool` | Block until an event arrives or the timeout expires (timeoutMs < 0 = wait forever). Must keep pumping the platform message queue while waiting to avoid "not responding" states. |
+| `interruptWaitEvent` | `proc () {.gcsafe.}` | Called from **any thread**: make a blocked `waitEvent` return false soon. Call `raiseInterrupt()` from `uirelays/waitinterrupt` and poke the native loop only when it returns true (self-pipe, posted event, `SetEvent`, `g_main_context_wakeup`, ...). Never touch non-thread-safe toolkit state here. |
 | `getTicks` | `proc (): int` | Monotonic millisecond counter. |
 | `sleep` | `proc (ms: int)` | Sleep for the given number of milliseconds. Should pump the platform message queue during the sleep if possible. |
 | `shutdown` | `proc ()` | Tear down the window and release platform resources. |
+
+`interruptWaitEvent` is sticky. In `waitEvent`, return queued events
+first, then return false if `takeInterrupt()` is true, then block. After
+waking, return an event if one arrived; otherwise call `takeInterrupt()`
+and return false. An interrupt never ends a wait that has an event to
+return; its flag stays set, so the next call returns false. A driver that
+already waits in short polling slices only needs to check
+`takeInterrupt()` on each pass.
 
 The `flags` parameter carries `InputFlag` values. Currently the only
 flag is `WantTextInput`, which tells the driver to show the on-screen
@@ -214,6 +223,7 @@ out of default platform builds.
 - [ ] Translate platform events to `Event` values
 - [ ] Handle window close without destroying the window
 - [ ] Pump the message queue in `sleep()` and `waitEvent()` to stay responsive
+- [ ] `interruptWaitEvent` from another thread ends a `waitEvent(-1)` (`tests/tinterruptwait.nim`)
 - [ ] Track double/triple clicks in MouseDown
 - [ ] Convert font file paths to platform face names
 - [ ] Test: window appears, text renders, mouse clicks register, keyboard input works, clipboard works, resize works

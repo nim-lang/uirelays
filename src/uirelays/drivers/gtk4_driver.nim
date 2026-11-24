@@ -32,7 +32,7 @@ static inline void nimedit_set_program_class(GdkDisplay *display, const char *na
 """.}
 
 import std/[unicode, os, strutils]
-import ../coords, ../input, ../screen
+import ../coords, ../input, ../screen, ../waitinterrupt
 
 const
   gtkCflags {.strdefine.} = staticExec("pkg-config --cflags gtk4 pangocairo pangoft2 fontconfig glib-2.0 2>/dev/null").strip
@@ -114,6 +114,7 @@ proc g_type_from_name(name: cstring): GType {.importc, nodecl, cdecl.}
 proc g_type_check_instance_is_a(inst: pointer; t: GType): gboolean {.importc, nodecl, cdecl.}
 
 proc g_main_context_iteration(ctx: pointer; mayBlock: gboolean): gboolean {.importc, nodecl, cdecl.}
+proc g_main_context_wakeup(ctx: pointer) {.importc, nodecl, cdecl, gcsafe.}
 
 proc gtk_init_check(): gboolean {.importc, nodecl, cdecl.}
 proc gtk_window_new(): pointer {.importc, nodecl, cdecl.}
@@ -924,11 +925,16 @@ proc gtkWaitEvent(e: var Event; timeoutMs: int;
                   flags: set[InputFlag]): bool =
   if gtkPollEvent(e, flags):
     return true
+  if takeInterrupt():
+    return false
   if timeoutMs < 0:
     while true:
+      # g_main_context_wakeup (interruptWaitEvent) ends a blocking iteration.
       discard g_main_context_iteration(nil, G_TRUE)
       if gtkPollEvent(e, flags):
         return true
+      if takeInterrupt():
+        return false
   elif timeoutMs == 0:
     return false
   else:
@@ -937,8 +943,14 @@ proc gtkWaitEvent(e: var Event; timeoutMs: int;
       discard g_main_context_iteration(nil, G_FALSE)
       if gtkPollEvent(e, flags):
         return true
+      if takeInterrupt():
+        return false
       g_usleep(5000)
     return gtkPollEvent(e, flags)
+
+proc gtkInterruptWaitEvent() {.gcsafe.} =
+  # Thread-safe; wakes the default context out of a blocking iteration.
+  if raiseInterrupt(): g_main_context_wakeup(nil)
 
 proc gtkGetClipboardText(): string =
   readClipboardSync()
@@ -988,6 +1000,7 @@ proc initGtk4Driver*() =
     blitRGBA: gtkBlitRGBA, drawRGBA: gtkDrawRGBA)
   inputRelays = InputRelays(
     pollEvent: gtkPollEvent, waitEvent: gtkWaitEvent,
+    interruptWaitEvent: gtkInterruptWaitEvent,
     getTicks: gtkGetTicks, sleep: gtkDelay,
     shutdown: gtkQuitRequest)
   clipboardRelays = ClipboardRelays(
